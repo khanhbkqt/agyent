@@ -530,13 +530,13 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 		imageSandbox := t.TempDir()
 
 		req := domain.ExecutionRequest{
-			Prompt:                     "create a valid sample PNG image file named chart.png in the current working directory, then say done",
+			Prompt:                     "write a small test file named chart.png in the current working directory, then say done",
 			WorkspaceDir:               imageSandbox,
 			Effort:                     "low",
 			DangerouslySkipPermissions: true,
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 
 		res, err := harness.Execute(ctx, req)

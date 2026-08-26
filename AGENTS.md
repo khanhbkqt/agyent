@@ -58,6 +58,7 @@ agyent/
 │   ├── root.go               # Cobra root command setup & global flags
 │   ├── init.go               # 'agyent init' interactive setup wizard
 │   ├── run.go                # 'agyent run' gateway daemon runner
+│   ├── hook.go               # 'agyent hook-bridge' native hook bridge
 │   ├── register_commands.go  # 'agyent register-commands' Telegram command sync
 │   └── version.go            # 'agyent version' build metadata
 │
@@ -67,20 +68,21 @@ agyent/
 │   ├── wizard/               # Interactive terminal wizard (charmbracelet/huh)
 │   │
 │   ├── core/                 # Core Domain & Pure Business Logic (No External Drivers)
-│   │   ├── domain/           # Canonical models (Agent, User, Session, Conversation, Audit)
-│   │   ├── ports/            # Port interfaces for Storage, Channel, Runner, EventBus, Evolution
+│   │   ├── domain/           # Canonical models (Agent, User, Session, Conversation, Audit, Security)
+│   │   ├── ports/            # Port interfaces for Storage, Channel, Runner, EventBus, Security
 │   │   ├── engine/           # Central orchestrator, slash commands, prompt assembly, and GC
 │   │   ├── debouncer/        # Sliding window message debouncing & batch coalescing
 │   │   ├── concurrency/      # FIFO session mutexes and cross-platform OS FileLocks
 │   │   └── eventbus/         # In-memory async event publisher/subscriber
 │   │
 │   └── adapters/             # Secondary Adapters implementing Ports
-│       ├── channels/telegram # Telegram bot router, live throttler, markdown chunker
+│       ├── channels/telegram # Telegram bot router, live throttler, HITL coordinator
 │       ├── harness/agy/      # Subprocess JSON streaming, watcher, and OS Job Objects
 │       ├── storage/sqlite/   # Pure-Go SQLite (modernc.org/sqlite) with WAL & FlexTime
 │       │   └── migrations/   # Versioned up/down SQL schema migrations (000001..000004)
 │       ├── context/          # 5-Tier context resolver, progressive skills index, temporal tags
 │       ├── evolution/        # Reflection engine, heuristic filter, 4D memory conflict resolver
+│       ├── security/         # Universal Security Gateway (pathjail, network, sanitizer, subagents, ipc)
 │       ├── mcp/              # Global MCP JSON config syncer and zombie cleanup
 │       └── plugin/           # Plugin manifest validation & installation
 │

@@ -72,6 +72,71 @@ type SubagentConfig struct {
 	DefaultEffort         string `yaml:"default_effort" json:"default_effort"`
 }
 
+// RolePolicyConfig specifies allowed and disallowed tools for a subagent role.
+type RolePolicyConfig struct {
+	AllowedTools    []string `yaml:"allowed_tools" json:"allowed_tools"`
+	DisallowedTools []string `yaml:"disallowed_tools" json:"disallowed_tools"`
+}
+
+// AgentConfigManagementConfig controls delegated configuration editing by agents.
+type AgentConfigManagementConfig struct {
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+	RequireApproval bool     `yaml:"require_approval" json:"require_approval"`
+	ManageableFiles []string `yaml:"manageable_files" json:"manageable_files"`
+}
+
+// CommandGuardrailConfig controls shell command filtering and policies.
+type CommandGuardrailConfig struct {
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+	CustomBlacklist []string `yaml:"custom_blacklist" json:"custom_blacklist"`
+	CustomWhitelist []string `yaml:"custom_whitelist" json:"custom_whitelist"`
+}
+
+// FilesystemGuardrailConfig defines workspace jailing and forbidden paths.
+type FilesystemGuardrailConfig struct {
+	EnforceWorkspaceJail bool     `yaml:"enforce_workspace_jail" json:"enforce_workspace_jail"`
+	AllowedPaths         []string `yaml:"allowed_paths" json:"allowed_paths"`
+	ForbiddenPaths       []string `yaml:"forbidden_paths" json:"forbidden_paths"`
+}
+
+// SubagentGuardrailConfig governs sub-agent hierarchy, roles, and quotas.
+type SubagentGuardrailConfig struct {
+	MaxConcurrentWorkers int                         `yaml:"max_concurrent_workers" json:"max_concurrent_workers"`
+	MaxCascadeDepth      int                         `yaml:"max_cascade_depth" json:"max_cascade_depth"`
+	Roles                map[string]RolePolicyConfig `yaml:"roles" json:"roles"`
+}
+
+// NetworkGuardrailConfig prevents SSRF and private network exfiltration.
+type NetworkGuardrailConfig struct {
+	BlockCloudMetadata   bool `yaml:"block_cloud_metadata" json:"block_cloud_metadata"`
+	BlockPrivateNetworks bool `yaml:"block_private_networks" json:"block_private_networks"`
+	PreventDNSRebinding  bool `yaml:"prevent_dns_rebinding" json:"prevent_dns_rebinding"`
+}
+
+// DLPConfig controls secret redaction across tool outputs and chat streaming.
+type DLPConfig struct {
+	Enabled             bool     `yaml:"enabled" json:"enabled"`
+	RedactionMode       string   `yaml:"redaction_mode" json:"redaction_mode"` // "strict" | "permissive" | "audit_only"
+	SlidingWindowBytes  int      `yaml:"sliding_window_bytes" json:"sliding_window_bytes"`
+	SanitizeToolOutputs bool     `yaml:"sanitize_tool_outputs" json:"sanitize_tool_outputs"`
+	WhitelistedEnvKeys  []string `yaml:"whitelisted_env_keys" json:"whitelisted_env_keys"`
+}
+
+// SecurityConfig contains the Universal AI Security Gateway & Guardrails parameters.
+type SecurityConfig struct {
+	Enabled                bool                        `yaml:"enabled" json:"enabled"`
+	Preset                 string                      `yaml:"preset" json:"preset"` // "developer" | "balanced" | "strict" | "read_only"
+	Mode                   string                      `yaml:"mode" json:"mode"`     // "interactive" | "strict"
+	ApprovalTimeoutSeconds int                         `yaml:"approval_timeout_seconds" json:"approval_timeout_seconds"`
+	AdminUserIDs           []int64                     `yaml:"admin_user_ids" json:"admin_user_ids"`
+	AgentConfigManagement  AgentConfigManagementConfig `yaml:"agent_config_management" json:"agent_config_management"`
+	Commands               CommandGuardrailConfig      `yaml:"commands" json:"commands"`
+	Filesystem             FilesystemGuardrailConfig   `yaml:"filesystem" json:"filesystem"`
+	Subagents              SubagentGuardrailConfig     `yaml:"subagents" json:"subagents"`
+	Network                NetworkGuardrailConfig      `yaml:"network" json:"network"`
+	DLP                    DLPConfig                   `yaml:"dlp" json:"dlp"`
+}
+
 // Config represents the complete runtime configuration of agyent.
 type Config struct {
 	Server    ServerConfig    `yaml:"server" json:"server"`
@@ -81,6 +146,7 @@ type Config struct {
 	Logging   LoggingConfig   `yaml:"logging" json:"logging"`
 	Evolution EvolutionConfig `yaml:"evolution" json:"evolution"`
 	Subagent  SubagentConfig  `yaml:"subagent" json:"subagent"`
+	Security  SecurityConfig  `yaml:"security" json:"security"`
 }
 
 // DefaultConfig returns a new Config populated with sensible defaults.
@@ -133,6 +199,221 @@ func DefaultConfig() *Config {
 			DefaultModel:          "flash",
 			DefaultEffort:         "low",
 		},
+		Security: GetEffectiveSecurityPreset("balanced"),
+	}
+}
+
+// GetEffectiveSecurityPreset returns the default SecurityConfig corresponding to the given preset name.
+func GetEffectiveSecurityPreset(preset string) SecurityConfig {
+	switch strings.ToLower(preset) {
+	case "unrestricted", "full_access":
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "unrestricted",
+			Mode:                   "autonomous",
+			ApprovalTimeoutSeconds: 60,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         true,
+				RequireApproval: false,
+				ManageableFiles: []string{"*"},
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled:         true,
+				CustomBlacklist: nil,
+				CustomWhitelist: []string{"*"},
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: false,
+				AllowedPaths:         []string{"*"},
+				ForbiddenPaths:       nil,
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 10,
+				MaxCascadeDepth:      3,
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   false,
+				BlockPrivateNetworks: false,
+				PreventDNSRebinding:  false,
+			},
+			DLP: DLPConfig{
+				Enabled:             false,
+				RedactionMode:       "audit_only",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: false,
+			},
+		}
+
+	case "developer":
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "developer",
+			Mode:                   "interactive",
+			ApprovalTimeoutSeconds: 60,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         true,
+				RequireApproval: false,
+				ManageableFiles: []string{".env", ".env.*", "~/.agyent/config.yaml", "docker-compose.yml", "Makefile"},
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled:         true,
+				CustomBlacklist: []string{`(?i)rm\s+-rf\s+/(boot|sys|etc)?$`, `(?i)mkfs`, `(?i)format\s+[a-z]:`},
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: false,
+				AllowedPaths:         []string{"~", "."},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 5,
+				MaxCascadeDepth:      1,
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   true,
+				BlockPrivateNetworks: false,
+				PreventDNSRebinding:  true,
+			},
+			DLP: DLPConfig{
+				Enabled:             true,
+				RedactionMode:       "permissive",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: true,
+				WhitelistedEnvKeys:  []string{"PORT", "HOST", "NODE_ENV", "APP_NAME", "DATABASE_URL", "API_BASE_URL"},
+			},
+		}
+
+	case "strict":
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "strict",
+			Mode:                   "strict",
+			ApprovalTimeoutSeconds: 30,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         false,
+				RequireApproval: true,
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled:         true,
+				CustomWhitelist: []string{"go test ./...", "npm test", "git status", "git diff"},
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: true,
+				AllowedPaths:         []string{"."},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 1,
+				MaxCascadeDepth:      1,
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   true,
+				BlockPrivateNetworks: true,
+				PreventDNSRebinding:  true,
+			},
+			DLP: DLPConfig{
+				Enabled:             true,
+				RedactionMode:       "strict",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: true,
+				WhitelistedEnvKeys:  []string{"PORT", "NODE_ENV"},
+			},
+		}
+
+	case "read_only":
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "read_only",
+			Mode:                   "strict",
+			ApprovalTimeoutSeconds: 30,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         false,
+				RequireApproval: true,
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled: false,
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: true,
+				AllowedPaths:         []string{"."},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 2,
+				MaxCascadeDepth:      1,
+				Roles: map[string]RolePolicyConfig{
+					"researcher": {
+						AllowedTools:    []string{"view_file", "grep_search", "find_by_name", "search_web"},
+						DisallowedTools: []string{"run_command", "write_to_file", "replace_file_content", "invoke_subagent", "define_subagent"},
+					},
+				},
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   true,
+				BlockPrivateNetworks: true,
+				PreventDNSRebinding:  true,
+			},
+			DLP: DLPConfig{
+				Enabled:             true,
+				RedactionMode:       "strict",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: true,
+			},
+		}
+
+	case "balanced":
+		fallthrough
+	default:
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "balanced",
+			Mode:                   "interactive",
+			ApprovalTimeoutSeconds: 60,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         true,
+				RequireApproval: true,
+				ManageableFiles: []string{".env", ".env.*", "~/.agyent/config.yaml", "docker-compose.yml"},
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled:         true,
+				CustomBlacklist: []string{`(?i)rm\s+-rf\s+/`, `(?i)mkfs`, `(?i)git\s+push\s+.*--force.*(main|master)`},
+				CustomWhitelist: []string{"go test ./...", "npm test", "git status"},
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: true,
+				AllowedPaths:         []string{"."},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 3,
+				MaxCascadeDepth:      1,
+				Roles: map[string]RolePolicyConfig{
+					"researcher": {
+						AllowedTools:    []string{"view_file", "grep_search", "find_by_name", "search_web"},
+						DisallowedTools: []string{"run_command", "write_to_file", "replace_file_content", "invoke_subagent", "define_subagent"},
+					},
+					"coder": {
+						AllowedTools:    []string{"*"},
+						DisallowedTools: []string{"define_subagent"},
+					},
+					"reviewer": {
+						AllowedTools:    []string{"view_file", "grep_search", "find_by_name"},
+						DisallowedTools: []string{"write_to_file", "replace_file_content", "invoke_subagent", "define_subagent"},
+					},
+				},
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   true,
+				BlockPrivateNetworks: true,
+				PreventDNSRebinding:  true,
+			},
+			DLP: DLPConfig{
+				Enabled:             true,
+				RedactionMode:       "strict",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: true,
+				WhitelistedEnvKeys:  []string{"PORT", "HOST", "NODE_ENV", "APP_NAME", "DATABASE_URL"},
+			},
+		}
 	}
 }
 

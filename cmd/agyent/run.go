@@ -14,6 +14,8 @@ import (
 	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/adapters/mcp"
 	pluginAdapter "agyent/internal/adapters/plugin"
+	securityAdapter "agyent/internal/adapters/security"
+	"agyent/internal/adapters/security/ipc"
 	"agyent/internal/adapters/storage/sqlite"
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
@@ -71,6 +73,7 @@ var runCmd = &cobra.Command{
 		fmt.Printf("📄 Config File:   %s\n", cfgFile)
 		fmt.Printf("🌐 Telegram Mode: %s\n", cfg.Telegram.Mode)
 		fmt.Printf("🤖 AGY Binary:    %s (Streaming: %t)\n", cfg.AGY.BinaryPath, cfg.AGY.StreamingEnabled)
+		fmt.Printf("🛡️ Security:      Preset '%s' (HITL Timeout: %ds)\n", cfg.Security.Preset, cfg.Security.ApprovalTimeoutSeconds)
 		fmt.Printf("📁 Agents Dir:    %s\n", cfg.Storage.AgentsDir)
 		fmt.Printf("💾 SQLite DB:     %s (WAL Mode)\n", cfg.Storage.DBPath)
 		fmt.Printf("📝 Log Level:     %s (Format: %s)\n", logLevel, logFormat)
@@ -100,7 +103,17 @@ var runCmd = &cobra.Command{
 		// 5. Initialize Telegram Channel Adapter
 		channel := telegram.NewAdapter(cfg, bus)
 
-		// 6. Initialize Context Resolver, MCP Syncer & Plugin Manager
+		// 6. Initialize Universal Security Gateway & IPC Host
+		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
+		secMgr := securityAdapter.NewManager(cfg.Security, channel.HITLCoordinator(), mainLogger)
+		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
+
+		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")
+		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(starterWS, "", mainLogger); err != nil {
+			mainLogger.Debug("Provisioned starter workspace hooks", "workspace", starterWS, "error", err)
+		}
+
+		// 7. Initialize Context Resolver, MCP Syncer & Plugin Manager
 		contextResolver := contextAdapter.NewContextResolver()
 		mcpSyncer, err := mcp.NewMCPSyncer("")
 		if err != nil {
@@ -109,7 +122,7 @@ var runCmd = &cobra.Command{
 		}
 		pluginMgr := pluginAdapter.NewPluginManager("builtin/plugins")
 
-		// 7. Initialize Debouncer & Core Engine
+		// 8. Initialize Debouncer & Core Engine
 		var eng *engine.Engine
 
 		debHandler := func(ctx context.Context, msg domain.CanonicalMessage) error {
@@ -131,6 +144,7 @@ var runCmd = &cobra.Command{
 
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
+		eng.SetSecurityManager(secMgr)
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
 		eng.SetSubagentDispatcher(subDispatcher)
@@ -140,9 +154,14 @@ var runCmd = &cobra.Command{
 			eng.SetEvolutionOrchestrator(evoOrch)
 		}
 
-		// 8. Start Engine and Inbound Listeners
+		// 9. Start Engine and Inbound Listeners
 		daemonCtx, cancelDaemon := context.WithCancel(context.Background())
 		defer cancelDaemon()
+
+		if err := ipcServer.Start(daemonCtx); err != nil {
+			mainLogger.Warn("Failed to start Security IPC server", "error", err)
+		}
+		defer ipcServer.Stop()
 
 		if err := eng.Start(daemonCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to start agyent engine: %v\n", err)

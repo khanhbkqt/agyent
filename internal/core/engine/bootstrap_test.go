@@ -70,13 +70,17 @@ func TestComposeResolvedTurnPrompt_Level0StaticPrefix(t *testing.T) {
 	// Verify Level 0 is at Index 0 (Prefix Cache Hit)
 	assert.True(t, strings.HasPrefix(prompt, "[SYSTEM RUNTIME FOUNDATION]"), "Prompt MUST start with [SYSTEM RUNTIME FOUNDATION] at Index 0")
 
-	// Verify 6 pillars of System Foundation
+	// Verify pillars of System Foundation
 	assert.Contains(t, prompt, "1. Identity & Operating Environment:")
 	assert.Contains(t, prompt, "2. Core Capabilities & Tool Utilization:")
 	assert.Contains(t, prompt, "3. Execution Principles:")
+	assert.Contains(t, prompt, "4. Security Gateway, Guardrails & Policy Remediation:")
 	assert.Contains(t, prompt, "Self-Diagnostics Protocol:")
 	assert.Contains(t, prompt, "audit_logs table")
 	assert.Contains(t, prompt, "Progressive Skills Disclosure:")
+	assert.Contains(t, prompt, "/security grant")
+	assert.Contains(t, prompt, "/whitelist add")
+	assert.Contains(t, prompt, "/security preset")
 
 	// Verify 5-level hierarchy order
 	idxLevel0 := strings.Index(prompt, "[SYSTEM RUNTIME FOUNDATION]")

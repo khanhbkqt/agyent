@@ -33,6 +33,7 @@ type Engine struct {
 	temporal           ports.TemporalContextPort
 	evolution          ports.EvolutionOrchestratorPort
 	subagentDispatcher ports.SubagentDispatcherPort
+	securityManager    ports.SecurityManagerPort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -117,6 +118,16 @@ func (e *Engine) SetTemporalContext(t ports.TemporalContextPort) {
 // SetEvolutionOrchestrator injects the self-learning evolution orchestrator.
 func (e *Engine) SetEvolutionOrchestrator(evo ports.EvolutionOrchestratorPort) {
 	e.evolution = evo
+}
+
+// SetSecurityManager injects the universal security gateway manager.
+func (e *Engine) SetSecurityManager(sec ports.SecurityManagerPort) {
+	e.securityManager = sec
+}
+
+// GetSecurityManager returns the active security manager instance.
+func (e *Engine) GetSecurityManager() ports.SecurityManagerPort {
+	return e.securityManager
 }
 
 // Start initializes inbound channel consumption and begins background turn processing.
@@ -310,6 +321,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 	_ = os.MkdirAll(workspaceDir, 0755)
+	if e.securityManager != nil {
+		_ = e.securityManager.EnsureWorkspaceHooks(workspaceDir)
+	}
 
 	// 6. Context Resolution & Plugin Assembly
 	var promptText string
@@ -408,6 +422,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	var execResult *domain.ExecutionResult
 	var execErr error
+
+	if e.securityManager != nil {
+		e.securityManager.RegisterActiveTurn(activeConvID, sessionKey, workspaceDir)
+		defer e.securityManager.UnregisterActiveTurn(activeConvID, workspaceDir)
+	}
 
 	if isStream {
 		execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)

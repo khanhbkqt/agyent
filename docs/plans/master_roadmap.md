@@ -21,6 +21,7 @@ Master roadmap and overall progress tracking dashboard for **agyent**, upgraded 
 | 11 | [Model & Effort Selection](milestone-11-model-and-effort-selection.md) | Dynamic Model Discovery (agy models), 5-Tier Precedence, Subset Effort Clamping, Audit Tracking | Principal Architect / Backend Agent | Done | 100% | 2026-08-26 |
 | 12 | [Sub-Agent Dispatch & Orchestration](milestone-12-subagent-dispatch-and-orchestration.md) | Non-Blocking Dispatch, Subprocess Worker Pool, Live Stream Telemetry, 3 Callback Modes | Systems Architect / Backend Agent | Done | 100% | 2026-08-26 |
 | 13 | [Agent Ownership & Multi-Bot Gateway](milestone-13-agent-ownership-and-multi-bot-gateway.md) | Multi-Bot Pools, Dedicated Agent Binding, Per-Agent Ownership, Granular RBAC, Namespaced SessionKey | Principal Architect / Backend Agent | Planned | 0% | 2026-08-29 |
+| 14 | [Universal AI Security & Guardrails](milestone-14-security-and-guardrails.md) | PreToolUse Hook Bridge, Non-Blocking HITL, Sliding-Window DLP, Filesystem Jail, Sub-Agent Governance | Security Architect / Backend Agent | Planned | 0% | 2026-08-31 |
 
 ---
 
@@ -62,6 +63,9 @@ graph TD
     M6 --> M12[M12: Sub-Agent Dispatch & Orchestration]
     M5 --> M13[M13: Agent Ownership & Multi-Bot Gateway]
     M6 --> M13
+    M6 --> M14[M14: Universal Security & Guardrails]
+    M12 --> M14
+    M13 --> M14
 ```
 
 ---
@@ -79,3 +83,4 @@ graph TD
 - [x] Fully integrated Context Scopes & Memory Evolution per M9 & M10.
 - [x] Implemented Dynamic Model & Effort Selection Engine (M11).
 - [x] Implemented Non-Blocking Sub-Agent Dispatching & Multi-Agent Orchestration (M12).
+- [x] Implemented Universal AI Security Gateway & Dual-Plane Guardrails (M14).

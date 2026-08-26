@@ -15,20 +15,25 @@ import (
 
 // Router handles incoming Telegram updates and transforms them into CanonicalMessages.
 type Router struct {
-	cfg      *config.Config
-	bot      *gotgbot.Bot
-	inbound  chan<- domain.CanonicalMessage
-	mediaMgr *MediaManager
+	cfg             *config.Config
+	bot             *gotgbot.Bot
+	inbound         chan<- domain.CanonicalMessage
+	mediaMgr        *MediaManager
+	hitlCoordinator *HITLCoordinator
 }
 
 // NewRouter creates a new update Router.
-func NewRouter(cfg *config.Config, bot *gotgbot.Bot, inbound chan<- domain.CanonicalMessage, mediaMgr *MediaManager) *Router {
-	return &Router{
+func NewRouter(cfg *config.Config, bot *gotgbot.Bot, inbound chan<- domain.CanonicalMessage, mediaMgr *MediaManager, hitlCoord ...*HITLCoordinator) *Router {
+	r := &Router{
 		cfg:      cfg,
 		bot:      bot,
 		inbound:  inbound,
 		mediaMgr: mediaMgr,
 	}
+	if len(hitlCoord) > 0 {
+		r.hitlCoordinator = hitlCoord[0]
+	}
+	return r
 }
 
 // HandleUpdate processes a Telegram update with whitelist security and group routing rules.
@@ -190,9 +195,23 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		return nil
 	}
 
-	// 3. Map compact callback data into synthesized slash command
+	// 3. Handle HITL interactive approval callback
+	if strings.HasPrefix(data, "hitl:") {
+		if r.hitlCoordinator != nil {
+			return r.hitlCoordinator.HandleCallback(context.Background(), cb.Id, cb.From.Id, data)
+		}
+		return nil
+	}
+
+	// 4. Map compact callback data into synthesized slash command
 	var synthCmd string
 	switch {
+	case strings.HasPrefix(data, "sec:preset:"):
+		presetName := strings.TrimPrefix(data, "sec:preset:")
+		synthCmd = fmt.Sprintf("/security preset %s", presetName)
+	case strings.HasPrefix(data, "sec:redact:"):
+		mode := strings.TrimPrefix(data, "sec:redact:")
+		synthCmd = fmt.Sprintf("/security redact %s", mode)
 	case strings.HasPrefix(data, "m:set:"):
 		modelName := strings.TrimPrefix(data, "m:set:")
 		synthCmd = fmt.Sprintf("/model %s", modelName)

@@ -73,6 +73,11 @@ flowchart LR
   - 2.0s sliding-window debouncing via Go channels to merge rapid bursts of user messages.
   - FIFO session locking per user/topic to eliminate race conditions.
   - Heartbeat typing indicators (4.0s) and smart Markdown chunking.
+- **🛡️ Universal AI Security Gateway & Dual-Plane Guardrails:**
+  - Synchronous native Antigravity lifecycle hook interception (`PreToolUse` & `PostToolUse`) with sub-5ms local IPC socket and fail-safe **Default-Deny** fallback.
+  - 4 zero-config security postures (`developer`, `balanced`, `strict`, `read_only`) switchable dynamically or via 1-click Telegram buttons.
+  - Interactive **Human-in-the-Loop (HITL)** approval cards with Diff preview, session permission grants, and strict Admin RBAC.
+  - Workspace filesystem jailing with symlink ancestor canonicalization, Windows ADS/UNC block, SSRF & Cloud Metadata protection, and DLP secret redaction (OpenAI, Anthropic, GitHub PAT, Gemini, AWS).
 - **🧙 Interactive Setup Wizard (`agyent init`):** Fast, guided terminal wizard powered by `charmbracelet/huh` to configure bot tokens, admin permissions, and default workspace.
 
 ---
@@ -174,6 +179,10 @@ The wizard will guide you through:
 | `/agents` / `/use <name>` | List registered agent profiles or switch active agent. |
 | `/projects` / `/p <name>` | List attached project codebases or switch into project context. |
 | `/p exit` | Exit project mode and return to Global Chat mode. |
+| `/security` or `/sec` | View Security Gateway dashboard and switch active preset (`developer`, `balanced`, `strict`, `read_only`). |
+| `/security preset <mode>` | Dynamically switch active security preset. |
+| `/security grant <pattern>` | Grant temporary session permission for a command or tool pattern. |
+| `/whitelist add <rule>` | Add custom allowed command pattern to active whitelist. |
 
 ---
 

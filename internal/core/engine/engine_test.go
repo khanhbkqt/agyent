@@ -13,6 +13,7 @@ import (
 	contextAdapter "agyent/internal/adapters/context"
 	"agyent/internal/adapters/mcp"
 	pluginAdapter "agyent/internal/adapters/plugin"
+	securityAdapter "agyent/internal/adapters/security"
 	"agyent/internal/adapters/storage/sqlite"
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
@@ -196,7 +197,11 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 		MaxWaitDuration: 200 * time.Millisecond,
 	}, debouncerHandler)
 
+	cfg.Security = config.GetEffectiveSecurityPreset("balanced")
+	secMgr := securityAdapter.NewManager(cfg.Security, nil, nil)
+
 	eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
+	eng.SetSecurityManager(secMgr)
 
 	cleanup := func() {
 		_ = eng.Stop(context.Background())
@@ -538,6 +543,21 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 			command:   "/ask",
 			expectSub: "Usage:",
 		},
+		{
+			name:      "Security Dashboard Command",
+			command:   "/security",
+			expectSub: "Agyent Security Gateway Dashboard",
+		},
+		{
+			name:      "Security Preset Switch",
+			command:   "/security preset developer",
+			expectSub: "Security preset successfully switched",
+		},
+		{
+			name:      "Whitelist Add Command",
+			command:   "/whitelist add npm run build",
+			expectSub: "Added custom whitelist rule",
+		},
 	}
 
 	for _, tt := range tests {
@@ -568,4 +588,32 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 
 func stringsToLower(s string) string {
 	return strings.ToLower(s)
+}
+
+func TestEngine_WorkspaceHookAutoProvisioning(t *testing.T) {
+	eng, _, _, _, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	secMgr := securityAdapter.NewManager(cfg.Security, nil, nil)
+	eng.SetSecurityManager(secMgr)
+
+	ctx := context.Background()
+	msg := domain.CanonicalMessage{
+		ID:        "msg-hook-test",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Hello world",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	expectedHookPath := filepath.Join(cfg.Storage.AgentsDir, "agyent", ".agents", "hooks.json")
+	assert.FileExists(t, expectedHookPath, "Workspace hook must be automatically provisioned before turn execution")
+	data, err := os.ReadFile(expectedHookPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "agyent-security-gate")
+	assert.Contains(t, string(data), "hook-bridge pre")
 }

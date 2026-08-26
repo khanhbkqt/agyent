@@ -212,3 +212,37 @@ func TestFormatMarkdownToTelegramHTML_FileURILinkSanitization(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatMarkdownToTelegramHTML_MixedHTMLAndMarkdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "security dashboard with raw html and markdown",
+			input:    "🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n📍 **Active Preset**     : <code>balanced</code>\n📂 **Workspace Jail**    : `.`",
+			expected: "🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n📍 <b>Active Preset</b>     : <code>balanced</code>\n📂 <b>Workspace Jail</b>    : <code>.</code>",
+		},
+		{
+			name:     "existing html entities not double-escaped",
+			input:    "Command: <code>/task reply &lt;response&gt;</code> &amp; test",
+			expected: "Command: <code>/task reply &lt;response&gt;</code> &amp; test",
+		},
+		{
+			name:     "markdown bold inside and around code tags",
+			input:    "• <b>Active Model:</b> `gemini-2.5-pro` (default)",
+			expected: "• <b>Active Model:</b> <code>gemini-2.5-pro</code> (default)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := FormatMarkdownToTelegramHTML(tt.input)
+			assert.Equal(t, tt.expected, actual)
+			assert.NotContains(t, actual, "&lt;b&gt;")
+			assert.NotContains(t, actual, "&lt;code&gt;")
+			assert.NotContains(t, actual, "&amp;amp;")
+		})
+	}
+}

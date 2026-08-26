@@ -30,6 +30,7 @@ type Adapter struct {
 	eventBus   ports.EventBusPort
 	throttler  *DeliveryThrottler
 	mediaMgr   *MediaManager
+	hitlCoord  *HITLCoordinator
 	router     *Router
 	unsubList  []ports.UnsubscribeFunc
 	cancelPoll context.CancelFunc
@@ -60,12 +61,16 @@ func WithBot(bot *gotgbot.Bot) Option {
 // NewAdapter constructs a new Telegram channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Adapter {
 	a := &Adapter{
-		cfg:      cfg,
-		eventBus: bus,
-		pollDone: make(chan struct{}),
+		cfg:       cfg,
+		eventBus:  bus,
+		hitlCoord: NewHITLCoordinator(nil, cfg, nil),
+		pollDone:  make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(a)
+	}
+	if a.bot != nil && a.hitlCoord != nil {
+		a.hitlCoord.SetBot(a.bot)
 	}
 	return a
 }
@@ -73,6 +78,13 @@ func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Ada
 // Name returns the channel identifier.
 func (a *Adapter) Name() string {
 	return "telegram"
+}
+
+// HITLCoordinator returns the active HITL coordinator.
+func (a *Adapter) HITLCoordinator() *HITLCoordinator {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hitlCoord
 }
 
 // Start initializes Telegram bot, connects event listeners, and starts polling or webhook.
@@ -99,6 +111,11 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 
 	// 2. Initialize subsystems
 	a.mediaMgr = NewMediaManager(a.cfg, a.bot)
+	if a.hitlCoord == nil {
+		a.hitlCoord = NewHITLCoordinator(a.bot, a.cfg, nil)
+	} else {
+		a.hitlCoord.SetBot(a.bot)
+	}
 	throttleInterval := 1.5
 	streamingOn := true
 	if a.cfg != nil {
@@ -108,7 +125,7 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 		streamingOn = a.cfg.AGY.StreamingEnabled
 	}
 	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn)
-	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr)
+	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
 
 	// 3. Bind EventBus subscriptions
 	if a.eventBus != nil {

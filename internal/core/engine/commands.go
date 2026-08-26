@@ -77,6 +77,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/projects", "/project", "/p":
 		responseText = e.handleProjectsCommand(ctx, session, args)
 
+	case "/security", "/sec":
+		responseText, inlineKeyboard = e.handleSecurityCommand(msg.Sender, sessionKey, args)
+
+	case "/whitelist":
+		responseText = e.handleWhitelistCommand(msg.Sender, sessionKey, args)
+
 	case "/tasks", "/subagents":
 		responseText, inlineKeyboard = e.handleTasksCommand(ctx, session, args)
 
@@ -179,7 +185,14 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/task <id>`" + ` — Inspect task status, elapsed duration, and step progress.
 • ` + "`/task reply <id> <text>`" + ` — Send answer to a sub-agent waiting for clarification.
 • ` + "`/task cancel <id>`" + ` — Terminate a running sub-agent task.
-• ` + "`/task clean`" + ` — Purge finished/cancelled sub-agent task records.`
+• ` + "`/task clean`" + ` — Purge finished/cancelled sub-agent task records.
+
+**🛡️ Security & Guardrails:**
+• ` + "`/security`" + ` (or ` + "`/sec`" + `) — View Security Gateway Dashboard and switch presets.
+• ` + "`/security preset <unrestricted|developer|balanced|strict|read_only>`" + ` — Switch active security profile.
+• ` + "`/security grant <pattern>`" + ` — Grant temporary permission for 15 minutes.
+• ` + "`/security redact <strict|permissive|audit_only>`" + ` — Switch DLP secret redaction mode.
+• ` + "`/whitelist add \"<command>\"`" + ` — Add permanent custom whitelist rule.`
 }
 
 func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Session) string {
@@ -1447,4 +1460,142 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 		return sb.String(), keyboard
 	}
 }
+
+func (e *Engine) isSenderAdmin(sender domain.SenderUser) bool {
+	if e.cfg == nil {
+		return true
+	}
+	if len(e.cfg.Telegram.AdminUserIDs) == 0 && len(e.cfg.Security.AdminUserIDs) == 0 {
+		return true
+	}
+	id, err := strconv.ParseInt(sender.ID, 10, 64)
+	if err != nil {
+		return false
+	}
+	for _, admin := range e.cfg.Telegram.AdminUserIDs {
+		if admin == id {
+			return true
+		}
+	}
+	for _, admin := range e.cfg.Security.AdminUserIDs {
+		if admin == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey string, args []string) (string, domain.InlineKeyboard) {
+	if e.securityManager == nil {
+		return "⚠️ <b>Security Gateway is not active.</b>", nil
+	}
+
+	if len(args) > 0 {
+		if !e.isSenderAdmin(sender) {
+			return "⛔ <b>Unauthorized: Only administrators can modify security gateway settings.</b>", nil
+		}
+
+		subcmd := strings.ToLower(args[0])
+		switch subcmd {
+		case "preset":
+			if len(args) < 2 {
+				return "⚠️ Usage: <code>/security preset &lt;unrestricted|developer|balanced|strict|read_only&gt;</code>", nil
+			}
+			preset := domain.SecurityPreset(strings.ToLower(args[1]))
+			e.securityManager.SetPreset(preset)
+			return fmt.Sprintf("🛡️ <b>Security preset successfully switched to:</b> <code>%s</code>", preset), nil
+
+		case "grant":
+			if len(args) < 2 {
+				return "⚠️ Usage: <code>/security grant &lt;pattern|scope&gt;</code>", nil
+			}
+			pattern := args[1]
+			e.securityManager.GrantSessionPermission(sessionKey, pattern)
+			return fmt.Sprintf("🛡️ <b>Temporary permission granted for session:</b> <code>%s</code> (valid for 15 minutes)", pattern), nil
+
+		case "redact":
+			if len(args) < 2 {
+				return "⚠️ Usage: <code>/security redact &lt;strict|permissive|audit_only&gt;</code>", nil
+			}
+			mode := domain.RedactionMode(strings.ToLower(args[1]))
+			e.securityManager.SetRedactionMode(mode)
+			return fmt.Sprintf("🎭 <b>Secret Redaction mode switched to:</b> <code>%s</code>", mode), nil
+		}
+	}
+
+	// Default: Show Dashboard with Interactive Preset Switcher Buttons
+	summary := e.securityManager.GetDashboardSummary(sessionKey)
+
+	var sb strings.Builder
+	sb.WriteString("🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("📍 <b>Active Preset</b>     : <code>%s</code>\n", summary.Preset))
+	sb.WriteString(fmt.Sprintf("📂 <b>Workspace Jail</b>    : <code>%s</code>\n", summary.ActiveJail))
+	sb.WriteString(fmt.Sprintf("🎭 <b>Redaction Mode</b>    : <code>%s</code>\n", summary.RedactionMode))
+	sb.WriteString(fmt.Sprintf("⚙️ <b>Delegated Config</b>  : <code>%t</code>\n", summary.ConfigDelegated))
+	sb.WriteString(fmt.Sprintf("🛑 <b>Blocked Today</b>     : <code>%d</code> events\n", summary.BlockedToday))
+	sb.WriteString(fmt.Sprintf("✅ <b>Approved Today</b>    : <code>%d</code> events\n", summary.ApprovedToday))
+	sb.WriteString(fmt.Sprintf("⚡ <b>Total Evaluations</b> : <code>%d</code> checks\n", summary.TotalEvaluations))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("💡 <i>Use buttons below to switch profiles or toggle redaction.</i>")
+
+	keyboard := domain.InlineKeyboard{
+		{
+			{
+				Text:         "🔓 Unrestricted (Full)",
+				CallbackData: "sec:preset:unrestricted",
+			},
+			{
+				Text:         "🛠️ Developer",
+				CallbackData: "sec:preset:developer",
+			},
+		},
+		{
+			{
+				Text:         "🛡️ Balanced (Default)",
+				CallbackData: "sec:preset:balanced",
+			},
+			{
+				Text:         "🔒 Strict",
+				CallbackData: "sec:preset:strict",
+			},
+		},
+		{
+			{
+				Text:         "📖 Read Only",
+				CallbackData: "sec:preset:read_only",
+			},
+		},
+		{
+			{
+				Text:         "🎭 Redact: Strict",
+				CallbackData: "sec:redact:strict",
+			},
+			{
+				Text:         "🎭 Redact: Permissive",
+				CallbackData: "sec:redact:permissive",
+			},
+		},
+	}
+
+	return sb.String(), keyboard
+}
+
+func (e *Engine) handleWhitelistCommand(sender domain.SenderUser, sessionKey string, args []string) string {
+	if e.securityManager == nil {
+		return "⚠️ <b>Security Gateway is not active.</b>"
+	}
+
+	if len(args) >= 2 && strings.ToLower(args[0]) == "add" {
+		if !e.isSenderAdmin(sender) {
+			return "⛔ <b>Unauthorized: Only administrators can modify security whitelist rules.</b>"
+		}
+		entry := strings.Join(args[1:], " ")
+		e.securityManager.AddWhitelistEntry(entry)
+		return fmt.Sprintf("✅ <b>Added custom whitelist rule:</b> <code>%s</code>", entry)
+	}
+
+	return "⚠️ Usage: <code>/whitelist add &lt;command_or_path&gt;</code>\nExample: <code>/whitelist add \"npm run build\"</code>"
+}
+
 

@@ -11,8 +11,10 @@ import (
 )
 
 var (
-	winUserPathRegex  = regexp.MustCompile(`(?i)[a-zA-Z]:[/\\]Users[/\\][^/\\\s"'\)\]]+[/\\]?`)
-	unixUserPathRegex = regexp.MustCompile(`/(home|Users)/[^/\\\s"'\)\]]+[/\\]?`)
+	winUserPathRegex      = regexp.MustCompile(`(?i)[a-zA-Z]:[/\\]Users[/\\][^/\\\s"'\)\]]+[/\\]?`)
+	unixUserPathRegex     = regexp.MustCompile(`/(home|Users)/[^/\\\s"'\)\]]+[/\\]?`)
+	validTelegramTagRegex = regexp.MustCompile(`^(?i)</?(b|strong|i|em|code|s|strike|del|u|pre|blockquote|tg-spoiler|a|tg-emoji)(\s+[a-zA-Z0-9_-]+(=("[^"]*"|'[^']*'|[^\s>]+))?)*\s*/?>`)
+	validHTMLEntityRegex  = regexp.MustCompile(`^&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);`)
 )
 
 // SanitizePrivacyLeaks masks host user directory paths (e.g. C:\Users\username\ -> ~/)
@@ -468,6 +470,30 @@ func formatInlineMarkdown(text string) string {
 						continue
 					}
 				}
+			}
+		}
+
+		// 8. Pass-through for valid existing Telegram HTML tags (e.g. <b>, <code>, <i>, <blockquote>, <a href="...">)
+		if r == '<' {
+			rem := string(runes[i:])
+			loc := validTelegramTagRegex.FindStringIndex(rem)
+			if loc != nil && loc[0] == 0 {
+				tagStr := rem[:loc[1]]
+				sb.WriteString(tagStr)
+				i += len([]rune(tagStr))
+				continue
+			}
+		}
+
+		// 9. Pass-through for valid existing HTML entities (e.g. &amp;, &lt;, &gt;)
+		if r == '&' {
+			rem := string(runes[i:])
+			loc := validHTMLEntityRegex.FindStringIndex(rem)
+			if loc != nil && loc[0] == 0 {
+				entityStr := rem[:loc[1]]
+				sb.WriteString(entityStr)
+				i += len([]rune(entityStr))
+				continue
 			}
 		}
 

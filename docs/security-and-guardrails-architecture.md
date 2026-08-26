@@ -1,99 +1,135 @@
 # Universal AI Security Gateway & Guardrails Architecture
 
-This document provides the comprehensive technical specification for the **Universal AI Security Gateway & Guardrails Subsystem** in **agyent**. It details the multi-layer defense-in-depth model, non-blocking Human-In-The-Loop (HITL) state machine, streaming tool interception, filesystem jailing, sub-agent privilege separation, frictionless UX, and configuration schema.
+This document provides the comprehensive technical specification for the **Universal AI Security Gateway & Guardrails Subsystem** in **agyent**. It details the multi-layer defense-in-depth model, Antigravity Native Hook Bridge (`PreToolUse`), non-blocking Human-In-The-Loop (HITL) state machine, filesystem jailing, sub-agent governance, sliding-window DLP, indirect prompt injection filtering, frictionless UX, and configuration schema.
 
 ---
 
 ## 1. Executive Summary & Threat Modeling
 
-### 1.1. The Vulnerability of Unrestricted Permissions
-By default, autonomous agent harnesses run subprocesses with `--dangerously-skip-permissions`, granting the Large Language Model (LLM) unrestricted access to the host operating system. This presents critical vulnerabilities:
+### 1.1. The Vulnerability of Unrestricted Autonomous Agents
+By default, autonomous agent harnesses run subprocesses with `--dangerously-skip-permissions`, granting the Large Language Model (LLM) unrestricted access to the host operating system. This presents critical threat vectors:
 
 1. **Remote Code Execution (RCE) & Destructive Operations:** Hallucinated or injected prompts executing `rm -rf /`, `mkfs`, `powershell -enc`, `dd`, or `diskpart`.
 2. **Path Traversal & Sensitive Data Exfiltration:** Unauthorized reads or overrides of SSH keys (`~/.ssh/id_rsa`), cloud credentials (`~/.aws/credentials`), host secrets (`/etc/shadow`), or the gateway database (`~/.agyent/agyent.db`).
-3. **Indirect Prompt Injection:** Malicious payloads hidden inside fetched websites, scraped pull requests, or untrusted source repositories hijacking agent intent.
-4. **Sub-Agent Privilege Escalation & Fork Bombs:** Background sub-agents spawning unconstrained nested tasks or modifying files outside their assigned project workspace.
-5. **Network Egress & SSRF Exploits:** Tools querying local loopbacks or cloud metadata services (`http://169.254.169.254/latest/meta-data`) to steal IAM roles.
+3. **Indirect Prompt Injection:** Malicious payloads hidden inside fetched websites, scraped pull requests, or untrusted source repositories hijacking agent intent via tool outputs (`read_url_content`, `search_web`, `git clone`).
+4. **Sub-Agent Privilege Escalation & Fork Bombs:** Background sub-agents spawning unconstrained nested tasks via `define_subagent` or inheriting parent write capabilities via `invoke_subagent(TypeName: "self")`.
+5. **Network Egress & SSRF Exploits:** Tools querying local loopbacks or cloud metadata services (`http://169.254.169.254/latest/meta-data`) via HTTP tools or raw shell (`curl`, `python`, `powershell`).
+6. **HITL Callback Spoofing:** Non-admin group chat members approving sensitive actions by clicking Telegram inline buttons.
+7. **DLP Streaming Token Leaks:** High-entropy secret tokens split across throttled 1.5s streaming deltas escaping naive regex filters.
 
 ---
 
 ## 2. Universal Gateway Security Architecture
 
-Rather than relying on mutable in-workspace hook files (which an agent could tamper with), **agyent** acts as a **Central AI Security Proxy & Gateway Orchestrator** between inbound channels and isolated execution substrates.
+Rather than relying on naive stdout stream listening (which cannot stop tool execution before it happens), **agyent** implements a **Dual-Plane Security Architecture**:
+1. **Control Plane (Go Gateway Daemon):** Manages RBAC, Session Permission Cache, HITL Telegram coordination, Sliding DLP, and Outbound delivery.
+2. **Execution Gate Plane (Antigravity Native Hook Bridge):** Intercepts tool calls *synchronously before execution* via Antigravity's native `PreToolUse` Lifecycle Hook, communicating with the Gateway Daemon via high-speed IPC (Unix Domain Sockets / Windows Named Pipes).
 
 ```mermaid
 flowchart TB
-    subgraph Channels ["1. INBOUND CHANNELS"]
+    subgraph Channels ["1. MESSAGING SURFACE (Inbound RBAC)"]
         TG_Admin["Telegram (Admin ID)"]
-        TG_Group["Telegram Group / Topic"]
+        TG_Group["Telegram Group / Forum Topic"]
         Discord["Discord / Slack"]
-        Webhook["REST Webhook API"]
     end
 
-    subgraph GatewayCore ["2. AGYENT UNIVERSAL SECURITY GATEWAY (Go Core)"]
+    subgraph GatewayCore ["2. AGYENT GATEWAY DAEMON (Go Core Control Plane)"]
         InboundGate["[Checkpoint 1] Inbound Firewall & RBAC Gate"]
         SessionCtx["[Checkpoint 2] Session Permission Cache"]
+        IPCHost["High-Speed IPC Host (Unix Socket / Windows Named Pipe)"]
         
-        subgraph InterceptorEngine ["Central Policy & Interceptor Engine"]
-            PolicyEngine["Dynamic Policy Evaluator (Presets + Rules)"]
-            HITL["HITL Approval Coordinator (Telegram Inline UI)"]
-            PathJail["Virtual Filesystem Jail & Canonical Resolver"]
-            SSRFGuard["Network Egress & SSRF Filter"]
+        subgraph PolicyEngine ["Central Policy & Decision Engine"]
+            RuleMatcher["Path & Command Evaluator (Presets + ACL)"]
+            HITLCoord["HITL Coordinator (Telegram Inline Card)"]
+            SSRFResolver["DNS Rebinding & Egress IP Validator"]
         end
 
-        OutboundDLP["[Checkpoint 6] Outbound DLP & Secret Redactor"]
+        ToolOutputFilter["[Checkpoint 5] Tool Output Indirect Injection Sanitizer"]
+        SlidingDLP["[Checkpoint 6] Sliding-Window Outbound DLP"]
     end
 
-    subgraph ExecutionLayer ["3. ISOLATED EXECUTION SUBSTRATE"]
-        MainHarness["Main Agent Runner (Workspace Scope)"]
-        SubagentPool["Sub-Agent Worker Pool (Role Sandboxed)"]
-        MCPServers["MCP Plugin Servers (Scoped Permissions)"]
+    subgraph AGYSubstrate ["3. ISOLATED EXECUTION SUBSTRATE (Antigravity CLI)"]
+        AGY_CLI["AGY Process (--output-format stream-json)"]
+        WorkspaceHookConfig["Workspace Hook Config (<workspaceDir>/.agents/hooks.json)"]
+        HookBridge["agyent-hook Binary (PreToolUse Handler)"]
+        
+        subgraph ToolExecutionGate ["Checkpoint 3 & 4: Synchronous Pre-Execution Gate"]
+            PathJail["Virtual Filesystem Jail & Canonical Resolver"]
+            SubagentGate["Sub-agent Tool & Cascade Gate"]
+            ShellGate["Shell Execution Sandbox & Token Profiler"]
+        end
     end
 
-    Channels --> InboundGate --> SessionCtx --> InterceptorEngine
-    InterceptorEngine -->|Auto-Allowed| ExecutionLayer
-    InterceptorEngine -->|Sensitive Action| HITL -->|Approved via Chat| ExecutionLayer
-    ExecutionLayer --> OutboundDLP --> Channels
+    Channels --> InboundGate --> SessionCtx
+    SessionCtx -->|Stream User Turn| AGY_CLI
+    
+    AGY_CLI -->|Synchronous PreToolUse Event| WorkspaceHookConfig --> HookBridge
+    HookBridge <-->|IPC Query / Decision| IPCHost
+    IPCHost --> RuleMatcher
+    RuleMatcher -->|Sensitive| HITLCoord <-->|Inline Button Approval| TG_Admin
+    RuleMatcher -->|Auto-Allow / Approved| ToolExecutionGate
+    ToolExecutionGate --> AGY_CLI
+    
+    AGY_CLI -->|Tool Output Delta| ToolOutputFilter --> SlidingDLP --> Channels
 ```
 
 ---
 
 ## 3. The 6 Security Checkpoints
 
-### Checkpoint 1: Inbound Firewall & Role-Based Access Control (RBAC)
-- **Admin Users (`admin_user_ids`):** Full control over slash commands, configuration presets, and interactive approvals.
-- **Group / Topic Users:** Scoped to read-only assistance; shell execution and dangerous file mutations are automatically denied.
-- **Prompt Injection Filter:** Heuristic and semantic detection of jailbreak sequences (e.g., `ignore all previous instructions`, `<SYSTEM_RUNTIME_FOUNDATION>` overrides).
+### Checkpoint 1: Inbound Firewall & Strict RBAC
+- **Admin Verification (`admin_user_ids`):** Only verified Admin IDs can trigger sensitive actions, approve HITL cards, or run configuration slash commands (`/security`, `/whitelist`, `/config`).
+- **Group & Forum Topic Isolation:** Non-admin group users are restricted to contextual assistance. All shell execution and dangerous file mutations triggered in group contexts are rejected or routed exclusively to the Admin's private DM for HITL approval.
+- **Inbound Prompt Injection Filter:** Validates incoming text against prompt injection patterns (`ignore previous instructions`, `you are now in DAN mode`, `</SYSTEM_RUNTIME_FOUNDATION>`).
 
 ### Checkpoint 2: Virtual Filesystem Jail & Canonical Path Resolution
-- **Workspace Scoping:** All filesystem operations (`view_file`, `write_to_file`, `replace_file_content`, `list_dir`) are strictly bounded to the active project workspace or global agent directory.
-- **Anti-Traversal Engine:** Resolves all symlinks and relative path sequences (`..`) via `filepath.EvalSymlinks` and `filepath.Clean`.
-- **Absolute Blacklist Paths:** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `C:\Windows`, and `/etc`.
+- **Canonical Normalization:** Normalizes all targets using `filepath.EvalSymlinks` and `filepath.Clean`.
+- **Windows-Specific Hardening:**
+  - Evaluates NTFS Directory Junctions (`mklink /J`) and Hardlinks (`mklink /H`).
+  - Resolves 8.3 Short Names (`C:\PROGRA~1` $\to$ `C:\Program Files`) via Win32 `GetLongPathNameW`.
+  - Case-Insensitive Path Normalization (enforces lowercase comparison on Windows).
+  - Blocks Alternate Data Streams (ADS) (`file.txt:hidden.exe`) and Device/UNC paths (`\\?\`, `\\.\`, `\\127.0.0.1\c$`).
+- **Absolute Forbidden Blacklist:** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `<workspaceDir>/.agents/hooks.json` (prevents self-tampering), `C:\Windows`, and `/etc`.
 
-### Checkpoint 3: Streaming Tool Execution Interceptor
-- Intercepts tool calls directly during real-time `stream-json` execution.
-- Evaluates actions against **3 Policy Classes**:
-  - **Auto-Allow (Whitelist):** Safe build/test/query commands (e.g., `go test`, `npm test`, `git status`, `ls`, `grep`).
-  - **Hard Deny (Blacklist):** Destructive commands (e.g., `rm -rf /`, `mkfs`, `format`, `powershell -enc`).
-  - **Sensitive (Ask / HITL):** High-impact actions requiring human confirmation (e.g., `git push --force`, `rm -rf dist/`, `npm publish`).
+### Checkpoint 3: Synchronous Pre-Execution Tool Interceptor (Native Hook)
+- **Lifecycle Hook Integration:** Connects directly into Antigravity's `PreToolUse` hook via `agyent-hook` binary.
+- **Evaluates Tool Calls Synchronously:**
+  - **`run_command`:** Evaluates CommandLine against the Shell Execution Profile.
+  - **`write_to_file` / `replace_file_content` / `view_file`:** Evaluates TargetFile against Filesystem Jail.
+  - **`read_url_content` / `search_web`:** Evaluates URL against SSRF and DNS Rebinding rules.
+  - **`invoke_subagent` / `define_subagent`:** Evaluates Sub-agent roles and depth limits.
+- **Three Policy Decisions:**
+  - **`allow`:** Tool executes immediately.
+  - **`deny`:** Execution is halted; AGY receives `{ "decision": "deny", "reason": "..." }` and returns the denial to the model context.
+  - **`ask` (HITL):** Tool execution pauses; Gateway triggers Telegram interactive approval card.
 
-### Checkpoint 4: Sub-Agent Hierarchical Supervisor & Sandboxing
-- **Privilege Deprecation:** Sub-agents never inherit higher permissions than their parent session.
-- **Role Capability Matrix:**
-  - `researcher`: 100% Read-only tools (`view_file`, `grep_search`, `find_by_name`, `search_web`). No shell commands or file writes.
-  - `coder`: Scoped file writes within project workspace; whitelisted build/test commands only.
-  - `reviewer`: Read-only code inspection and `git diff`.
-- **Anti-Fork Bomb Quotas:** Maximum cascade depth of 1 (sub-agents cannot spawn nested sub-agents); maximum 3 concurrent workers.
-- **Process Sandbox:** Attached to Windows Kernel Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and Unix process groups to guarantee zero zombie process leaks.
+### Checkpoint 4: Sub-Agent Governance & Anti-Fork Bomb Quotas
+- **Sub-Agent Creation Interception (`define_subagent` & `invoke_subagent`):**
+  - **Role Downgrading:** Subagents can never inherit permissions greater than their parent session.
+  - **Tool Capability Filtering:**
+    - `researcher`: Read-only tools (`view_file`, `grep_search`, `find_by_name`, `search_web`). Forbids `run_command`, `write_to_file`, `replace_file_content`, and nested subagent dispatch.
+    - `coder`: Scoped file writes in workspace; whitelisted build/test commands only.
+    - `reviewer`: Read-only code inspection and `git diff`.
+- **Anti-Fork Bomb Quotas:** Maximum cascade depth of 1 (subagents cannot spawn nested subagents); maximum 3 concurrent workers tracked via `conversationId` session tree.
 
-### Checkpoint 5: Network Egress & SSRF Protection
-- Blocks HTTP/web extraction tools (`read_url_content`, `search_web`) from querying:
-  - Cloud Metadata Endpoints: `169.254.169.254` (AWS, GCP, Azure token leakage prevention).
-  - Private Loopback & RFC 1918 Subnets: `127.0.0.1`, `localhost`, `10.0.0.0/8`, `192.168.0.0/16`.
+### Checkpoint 5: Network Egress, SSRF & PostToolUse Ingestion Sanitizer
+- **Multi-Level Egress Validation:**
+  - **Cloud Metadata Endpoints:** Blocks `169.254.169.254` (AWS, GCP, Azure token protection).
+  - **Private Loopback & RFC 1918 Subnets:** Blocks `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`.
+  - **IP Encoding Normalization:** Detects and expands Decimal (`http://2130706433`), Hex (`http://0x7f000001`), Octal (`http://0177.0.0.1`), and IPv6-mapped IPv4 representations.
+  - **DNS Rebinding Prevention:** Performs active DNS lookup at evaluation time (`net.LookupIP`) and blocks connections if the resolved IP points to private or metadata subnets.
+- **PostToolUse Secret Redaction & Indirect Injection Sanitizer:**
+  - Connects to Antigravity's `PostToolUse` Lifecycle Hook and Gateway Stream Middleware.
+  - Inspects all raw tool outputs (from `view_file`, `run_command`, `read_url_content`, MCP tools) immediately after execution.
+  - **Instant Secret Redaction:** Automatically masks any accidentally exposed API keys (`sk-...`, `ghp_...`, `AKIA...`, private keys, passwords) to `[REDACTED_SECRET]` before outputs contaminate the transcript, long-term memory (`MEMORY.md`), or downstream turns.
+  - **Prompt Injection Defense:** Neutralizes system override payloads hidden in web scraping or third-party git repos.
 
-### Checkpoint 6: Outbound Data Loss Prevention (DLP) & Secret Redaction
-- Inspects all LLM outbound text and tool outputs before transmission to chat channels.
-- Redacts API keys (`sk-...`, `ghp_...`, `AKIA...`), bot tokens, and authorization headers to `[REDACTED]`.
+### Checkpoint 6: Sliding-Window Outbound DLP & Tool-Argument Auditing
+- **Sliding-Window Lookback Buffer:**
+  - Because streaming deltas are dispatched in 1.5s bursts, the Delivery Throttler maintains a **64-character trailing lookback buffer** across flush boundaries.
+  - Ensures high-entropy secrets (`sk-ant-...`, `ghp_...`, `AKIA...`, `Bearer ...`) that straddle consecutive chunk boundaries are matched and redacted to `[REDACTED]`.
+- **Out-of-Band Tool Exfiltration Inspection:**
+  - Audits outgoing arguments of web-facing tools (`search_web(query)`, `read_url_content(url)`) to prevent data exfiltration via query parameters.
 
 ---
 
@@ -101,43 +137,44 @@ flowchart TB
 
 | Architectural Challenge | Risk / Bottleneck | Gateway Engineering Solution |
 | :--- | :--- | :--- |
-| **Concurrency & Lock Deadlocks** | Holding session FIFO mutex while waiting for Telegram approval blocks all user commands. | **Non-Blocking Asynchronous State Machine:** Release lock upon entering `WAITING_HITL`; re-acquire lock when callback arrives. |
-| **Streaming Buffer Bloat** | `bufio.Scanner` with fixed 10MB limit crashes on massive git diffs / base64 lines (`bufio.ErrTooLong`). | **$O(1)$ `json.Decoder` Stream Iteration:** Stream NDJSON tokens directly from stdout pipe with zero line-length limits. |
+| **Tool Interception Latency** | Hook execution overhead slows down agent responsiveness. | **Sub-5ms IPC Protocol:** `agyent-hook` connects to Gateway Daemon via local IPC (Unix Domain Socket / Windows Named Pipe) with zero cold-start process overhead. |
+| **Session State Deadlocks** | Holding session FIFO mutex while waiting for Telegram HITL blocks administrative queries. | **Non-Blocking Turn Suspend:** Session enters `WAITING_HITL` state; user can issue `/status` or `/cancel`; new conversational turns are safely queued until current turn is resolved or aborted. |
 | **Prefix KV-Cache Preservation** | Dynamic security context injected at Levels 0–3 busts Gemini KV-cache hit rate (85–95%). | **Level 4 Injection Invariant:** Dynamic security notices (e.g., granted permissions) are appended strictly at Level 4. |
-| **Anti-Tampering Protection** | Agent editing or deleting local `hooks.json` files inside writable workspace. | **Read-Only Gateway Security Mount:** Security policies are stored outside workspace (`chmod 0400`) and enforced by the Gateway daemon. |
-| **Subprocess Zombie Leaks** | Subagent processes surviving unexpected Gateway crashes or timeouts. | **Kernel Job Object Watchdog:** Enforce OS Job Objects on Windows and `killProcessTree` with `recover()` on all worker goroutines. |
+| **Blast Radius & Host Isolation** | Global hook pollution breaking host IDE or external developer CLI sessions. | **Workspace-Scoped Hook Mounting:** Hook configuration is isolated strictly to `<workspaceDir>/.agents/hooks.json` and protected from write access via PathJail, leaving `~/.gemini/config/` pristine. |
+| **Subprocess Zombie Leaks** | Subagent processes surviving unexpected Gateway crashes or timeouts. | **Kernel Job Object Watchdog:** Enforce OS Job Objects on Windows (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and POSIX process groups (`syscall.SIGKILL` to negative PID). |
 
 ---
 
-## 5. Non-Blocking Human-In-The-Loop (HITL) State Machine
+## 5. Non-Blocking Native Hook HITL State Machine
 
 ```mermaid
 sequenceDiagram
-    participant User as 👤 User (Telegram)
-    participant Router as 📡 Telegram Router
+    autonumber
+    participant User as 👤 Admin User (Telegram)
     participant Engine as ⚙️ Gateway Engine
-    participant LockMgr as 🔒 Lock Manager
-    participant AGY as 🤖 AGY Subprocess
+    participant AGY as 🤖 AGY CLI Subprocess
+    participant Hook as 🛡️ agyent-hook (PreToolUse)
+    participant IPC as 🔌 IPC Server (Gateway)
 
-    User->>Router: Prompt: "Clean up build and run deploy"
-    Router->>Engine: CanonicalMessage
-    Engine->>LockMgr: Acquire Session Lock
-    Engine->>AGY: ExecuteStream (STDIN)
-    AGY-->>Engine: Tool Call: `rm -rf dist/` (Sensitive Action)
+    Engine->>AGY: Execute Turn (stream-json)
+    AGY->>AGY: LLM decides to run `rm -rf dist/`
     
-    Note over Engine,LockMgr: ⚡ Transition to WAITING_HITL
-    Engine->>LockMgr: Release Session Lock (Unblocks session)
+    Note over AGY,Hook: AGY natively pauses tool execution
+    AGY->>Hook: STDIN: {"toolCall": {"name": "run_command", "args": {"CommandLine": "rm -rf dist/"}}}
+    
+    Hook->>IPC: EvaluateToolCall(toolCall)
+    IPC->>Engine: Match Policy (Sensitive Action detected)
+    
+    Note over Engine: Session enters WAITING_HITL (Turn Paused)
     Engine-->>User: Telegram Inline Card: [✅ Allow Once] [🛡️ Allow for Session] [❌ Deny]
     
-    Note over User,Engine: User can query /status or send messages freely while waiting.
+    User->>Engine: Admin clicks [✅ Allow Once] (Verified Admin ID)
+    Engine->>IPC: ResolveDecision(Approved)
+    IPC-->>Hook: Return Decision: {"decision": "allow"}
+    Hook-->>AGY: STDOUT: {"decision": "allow"}
     
-    User->>Router: Clicks [✅ Allow Once]
-    Router->>Engine: CallbackQuery (ProvideHITLInput)
-    Engine->>LockMgr: Acquire Session Lock
-    Engine->>AGY: Write Approval into STDIN Pipe
-    Engine->>Engine: Transition to EXECUTING
-    AGY-->>Engine: Tool Result & Next Steps
-    Engine->>LockMgr: Release Session Lock
+    Note over AGY: Tool executes safely
+    AGY-->>Engine: Tool Result & Next Deltas
     Engine-->>User: Deliver Final Response
 ```
 
@@ -145,14 +182,15 @@ sequenceDiagram
 
 ## 6. UX & Operations Design
 
-### 6.1. Interactive Telegram HITL Card
+### 6.1. Interactive Telegram HITL Card with RBAC Verification
 When a sensitive tool execution is intercepted, the Gateway sends a formatted card:
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │ 🛡️ [Agyent Security Gate] Action Approval Required    │
 ├────────────────────────────────────────────────────────┤
-│ 💻 Command  : `rm -rf ./dist && npm run build`         │
+│ 💻 Tool     : `run_command`                            │
+│ 📜 Command  : `rm -rf ./dist && npm run build`         │
 │ 📂 Directory: `C:\projects\ecommerce-api`              │
 │ 🤖 Agent    : `coder` • Task `task-8f12`               │
 │ ⚠️ Risk Eval : Medium (Directory removal & build)      │
@@ -162,21 +200,23 @@ When a sensitive tool execution is intercepted, the Gateway sends a formatted ca
 └────────────────────────────────────────────────────────┘
 ```
 
-- **[ ✅ Allow Once ]**: Action executes immediately; subprocess resumes.
+- **Strict User Verification:** When an inline button is clicked, the Gateway verifies `callback.From.ID == admin_user_ids`. Unauthorized clicks receive an immediate alert: `"⛔ You are not authorized to approve this action."`
+- **[ ✅ Allow Once ]**: Hook returns `{ "decision": "allow" }`; tool executes once.
 - **[ 🛡️ Allow for Session ]**: Pattern added to **Session Permission Cache**; subsequent identical calls run without prompts.
-- **[ ❌ Deny Action ]**: Returns `PermissionDenied` error to LLM context, allowing it to adapt safely.
-- **[ 🛑 Force Kill Agent ]**: Terminates the subprocess tree and unlocks the session.
-- **Auto-Deny Timeout (60s):** If no button is clicked within 60s, the action is automatically rejected to avoid blocking system resources.
+- **[ ❌ Deny Action ]**: Hook returns `{ "decision": "deny", "reason": "Action denied by administrator" }`. AGY feeds denial back to LLM context to adapt.
+- **[ 🛑 Force Kill Agent ]**: Gateway immediately terminates the subprocess tree and unlocks the session.
+- **Auto-Deny Timeout (60s):** If no button is clicked within 60s, the action is automatically rejected.
 
 ---
-
-### 6.2. The 4 Zero-Config Security Presets
 
 ```
 +----------------------------------------------------------------------------------------------------+
 |                                      SECURITY PRESETS MATRIX                                       |
 +-------------------+---------------------------------------------------------+----------------------+
 | Preset            | Operational Behavior                                    | Target Environment   |
++-------------------+---------------------------------------------------------+----------------------+
+| 🔓 unrestricted   | Full Autonomy. Unrestricted shell execution, broad path  | Trusted Local VPS,   |
+|                   | access, zero HITL prompts, audit-only DLP.              | Autonomous Agents    |
 +-------------------+---------------------------------------------------------+----------------------+
 | 🛠️ developer       | Relaxed. Auto-allows standard dev tools; blocks OS     | Local Workstation    |
 |                   | destruction; broad path access.                         |                      |
@@ -194,49 +234,42 @@ When a sensitive tool execution is intercepted, the Gateway sends a formatted ca
 
 ---
 
-### 6.3. Security Slash Commands Reference
+## 6.3. Security Slash Commands Reference
 
-| Slash Command | Description | Example Usage |
-| :--- | :--- | :--- |
-| `/security` (or `/sec`) | View current security dashboard, preset, active jail, and audit counts. | `/security` |
-| `/security preset <mode>` | Switch active security preset dynamically. | `/security preset balanced` |
-| `/whitelist add <cmd\|path>` | Add a temporary or persistent whitelist entry directly from chat. | `/whitelist add "npm run build"` |
-| `/audit [limit]` | Inspect the most recent intercepted and blocked security events. | `/audit 10` |
+| Slash Command | Description | Permission | Example Usage |
+| :--- | :--- | :--- | :--- |
+| `/security` (or `/sec`) | View current security dashboard, preset, active jail, and audit counts. | Admin Only | `/security` |
+| `/security preset <mode>` | Switch active security preset dynamically. | Admin Only | `/security preset balanced` |
+| `/security grant <scope> [ttl]` | Temporarily grant Agent permission to edit configs or run setup tools (e.g. 15m). | Admin Only | `/security grant config 15m` |
+| `/security redact <mode>` | Switch redaction mode (`strict`, `permissive`, `audit_only`). | Admin Only | `/security redact permissive` |
+| `/whitelist add <cmd\|path>` | Add a temporary or persistent whitelist entry directly from chat. | Admin Only | `/whitelist add "npm run build"` |
+| `/audit [limit]` | Inspect the most recent intercepted and blocked security events. | Admin Only | `/audit 10` |
 
 ---
 
 ## 7. Configuration Schema Reference (`config.yaml`)
 
-### 7.1. Minimal Zero-Config (Recommended for 90% of Users)
 ```yaml
 # ~/.agyent/config.yaml
 security:
-  preset: "balanced"                 # "developer" | "balanced" | "strict" | "read_only"
-  approval_timeout_seconds: 60       # Timeout for Telegram inline button responses
-
-  # Additional allowed directories outside the default agent workspace
-  allowed_paths:
-    - "~/Desktop/projects"
-    - "D:/SharedRepositories"
-
-  # Custom allowed command prefixes
-  allowed_commands:
-    - "docker compose up"
-    - "mvn test"
-```
-
----
-
-### 7.2. Full Advanced Specification
-```yaml
-# ~/.agyent/config.yaml (Advanced)
-security:
   enabled: true
-  preset: "balanced"
-  mode: "interactive"                # "interactive" (Prompt Telegram) | "strict" (Block unknown)
+  preset: "balanced"                 # "developer" | "balanced" | "strict" | "read_only"
+  mode: "interactive"                # "interactive" (Prompt Telegram) | "strict" (Auto-block unknown)
   approval_timeout_seconds: 60
+  admin_user_ids: [123456789]
 
-  # 1. Command Execution Guardrails
+  # 1. Agent-Assisted Configuration Management (Delegated Infra/Setup)
+  agent_config_management:
+    enabled: true                    # Allow agent to propose config edits with mandatory HITL approval
+    require_approval: true           # Always show Telegram diff card before applying config modifications
+    manageable_files:
+      - ".env"
+      - ".env.*"
+      - "~/.agyent/config.yaml"      # Allows agent to assist with gateway configuration
+      - "docker-compose.yml"
+      - "Makefile"
+
+  # 2. Shell Command Execution Guardrails
   commands:
     enabled: true
     custom_blacklist:
@@ -244,8 +277,9 @@ security:
       - '(?i)drop\s+database'
     custom_whitelist:
       - "npm run test:e2e"
+      - "go test ./..."
 
-  # 2. Filesystem Boundaries
+  # 3. Filesystem Boundaries & Anti-Traversal
   filesystem:
     enforce_workspace_jail: true
     allowed_paths:
@@ -255,29 +289,42 @@ security:
       - "~/.aws"
       - "~/.gnupg"
       - "~/.kube"
-      - "~/.agyent/config.yaml"      # Protect gateway bot tokens and database
-      - "~/.agyent/agyent.db*"
+      - "~/.gemini/config/hooks.json" # Immutable: prevents agent tampering with hooks
 
-  # 3. Sub-Agent Worker Isolation
+  # 4. Sub-Agent Governance
   subagents:
-    default_sandbox: true            # Pass --sandbox flag to subagents
     max_concurrent_workers: 3
     max_cascade_depth: 1             # Disallow subagents from spawning subagents
     roles:
       researcher:
         allowed_tools: ["view_file", "grep_search", "find_by_name", "search_web"]
-        disallowed_tools: ["run_command", "write_to_file", "replace_file_content", "dispatch_subagent"]
+        disallowed_tools: ["run_command", "write_to_file", "replace_file_content", "invoke_subagent", "define_subagent"]
       coder:
         allowed_tools: ["*"]
-        disallowed_tools: ["dispatch_subagent"]
+        disallowed_tools: ["define_subagent"]
       reviewer:
         allowed_tools: ["view_file", "grep_search", "find_by_name"]
-        disallowed_tools: ["write_to_file", "replace_file_content", "dispatch_subagent"]
+        disallowed_tools: ["write_to_file", "replace_file_content", "invoke_subagent", "define_subagent"]
 
-  # 4. Network & SSRF Guardrails
+  # 5. Network & SSRF Guardrails
   network:
     block_cloud_metadata: true       # Block 169.254.169.254
-    block_private_networks: true     # Block 127.0.0.1, 192.168.0.0/16
+    block_private_networks: true     # Block 127.0.0.1, 10.0.0.0/8, 192.168.0.0/16
+    prevent_dns_rebinding: true
+
+  # 6. Outbound DLP & PostToolUse Redaction
+  dlp:
+    enabled: true
+    redaction_mode: "strict"         # "strict" (Mask all secrets) | "permissive" (Allow local .env vars) | "audit_only"
+    sliding_window_bytes: 64
+    sanitize_tool_outputs: true
+    whitelisted_env_keys:
+      - "PORT"
+      - "HOST"
+      - "NODE_ENV"
+      - "APP_NAME"
+      - "DATABASE_URL"
+      - "API_BASE_URL"
 ```
 
 ---
@@ -294,15 +341,21 @@ import (
 
 // SecurityManagerPort coordinates multi-layer tool interception, path jailing, and policy decisions.
 type SecurityManagerPort interface {
+    // EvaluateToolCall evaluates any tool call synchronously intercepted by PreToolUse hook.
+    EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error)
+    
     // EvaluateCommand checks a shell command against active blacklist/whitelist/HITL rules.
     EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error)
     
     // EvaluatePath verifies if target file access is permitted within the active workspace jail.
     EvaluatePath(ctx context.Context, sessionKey string, targetPath string, isWrite bool) (domain.SecurityDecision, error)
     
-    // EvaluateURL verifies that destination URL does not target private IPs or cloud metadata.
+    // EvaluateURL verifies that destination URL does not target private IPs or cloud metadata (with DNS Rebinding protection).
     EvaluateURL(ctx context.Context, urlStr string) (domain.SecurityDecision, error)
     
+    // SanitizeToolOutput inspects external tool outputs (web, mcp) for indirect prompt injections.
+    SanitizeToolOutput(ctx context.Context, output string) (string, error)
+
     // GrantSessionPermission adds a temporary permission grant to the session cache.
     GrantSessionPermission(sessionKey string, pattern string)
     
@@ -310,13 +363,20 @@ type SecurityManagerPort interface {
     GetDashboardSummary(sessionKey string) domain.SecurityDashboard
 }
 
+// HookIPCPort defines the IPC server interface communicating with agyent-hook binary.
+type HookIPCPort interface {
+    Start(ctx context.Context) error
+    Stop() error
+    HandleHookRequest(req domain.HookRequest) (domain.HookResponse, error)
+}
+
 // HITLApprovalPort coordinates interactive approval requests over communication channels.
 type HITLApprovalPort interface {
     // RequestApproval sends an interactive card and suspends execution until user action or timeout.
     RequestApproval(ctx context.Context, req domain.ApprovalRequest) (bool, error)
     
-    // HandleCallback processes inline keyboard clicks from Telegram/Discord.
-    HandleCallback(ctx context.Context, callbackID string, action string) error
+    // HandleCallback processes inline keyboard clicks from Telegram/Discord with strict RBAC verification.
+    HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error
 }
 
 // TurnOrchestratorPort manages non-blocking turn state machines to prevent session deadlocks.
