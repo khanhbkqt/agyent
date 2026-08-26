@@ -26,29 +26,35 @@ test-coverage:
 	go tool cover -func=coverage.out
 
 cross-compile: clean
-	@echo "==> Cross-compiling zero-CGO static binaries for 5 target platforms..."
-	mkdir -p dist/agyent-linux-amd64 dist/agyent-linux-arm64 dist/agyent-darwin-amd64 dist/agyent-darwin-arm64 dist/agyent-windows-amd64
+	@echo "==> Cross-compiling zero-CGO static binaries for 6 target platforms..."
+	mkdir -p dist/agyent-linux-amd64 dist/agyent-linux-arm64 dist/agyent-darwin-amd64 dist/agyent-darwin-arm64 dist/agyent-windows-amd64 dist/agyent-windows-arm64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-linux-amd64/$(BINARY_NAME) ./cmd/agyent
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-linux-arm64/$(BINARY_NAME) ./cmd/agyent
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-darwin-amd64/$(BINARY_NAME) ./cmd/agyent
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-darwin-arm64/$(BINARY_NAME) ./cmd/agyent
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-windows-amd64/$(BINARY_NAME).exe ./cmd/agyent
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o dist/agyent-windows-arm64/$(BINARY_NAME).exe ./cmd/agyent
 	@echo "==> Cross-compilation completed successfully!"
 
 release: cross-compile
-	@echo "==> Packaging release archives into dist/..."
-	cp README.md scripts/deploy/agyent.service dist/agyent-linux-amd64/
-	cp README.md scripts/deploy/agyent.service dist/agyent-linux-arm64/
-	cp README.md dist/agyent-darwin-amd64/
-	cp README.md dist/agyent-darwin-arm64/
-	cp README.md dist/agyent-windows-amd64/
-	tar -czf dist/agyent-v$(VERSION)-linux-amd64.tar.gz -C dist/agyent-linux-amd64 .
-	tar -czf dist/agyent-v$(VERSION)-linux-arm64.tar.gz -C dist/agyent-linux-arm64 .
-	tar -czf dist/agyent-v$(VERSION)-darwin-amd64.tar.gz -C dist/agyent-darwin-amd64 .
-	tar -czf dist/agyent-v$(VERSION)-darwin-arm64.tar.gz -C dist/agyent-darwin-arm64 .
-	zip -j dist/agyent-v$(VERSION)-windows-amd64.zip dist/agyent-windows-amd64/*
-	@echo "==> Release packaging complete in dist/ directory:"
-	ls -la dist/*.tar.gz dist/*.zip 2>/dev/null || true
+	@echo "==> Packaging release archives into dist/archives/..."
+	mkdir -p dist/archives
+	cp README.md LICENSE scripts/deploy/agyent.service dist/agyent-linux-amd64/
+	cp README.md LICENSE scripts/deploy/agyent.service dist/agyent-linux-arm64/
+	cp README.md LICENSE dist/agyent-darwin-amd64/
+	cp README.md LICENSE dist/agyent-darwin-arm64/
+	cp README.md LICENSE dist/agyent-windows-amd64/
+	cp README.md LICENSE dist/agyent-windows-arm64/
+	tar -czf dist/archives/agyent-v$(VERSION)-linux-amd64.tar.gz -C dist/agyent-linux-amd64 .
+	tar -czf dist/archives/agyent-v$(VERSION)-linux-arm64.tar.gz -C dist/agyent-linux-arm64 .
+	tar -czf dist/archives/agyent-v$(VERSION)-darwin-amd64.tar.gz -C dist/agyent-darwin-amd64 .
+	tar -czf dist/archives/agyent-v$(VERSION)-darwin-arm64.tar.gz -C dist/agyent-darwin-arm64 .
+	zip -j dist/archives/agyent-v$(VERSION)-windows-amd64.zip dist/agyent-windows-amd64/*
+	zip -j dist/archives/agyent-v$(VERSION)-windows-arm64.zip dist/agyent-windows-arm64/*
+	@echo "==> Generating SHA256 Checksums..."
+	cd dist/archives && sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt 2>/dev/null || true
+	@echo "==> Release packaging complete in dist/archives/ directory:"
+	ls -la dist/archives/ 2>/dev/null || true
 
 clean:
 	@echo "==> Cleaning build artifacts..."

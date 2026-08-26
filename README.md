@@ -119,12 +119,29 @@ agyent/
 
 ### 2. Installation
 
+#### Option A: One-Line Installer (Recommended)
+
+**Linux & macOS:**
 ```bash
-# Clone the repository
+curl -fsSL https://raw.githubusercontent.com/khanhbkqt/agyent/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/khanhbkqt/agyent/main/install.ps1 | iex
+```
+
+#### Option B: Download Pre-compiled Binary
+Download the latest static binary for your OS and architecture directly from [GitHub Releases](https://github.com/khanhbkqt/agyent/releases/latest).
+
+#### Option C: Install via Go or Build from Source
+```bash
+# Install directly via Go
+go install github.com/khanhbkqt/agyent/cmd/agyent@latest
+
+# Or clone and build manually
 git clone https://github.com/khanhbkqt/agyent.git
 cd agyent
-
-# Build the executable
 go build -o bin/agyent ./cmd/agyent
 ```
 
