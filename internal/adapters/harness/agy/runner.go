@@ -338,3 +338,34 @@ func (h *Harness) HealthCheck(ctx context.Context) error {
 
 	return nil
 }
+
+// ListAvailableModels queries available models from the AGY CLI via 'agy models'
+// and registers them in the dynamic model registry.
+func (h *Harness) ListAvailableModels(ctx context.Context) ([]domain.ModelCapability, error) {
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(listCtx, h.binaryPath, "models")
+	cmd.Stdin = bytes.NewReader(nil) // Ensure stdin does not hang in interactive mode
+	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	configureCmd(cmd)
+	cmd.Cancel = func() error { return killProcessTree(cmd) }
+	cmd.WaitDelay = 2 * time.Second
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to query live models from agy CLI, using cached/fallback catalogue",
+			slog.String("error", err.Error()),
+		)
+		return domain.ListAvailableModels(), nil
+	}
+
+	parsed := domain.ParseModelsOutput(string(output))
+	if len(parsed) > 0 {
+		domain.SetDynamicModelCapabilities(parsed)
+		return parsed, nil
+	}
+
+	return domain.ListAvailableModels(), nil
+}
+

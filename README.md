@@ -208,6 +208,7 @@ Detailed architecture specifications and engineering decisions are available in 
 - ⚙️ [**AGY CLI Process Harness**](docs/agy-cli-harness.md): Subprocess execution, snapshot diff detection, and job objects.
 - 📡 [**AGY Streaming Protocol**](docs/agy-streaming-protocol.md): Real-time delta streaming and progressive token editing.
 - 🧠 [**Context Management Architecture**](docs/context-management-architecture.md): 5-tier context resolution and progressive skills index.
+- ⚡ [**Model & Reasoning Effort Selection**](docs/model-and-effort-selection-architecture.md): 5-tier resolution hierarchy, dynamic discovery from `agy models`, and subset effort clamping.
 - 🧬 [**Agent Self-Learning & Evolution**](docs/agent-self-learning-and-evolution-architecture.md): Autonomous reflection, 4D memory synthesis, and conflict resolution.
 - 🗺️ [**Master Roadmap & Milestone Plans**](docs/plans/master_roadmap.md): Milestone 1 through Milestone 10 architecture execution records.
 

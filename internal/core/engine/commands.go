@@ -55,6 +55,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/stream":
 		responseText = e.handleStreamCommand(args)
 
+	case "/model", "/m", "/models":
+		responseText, inlineKeyboard = e.handleModelCommand(ctx, session, args)
+
+	case "/effort", "/eff":
+		responseText, inlineKeyboard = e.handleEffortCommand(ctx, session, args)
+
 	case "/agents", "/agent", "/a":
 		responseText = e.handleAgentsCommand(ctx, session, args)
 
@@ -129,6 +135,8 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/status`" + ` — View system uptime, active agent, scope, streaming mode, and resource stats.
 • ` + "`/tokens`" + ` (or ` + "`/metrics`" + `) — Inspect detailed token usage, KV-cache read tokens, and effective cost savings.
 • ` + "`/context`" + ` — Inspect active context directives, token budget, and active MCP servers.
+• ` + "`/model [name]`" + ` (or ` + "`/m`" + `) — Inspect or switch active AI model (` + "`pro`" + `, ` + "`flash`" + `, ` + "`flash-lite`" + `, ` + "`reset`" + `).
+• ` + "`/effort [level]`" + ` (or ` + "`/eff`" + `) — Inspect or switch reasoning effort (` + "`low`" + `, ` + "`medium`" + `, ` + "`high`" + `, ` + "`none`" + `, ` + "`reset`" + `).
 • ` + "`/skills`" + ` — List available Progressive Disclosure skills.
 • ` + "`/plugins`" + ` — Manage capability plugins (` + "`/plugins`" + `, ` + "`/plugin enable <name>`" + `, ` + "`/plugin disable <name>`" + `).
 • ` + "`/stream [on|off]`" + ` — Query or toggle Real-Time Streaming mode (` + "`stream-json`" + ` vs ` + "`batch`" + `).
@@ -191,9 +199,23 @@ func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Sessio
 		convID = "(none / new)"
 	}
 
+	var agentObj *domain.Agent
+	if session.ActiveAgent != "" {
+		agentObj, _ = e.storage.GetAgent(ctx, session.ActiveAgent)
+	}
+	resolvedModel, resolvedEffort, modelSource := e.ResolveExecutionParams("", "", session, agentObj)
+	if resolvedModel == "" {
+		resolvedModel = "default (agy CLI)"
+	}
+	if resolvedEffort == "" {
+		resolvedEffort = "none"
+	}
+
 	return fmt.Sprintf(`🚀 **agyent Gateway Status**
 • **Uptime:** %s
 • **Active Agent:** %s
+• **Active Model:** %s (%s)
+• **Reasoning Effort:** %s
 • **Context Scope:** %s
 • **Working Directory:** %s
 • **Conversation ID:** %s
@@ -203,6 +225,9 @@ func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Sessio
 • **AGY Binary:** %s (timeout: %ds)`,
 		uptime,
 		session.ActiveAgent,
+		resolvedModel,
+		modelSource,
+		resolvedEffort,
 		scope,
 		cwd,
 		convID,
@@ -1074,6 +1099,173 @@ func (e *Engine) handleCleanConversationsCommand(ctx context.Context) string {
 		return fmt.Sprintf("⚠️ Garbage collection error: %v", err)
 	}
 	return fmt.Sprintf("🧹 **Garbage collection complete!** Purged %d old archived sessions (> 30 days) and reclaimed disk space.", purged)
+}
+
+func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	var agentObj *domain.Agent
+	if session.ActiveAgent != "" {
+		agentObj, _ = e.storage.GetAgent(ctx, session.ActiveAgent)
+	}
+
+	if len(args) == 0 {
+		resolvedModel, resolvedEffort, source := e.ResolveExecutionParams("", "", session, agentObj)
+		if resolvedModel == "" {
+			resolvedModel = "default (agy CLI)"
+		}
+
+		var sb strings.Builder
+		sb.WriteString("⚡ <b>AI Model Selection</b>\n")
+		sb.WriteString(fmt.Sprintf("• <b>Active Model:</b> <code>%s</code> (%s)\n", resolvedModel, source))
+		if resolvedEffort != "" {
+			sb.WriteString(fmt.Sprintf("• <b>Reasoning Effort:</b> <code>%s</code>\n", resolvedEffort))
+		}
+		sb.WriteString("\n<b>Available Model Tiers:</b>\n")
+		for _, cap := range domain.DefaultModelCapabilities {
+			effDesc := "No thinking"
+			if len(cap.SupportedEfforts) > 0 {
+				effDesc = strings.Join(cap.SupportedEfforts, ", ")
+			}
+			sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s</code>) — Effort: [%s]\n", cap.DisplayName, cap.ID, effDesc))
+		}
+		sb.WriteString("\n<i>💡 Click a button below or type <code>/model &lt;name&gt;</code> to switch model.</i>")
+
+		inlineKb := domain.InlineKeyboard{
+			{
+				{Text: "⚡ Gemini 3.7 Flash", CallbackData: "m:set:gemini-3.7-flash"},
+				{Text: "🚀 Gemini 3.1 Pro", CallbackData: "m:set:gemini-3.1-pro"},
+			},
+			{
+				{Text: " Claude Sonnet 4.6", CallbackData: "m:set:claude-sonnet-4-6"},
+				{Text: "🧠 Claude Opus 4.6", CallbackData: "m:set:claude-opus-4-6-thinking"},
+			},
+			{
+				{Text: "🔄 Reset to Default", CallbackData: "m:reset"},
+			},
+		}
+
+		return sb.String(), inlineKb
+	}
+
+	target := strings.TrimSpace(args[0])
+	if strings.EqualFold(target, "reset") || strings.EqualFold(target, "default") {
+		session.ActiveModel = ""
+		if err := e.storage.SaveSession(ctx, session); err != nil {
+			return fmt.Sprintf("⚠️ Failed to reset model: %v", err), nil
+		}
+		resolvedModel, _, source := e.ResolveExecutionParams("", "", session, agentObj)
+		return fmt.Sprintf("🔄 <b>Model override reset.</b>\nNow using <code>%s</code> (%s).", resolvedModel, source), nil
+	}
+
+	var customAliases map[string]string
+	if e.cfg != nil {
+		customAliases = e.cfg.AGY.ModelAliases
+	}
+	canonicalModel, _, isCustom := domain.NormalizeModelAndEffort(target, "", customAliases)
+	if canonicalModel == "" {
+		canonicalModel = target
+	}
+
+	session.ActiveModel = canonicalModel
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to update session model: %v", err), nil
+	}
+
+	customNote := ""
+	if isCustom {
+		customNote = "\n<i>(Custom model pass-through to agy CLI)</i>"
+	}
+
+	return fmt.Sprintf("⚡ <b>Active model switched to:</b> <code>%s</code> for this session.%s", canonicalModel, customNote), nil
+}
+
+func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	var agentObj *domain.Agent
+	if session.ActiveAgent != "" {
+		agentObj, _ = e.storage.GetAgent(ctx, session.ActiveAgent)
+	}
+
+	if len(args) == 0 {
+		resolvedModel, resolvedEffort, _ := e.ResolveExecutionParams("", "", session, agentObj)
+		if resolvedEffort == "" {
+			resolvedEffort = "none"
+		}
+
+		var sb strings.Builder
+		sb.WriteString("🧠 <b>Reasoning Effort Selection</b>\n")
+		sb.WriteString(fmt.Sprintf("• <b>Current Effort:</b> <code>%s</code>\n", resolvedEffort))
+		if resolvedModel != "" {
+			sb.WriteString(fmt.Sprintf("• <b>Active Model:</b> <code>%s</code>\n", resolvedModel))
+		}
+		sb.WriteString("\n<b>Effort Levels:</b>\n")
+		sb.WriteString("• <b>low</b> 🟢 — Quick thinking budget, low latency\n")
+		sb.WriteString("• <b>medium</b> 🟡 — Balanced reasoning budget\n")
+		sb.WriteString("• <b>high</b> 🔴 — Maximum thinking depth & verification\n")
+		sb.WriteString("• <b>none</b> ⚪ — Disable thinking tokens (direct output)\n")
+		sb.WriteString("\n<i>💡 Click a button below or type <code>/effort &lt;level&gt;</code> to switch.</i>")
+
+		inlineKb := domain.InlineKeyboard{
+			{
+				{Text: "🟢 Low", CallbackData: "eff:set:low"},
+				{Text: "🟡 Medium", CallbackData: "eff:set:medium"},
+			},
+			{
+				{Text: "🔴 High", CallbackData: "eff:set:high"},
+				{Text: "⚪ None", CallbackData: "eff:set:none"},
+			},
+			{
+				{Text: "🔄 Reset to Default", CallbackData: "eff:reset"},
+			},
+		}
+
+		return sb.String(), inlineKb
+	}
+
+	target := strings.ToLower(strings.TrimSpace(args[0]))
+	if target == "reset" || target == "default" {
+		session.ActiveEffort = ""
+		if err := e.storage.SaveSession(ctx, session); err != nil {
+			return fmt.Sprintf("⚠️ Failed to reset effort: %v", err), nil
+		}
+		_, resolvedEffort, source := e.ResolveExecutionParams("", "", session, agentObj)
+		return fmt.Sprintf("🔄 <b>Reasoning effort reset.</b>\nNow using <code>%s</code> (%s).", resolvedEffort, source), nil
+	}
+
+	if target != "low" && target != "medium" && target != "high" && target != "none" && target != "off" {
+		return "⚠️ Invalid effort level. Supported values: `low`, `medium`, `high`, `none` (or `reset`).", nil
+	}
+
+	session.ActiveEffort = target
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to update session effort: %v", err), nil
+	}
+
+	// Validate against active model capabilities
+	var customAliases map[string]string
+	if e.cfg != nil {
+		customAliases = e.cfg.AGY.ModelAliases
+	}
+	resolvedModel, _, _ := e.ResolveExecutionParams("", target, session, agentObj)
+	cap, _, exists := domain.LookupModelCapability(resolvedModel, customAliases)
+	var warningNote string
+	if exists {
+		if len(cap.SupportedEfforts) == 0 {
+			warningNote = fmt.Sprintf("\n⚠️ <i>Note: Model <code>%s</code> does not support reasoning effort. The <code>--effort</code> flag will be automatically omitted during execution.</i>", resolvedModel)
+		} else {
+			supported := false
+			for _, se := range cap.SupportedEfforts {
+				if se == target {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				warningNote = fmt.Sprintf("\n⚠️ <i>Note: Model <code>%s</code> only supports [%s]. Requested effort <code>%s</code> will be clamped to <code>%s</code> during execution.</i>",
+					resolvedModel, strings.Join(cap.SupportedEfforts, ", "), target, cap.DefaultEffort)
+			}
+		}
+	}
+
+	return fmt.Sprintf("🧠 <b>Reasoning effort set to:</b> <code>%s</code> for this session.%s", target, warningNote), nil
 }
 
 func formatTimeAgo(t time.Time) string {

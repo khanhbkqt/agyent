@@ -180,6 +180,16 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 	// 3. Map compact callback data into synthesized slash command
 	var synthCmd string
 	switch {
+	case strings.HasPrefix(data, "m:set:"):
+		modelName := strings.TrimPrefix(data, "m:set:")
+		synthCmd = fmt.Sprintf("/model %s", modelName)
+	case data == "m:reset":
+		synthCmd = "/model reset"
+	case strings.HasPrefix(data, "eff:set:"):
+		effortLvl := strings.TrimPrefix(data, "eff:set:")
+		synthCmd = fmt.Sprintf("/effort %s", effortLvl)
+	case data == "eff:reset":
+		synthCmd = "/effort reset"
 	case strings.HasPrefix(data, "c:sw:"):
 		convID := strings.TrimPrefix(data, "c:sw:")
 		synthCmd = fmt.Sprintf("/c switch %s", convID)

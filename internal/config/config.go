@@ -28,13 +28,15 @@ type TelegramConfig struct {
 
 // AGYConfig contains Antigravity CLI execution parameters.
 type AGYConfig struct {
-	BinaryPath                       string  `yaml:"binary_path" json:"binary_path"`
-	DefaultTimeoutSeconds            int     `yaml:"default_timeout_seconds" json:"default_timeout_seconds"`
-	DefaultEffort                    string  `yaml:"default_effort" json:"default_effort"` // "low" | "medium" | "high"
-	DefaultMode                      string  `yaml:"default_mode" json:"default_mode"`     // "accept-edits" | "plan"
-	DangerouslySkipPermissions       bool    `yaml:"dangerously_skip_permissions" json:"dangerously_skip_permissions"`
-	StreamingEnabled                 bool    `yaml:"streaming_enabled" json:"streaming_enabled"`
-	StreamingThrottleIntervalSeconds float64 `yaml:"streaming_throttle_interval_seconds" json:"streaming_throttle_interval_seconds"`
+	BinaryPath                       string            `yaml:"binary_path" json:"binary_path"`
+	DefaultTimeoutSeconds            int               `yaml:"default_timeout_seconds" json:"default_timeout_seconds"`
+	DefaultModel                     string            `yaml:"default_model" json:"default_model"`
+	DefaultEffort                    string            `yaml:"default_effort" json:"default_effort"` // "low" | "medium" | "high" | "none"
+	DefaultMode                      string            `yaml:"default_mode" json:"default_mode"`     // "accept-edits" | "plan"
+	ModelAliases                     map[string]string `yaml:"model_aliases" json:"model_aliases"`
+	DangerouslySkipPermissions       bool              `yaml:"dangerously_skip_permissions" json:"dangerously_skip_permissions"`
+	StreamingEnabled                 bool              `yaml:"streaming_enabled" json:"streaming_enabled"`
+	StreamingThrottleIntervalSeconds float64           `yaml:"streaming_throttle_interval_seconds" json:"streaming_throttle_interval_seconds"`
 }
 
 // StorageConfig contains SQLite and filesystem workspace storage configuration.
@@ -89,8 +91,10 @@ func DefaultConfig() *Config {
 		AGY: AGYConfig{
 			BinaryPath:                       "agy",
 			DefaultTimeoutSeconds:            300,
+			DefaultModel:                     "",
 			DefaultEffort:                    "high",
 			DefaultMode:                      "accept-edits",
+			ModelAliases:                     make(map[string]string),
 			DangerouslySkipPermissions:       true,
 			StreamingEnabled:                 true,
 			StreamingThrottleIntervalSeconds: 1.5,
@@ -330,6 +334,9 @@ func applyEnvOverrides(cfg *Config) {
 		if t, err := strconv.Atoi(v); err == nil {
 			cfg.AGY.DefaultTimeoutSeconds = t
 		}
+	}
+	if v := os.Getenv("AGYENT_AGY_DEFAULT_MODEL"); v != "" {
+		cfg.AGY.DefaultModel = v
 	}
 	if v := os.Getenv("AGYENT_AGY_DEFAULT_EFFORT"); v != "" {
 		cfg.AGY.DefaultEffort = v

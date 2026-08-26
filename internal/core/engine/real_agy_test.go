@@ -705,5 +705,171 @@ func TestRealAGY_EndToEnd_CacheHit_Verification(t *testing.T) {
 	assert.Contains(t, outMsg.Text, "Conversation Cumulative Billed:")
 }
 
+func TestRealAGY_DynamicModelDiscovery(t *testing.T) {
+	agyPath := skipIfNoRealAGY(t)
+
+	cfg := config.AGYConfig{
+		BinaryPath: agyPath,
+	}
+	harness := agyHarness.NewHarness(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	models, err := harness.ListAvailableModels(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, models, "must discover available models from agy CLI")
+
+	t.Logf("=== DISCOVERED %d MODELS FROM REAL AGY ===", len(models))
+	for _, m := range models {
+		t.Logf(" • %s (%s) - Efforts: %v | Default: %s", m.ID, m.DisplayName, m.SupportedEfforts, m.DefaultEffort)
+	}
+
+	// Verify key model families exist
+	var hasFlash, hasPro, hasClaude bool
+	for _, m := range models {
+		if strings.Contains(m.ID, "flash") {
+			hasFlash = true
+		}
+		if strings.Contains(m.ID, "pro") {
+			hasPro = true
+			assert.Equal(t, []string{"high", "low"}, m.SupportedEfforts, "gemini-3.1-pro must support only [high, low]")
+		}
+		if strings.Contains(m.ID, "claude") {
+			hasClaude = true
+		}
+	}
+	assert.True(t, hasFlash, "must discover at least one flash model")
+	assert.True(t, hasPro, "must discover at least one pro model")
+	assert.True(t, hasClaude, "must discover at least one claude model")
+}
+
+func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
+	agyPath := skipIfNoRealAGY(t)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_model_exec.db")
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+
+	agentWorkspace := filepath.Join(agentsDir, "model_agent")
+	require.NoError(t, os.MkdirAll(agentWorkspace, 0755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(agentWorkspace, "IDENTITY.md"), []byte("# AGENT IDENTITY\n- **Name**: ModelTester\n- **Role**: Model Selection Test Agent"), 0644))
+
+	store, err := sqlite.Open(dbPath)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	require.NoError(t, store.SaveAgent(ctx, &domain.Agent{
+		Name:          "model_agent",
+		Description:   "Model Selection Test Agent",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: agentWorkspace,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}))
+
+	channel := &mockChannel{sent: make([]domain.OutboundMessage, 0)}
+	bus := eventbus.NewEventBus(256, 4)
+	defer bus.Close()
+
+	cfg := &config.Config{
+		AGY: config.AGYConfig{
+			BinaryPath:                 agyPath,
+			DefaultTimeoutSeconds:      60,
+			DangerouslySkipPermissions: true,
+			DefaultMode:                "accept-edits",
+			DefaultModel:               "gemini-3.7-flash",
+			DefaultEffort:              "high",
+		},
+		Storage: config.StorageConfig{
+			AgentsDir: agentsDir,
+		},
+	}
+
+	harness := agyHarness.NewHarness(cfg.AGY)
+	lockMgr := concurrency.NewSessionLockManager()
+	resolver := contextAdapter.NewContextResolver()
+	mcpPath := filepath.Join(tmpDir, "mcp_config.json")
+	syncer, err := mcp.NewMCPSyncer(mcpPath)
+	require.NoError(t, err)
+	pluginMgr := pluginAdapter.NewPluginManager(filepath.Join(tmpDir, "plugins"))
+
+	var eng *engine.Engine
+	deb := debouncer.NewDebouncer(debouncer.Config{
+		WindowDuration:  10 * time.Millisecond,
+		MaxWaitDuration: 50 * time.Millisecond,
+	}, func(ctx context.Context, msg domain.CanonicalMessage) error {
+		return eng.HandleDebouncedMessage(ctx, msg)
+	})
+	defer deb.Close(context.Background())
+
+	eng = engine.NewEngine(cfg, store, harness, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
+	require.NoError(t, eng.Start(ctx))
+	defer eng.Stop(ctx)
+
+	sessionKey := "telegram:999888777"
+	sess, err := store.GetOrCreateSession(ctx, sessionKey, "model_agent")
+	require.NoError(t, err)
+
+	// Step 1: Switch model to pro and effort to low using slash commands
+	_, err = eng.HandleCommand(ctx, domain.CanonicalMessage{
+		ID:        "cmd-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Chat:      domain.ChatContext{ID: "999888777", Type: "private"},
+		Text:      "/model pro",
+	})
+	require.NoError(t, err)
+
+	_, err = eng.HandleCommand(ctx, domain.CanonicalMessage{
+		ID:        "cmd-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Chat:      domain.ChatContext{ID: "999888777", Type: "private"},
+		Text:      "/effort low",
+	})
+	require.NoError(t, err)
+
+	// Verify session state updated
+	sess, err = store.GetSession(ctx, sessionKey)
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-pro", sess.ActiveModel)
+	assert.Equal(t, "low", sess.ActiveEffort)
+
+	// Step 2: Execute real live turn with gemini-3.1-pro and effort low
+	t.Log("--- Executing Live AGY Turn with gemini-3.1-pro (effort=low) ---")
+	turnMsg := domain.CanonicalMessage{
+		ID:        "turn-msg-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender: domain.SenderUser{
+			ID:       "999888777",
+			Username: "tester",
+			FullName: "Tester",
+		},
+		Chat: domain.ChatContext{ID: "999888777", Type: "private"},
+		Text: "Echo back the exact text: 'PRO_MODEL_EFFORT_LOW_OK' without other words.",
+	}
+
+	turnCtx, turnCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer turnCancel()
+
+	err = eng.HandleDebouncedMessage(turnCtx, turnMsg)
+	require.NoError(t, err)
+
+	// Step 3: Verify Audit Log captured model and effort accurately
+	logs, err := store.ListAuditLogs(ctx, sessionKey, 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, logs)
+	assert.Equal(t, "SUCCESS", logs[0].Status)
+	assert.Equal(t, "gemini-3.1-pro", logs[0].Model, "AuditLog must record exact resolved model")
+	assert.Equal(t, "low", logs[0].Effort, "AuditLog must record exact resolved effort")
+	t.Logf("Live Turn Success! Model: %s | Effort: %s | Tokens: %d", logs[0].Model, logs[0].Effort, logs[0].Usage.TotalTokens)
+}
+
+
 
 

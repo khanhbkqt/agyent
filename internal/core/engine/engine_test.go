@@ -77,6 +77,10 @@ func (m *mockRunner) ExecuteStream(ctx context.Context, req domain.ExecutionRequ
 
 func (m *mockRunner) HealthCheck(ctx context.Context) error { return nil }
 
+func (m *mockRunner) ListAvailableModels(ctx context.Context) ([]domain.ModelCapability, error) {
+	return domain.ListAvailableModels(), nil
+}
+
 type mockChannel struct {
 	mu          sync.Mutex
 	sent        []domain.OutboundMessage

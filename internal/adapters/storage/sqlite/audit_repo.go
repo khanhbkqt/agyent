@@ -18,10 +18,11 @@ func (s *SQLiteStore) LogAudit(ctx context.Context, log *domain.AuditLog) error 
 	query := `
 		INSERT INTO audit_logs (
 			session_key, agent_name, project_name, conversation_id,
+			model, effort,
 			prompt_length, response_length, duration_seconds,
 			input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens,
 			status, error_message, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
@@ -38,6 +39,8 @@ func (s *SQLiteStore) LogAudit(ctx context.Context, log *domain.AuditLog) error 
 		log.AgentName,
 		log.ProjectName,
 		log.ConversationID,
+		log.Model,
+		log.Effort,
 		log.PromptLength,
 		log.ResponseLength,
 		log.DurationSeconds,
@@ -70,6 +73,7 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, sessionKey string, limi
 
 	query := `
 		SELECT id, session_key, agent_name, project_name, conversation_id,
+		       COALESCE(model, '') AS model, COALESCE(effort, '') AS effort,
 		       prompt_length, response_length, duration_seconds,
 		       input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens,
 		       status, error_message, created_at
@@ -92,6 +96,8 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, sessionKey string, limi
 			agentName       string
 			projName        string
 			convID          string
+			model           string
+			effort          string
 			promptLen       int
 			respLen         int
 			durationSec     float64
@@ -107,6 +113,7 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, sessionKey string, limi
 
 		err := rows.Scan(
 			&id, &sessKey, &agentName, &projName, &convID,
+			&model, &effort,
 			&promptLen, &respLen, &durationSec,
 			&inputTokens, &outputTokens, &thinkingTokens, &cacheReadTokens, &totalTokens,
 			&status, &errorMsg, &createdAt,
@@ -121,6 +128,8 @@ func (s *SQLiteStore) ListAuditLogs(ctx context.Context, sessionKey string, limi
 			AgentName:       agentName,
 			ProjectName:     projName,
 			ConversationID:  convID,
+			Model:           model,
+			Effort:          effort,
 			PromptLength:    promptLen,
 			ResponseLength:  respLen,
 			DurationSeconds: durationSec,

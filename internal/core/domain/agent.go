@@ -16,6 +16,8 @@ type Agent struct {
 	Description   string      `json:"description"`
 	Status        AgentStatus `json:"status"`
 	WorkspacePath string      `json:"workspace_path"`
+	DefaultModel  string      `json:"default_model,omitempty"`  // Preferred model for this agent persona
+	DefaultEffort string      `json:"default_effort,omitempty"` // Preferred reasoning effort for this agent persona
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
 }

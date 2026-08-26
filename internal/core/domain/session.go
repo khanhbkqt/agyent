@@ -11,6 +11,8 @@ type Session struct {
 	SessionKey            string    `json:"session_key"`             // e.g. "telegram:123456" or "telegram:-100123:42"
 	ActiveAgent           string    `json:"active_agent"`            // Name of current agent (e.g. "dev_expert")
 	ActiveProject         string    `json:"active_project"`          // Name of current project (or empty for Global mode)
+	ActiveModel           string    `json:"active_model,omitempty"`           // Custom model override for this session
+	ActiveEffort          string    `json:"active_effort,omitempty"`          // Custom reasoning effort override for this session
 	GlobalConversationID  string    `json:"global_conversation_id"`  // AGY conversation ID for global chat
 	ProjectConversationID string    `json:"project_conversation_id"` // AGY conversation ID for active project
 	UpdatedAt             time.Time `json:"updated_at"`

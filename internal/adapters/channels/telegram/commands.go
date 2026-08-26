@@ -12,6 +12,9 @@ import (
 var DefaultBotCommands = []gotgbot.BotCommand{
 	{Command: "help", Description: "Show commands guide and help details"},
 	{Command: "status", Description: "View system uptime, active agent & stats"},
+	{Command: "model", Description: "Select or inspect active AI model"},
+	{Command: "effort", Description: "Set reasoning effort (low/med/high/none)"},
+	{Command: "tokens", Description: "View token usage & KV-cache metrics"},
 	{Command: "context", Description: "Inspect active context directives & MCPs"},
 	{Command: "skills", Description: "List Progressive Disclosure skills"},
 	{Command: "plugins", Description: "Manage capability plugins"},
@@ -19,6 +22,8 @@ var DefaultBotCommands = []gotgbot.BotCommand{
 	{Command: "agents", Description: "List and manage active agent profiles"},
 	{Command: "use", Description: "Switch active agent profile"},
 	{Command: "projects", Description: "List and manage project workspaces"},
+	{Command: "conversations", Description: "Manage multi-conversation contexts"},
+	{Command: "new", Description: "Start a fresh new conversation"},
 	{Command: "reset", Description: "Clear conversation context for active scope"},
 	{Command: "bootstrap", Description: "Trigger Genesis Bootstrap protocol"},
 	{Command: "force_unlock", Description: "Force unlock session mutex & reset state"},

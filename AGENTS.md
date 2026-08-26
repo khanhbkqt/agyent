@@ -100,6 +100,7 @@ agyent/
 │   ├── agy-cli-harness.md    # Subprocess execution, snapshot diff & watchdog
 │   ├── agy-streaming-protocol.md # Real-time delta streaming specification
 │   ├── context-management-architecture.md # 5-Tier context hierarchy & skills
+│   ├── model-and-effort-selection-architecture.md # Dynamic Model & Reasoning Effort Selection
 │   ├── agent-self-learning-and-evolution-architecture.md # Autonomous reflection & 4D memory
 │   └── plans/                # Master roadmap & historical milestone execution logs
 │

@@ -29,4 +29,7 @@ type RunnerPort interface {
 
 	// HealthCheck checks if the underlying CLI binary is accessible and operational.
 	HealthCheck(ctx context.Context) error
+
+	// ListAvailableModels dynamically queries the available models from the underlying CLI.
+	ListAvailableModels(ctx context.Context) ([]domain.ModelCapability, error)
 }

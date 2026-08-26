@@ -361,14 +361,17 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		activeConvID = ""
 	}
 
-	// 8. Construct ExecutionRequest
+	// 8. Resolve Model & Reasoning Effort
+	resolvedModel, resolvedEffort, _ := e.ResolveExecutionParams("", "", session, agent)
+
+	// Construct ExecutionRequest
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
-
 		ConversationID:             activeConvID,
 		WorkspaceDir:               workspaceDir,
 		Timeout:                    timeout,
-		Effort:                     e.cfg.AGY.DefaultEffort,
+		Model:                      resolvedModel,
+		Effort:                     resolvedEffort,
 		Mode:                       e.cfg.AGY.DefaultMode,
 		DangerouslySkipPermissions: e.cfg.AGY.DangerouslySkipPermissions,
 	}
@@ -384,6 +387,17 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	if isStream {
 		execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+
+		// Edge Case: If agy fails due to unsupported effort flag, retry once with effort stripped
+		if isEffortError(execErr, execResult) && req.Effort != "" {
+			slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI, retrying without --effort",
+				slog.String("model", req.Model),
+				slog.String("effort", req.Effort),
+			)
+			req.Effort = ""
+			resolvedEffort = ""
+			execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+		}
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
 			if !isEphemeral && session.GetActiveConversationID() != "" {
@@ -427,6 +441,15 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			}
 			if errors.Is(execErr, ports.ErrConversationNotFound) {
 				break
+			}
+			if isEffortError(execErr, execResult) && req.Effort != "" {
+				slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI in batch mode, retrying without --effort",
+					slog.String("model", req.Model),
+					slog.String("effort", req.Effort),
+				)
+				req.Effort = ""
+				resolvedEffort = ""
+				continue
 			}
 			if isTransientError(execErr, execResult) && attempt < 2 {
 				backoff := time.Duration(1<<attempt) * time.Second
@@ -500,6 +523,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		AgentName:      agent.Name,
 		ProjectName:    session.ActiveProject,
 		ConversationID: session.GetActiveConversationID(),
+		Model:          resolvedModel,
+		Effort:         resolvedEffort,
 		PromptLength:   len(msg.Text),
 		Status:         auditStatus,
 		ErrorMessage:   errMsg,
@@ -648,3 +673,21 @@ func isTransientError(err error, result *domain.ExecutionResult) bool {
 	}
 	return false
 }
+
+// isEffortError identifies cases where the underlying CLI or model rejected the reasoning effort flag.
+func isEffortError(err error, result *domain.ExecutionResult) bool {
+	var errStr string
+	if err != nil {
+		errStr += err.Error() + " "
+	}
+	if result != nil && !result.Success && result.Error != "" {
+		errStr += result.Error + " "
+	}
+	low := strings.ToLower(errStr)
+	return strings.Contains(low, "flag provided but not defined: -effort") ||
+		strings.Contains(low, "unknown flag: --effort") ||
+		strings.Contains(low, "effort not supported") ||
+		strings.Contains(low, "unrecognized effort") ||
+		strings.Contains(low, "invalid effort")
+}
+

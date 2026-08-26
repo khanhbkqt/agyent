@@ -44,6 +44,8 @@ type AuditLog struct {
 	AgentName       string     `json:"agent_name"`
 	ProjectName     string     `json:"project_name,omitempty"`
 	ConversationID  string     `json:"conversation_id,omitempty"`
+	Model           string     `json:"model,omitempty"`
+	Effort          string     `json:"effort,omitempty"`
 	PromptLength    int        `json:"prompt_length"`
 	ResponseLength  int        `json:"response_length"`
 	DurationSeconds float64    `json:"duration_seconds"`

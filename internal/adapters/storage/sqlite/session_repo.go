@@ -16,7 +16,10 @@ import (
 // Returns nil and ports.ErrSessionNotFound if the session does not exist.
 func (s *SQLiteStore) GetSession(ctx context.Context, key string) (*domain.Session, error) {
 	query := `
-		SELECT s.session_key, s.active_agent, s.active_project, s.global_conversation_id, s.updated_at,
+		SELECT s.session_key, s.active_agent, s.active_project, s.global_conversation_id,
+		       COALESCE(s.active_model, '') AS active_model,
+		       COALESCE(s.active_effort, '') AS active_effort,
+		       s.updated_at,
 		       COALESCE(spc.conversation_id, '') AS project_conversation_id
 		FROM sessions s
 		LEFT JOIN session_project_conversations spc
@@ -26,16 +29,18 @@ func (s *SQLiteStore) GetSession(ctx context.Context, key string) (*domain.Sessi
 		WHERE s.session_key = ?
 	`
 	var (
-		sessKey    string
-		agent      string
-		proj       string
-		globalCID  string
-		updatedAt  FlexTime
-		projectCID string
+		sessKey      string
+		agent        string
+		proj         string
+		globalCID    string
+		activeModel  string
+		activeEffort string
+		updatedAt    FlexTime
+		projectCID   string
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, key).Scan(
-		&sessKey, &agent, &proj, &globalCID, &updatedAt, &projectCID,
+		&sessKey, &agent, &proj, &globalCID, &activeModel, &activeEffort, &updatedAt, &projectCID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -48,6 +53,8 @@ func (s *SQLiteStore) GetSession(ctx context.Context, key string) (*domain.Sessi
 		SessionKey:            sessKey,
 		ActiveAgent:           agent,
 		ActiveProject:         proj,
+		ActiveModel:           activeModel,
+		ActiveEffort:          activeEffort,
 		GlobalConversationID:  globalCID,
 		ProjectConversationID: projectCID,
 		UpdatedAt:             updatedAt.Time,
@@ -68,6 +75,8 @@ func (s *SQLiteStore) GetOrCreateSession(ctx context.Context, key string, defaul
 		SessionKey:            key,
 		ActiveAgent:           defaultAgent,
 		ActiveProject:         "",
+		ActiveModel:           "",
+		ActiveEffort:          "",
 		GlobalConversationID:  "",
 		ProjectConversationID: "",
 		UpdatedAt:             time.Now(),
@@ -101,17 +110,20 @@ func (s *SQLiteStore) SaveSession(ctx context.Context, session *domain.Session) 
 
 	query := `
 		INSERT INTO sessions (
-			session_key, active_agent, active_project, global_conversation_id, updated_at
-		) VALUES (?, ?, ?, ?, ?)
+			session_key, active_agent, active_project, global_conversation_id, active_model, active_effort, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_key) DO UPDATE SET
 			active_agent = excluded.active_agent,
 			active_project = excluded.active_project,
 			global_conversation_id = excluded.global_conversation_id,
+			active_model = excluded.active_model,
+			active_effort = excluded.active_effort,
 			updated_at = excluded.updated_at
 	`
 	_, err = tx.ExecContext(
 		ctx, query,
-		session.SessionKey, session.ActiveAgent, session.ActiveProject, session.GlobalConversationID, updatedAtMs,
+		session.SessionKey, session.ActiveAgent, session.ActiveProject, session.GlobalConversationID,
+		session.ActiveModel, session.ActiveEffort, updatedAtMs,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert session %s: %w", session.SessionKey, err)

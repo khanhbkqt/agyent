@@ -18,6 +18,7 @@ Master roadmap and overall progress tracking dashboard for **agyent**, upgraded 
 | 8 | [Multi-Conversation & Lifecycle](milestone-8-multi-conversation-and-lifecycle.md) | Multi-Conversation Switching, /ask Ephemeral Turn, Adaptive Inline UI, Lifecycle GC | Principal Architect / Backend Agent | Done | 100% | 2026-08-25 |
 | 9 | [System Meta-Instruction & Context](milestone-9-system-meta-instruction-and-context.md) | Static Level 0 Identity Anchor, Prompt Assembly, Two-Tier Memory Pipeline | Backend Agent | Done | 100% | 2026-08-25 |
 | 10 | [Agent Self-Learning & Evolution](milestone-10-agent-self-learning-and-evolution.md) | Async Feedback Sensing, Conflict Resolution, Memory Compaction, Security Redaction | Backend Agent | Done | 100% | 2026-08-26 |
+| 11 | [Model & Effort Selection](milestone-11-model-and-effort-selection.md) | Dynamic Model Discovery (agy models), 5-Tier Precedence, Subset Effort Clamping, Audit Tracking | Principal Architect / Backend Agent | Done | 100% | 2026-08-26 |
 
 ---
 
