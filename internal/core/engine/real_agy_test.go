@@ -127,6 +127,7 @@ func TestRealAGY_StreamingExecution(t *testing.T) {
 		Timeout:                    45 * time.Second,
 		DangerouslySkipPermissions: true,
 		Mode:                       "accept-edits",
+		Model:                      "gemini-3.7-flash",
 		Effort:                     "low",
 	}
 

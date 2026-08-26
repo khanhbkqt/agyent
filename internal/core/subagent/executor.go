@@ -60,6 +60,7 @@ func (e *taskExecutor) executeTurn(
 	defer cancel()
 
 	args := []string{
+		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--project", "outside-of-project",
 		"--dangerously-skip-permissions",
@@ -74,20 +75,43 @@ func (e *taskExecutor) executeTurn(
 		args = append(args, "--add-dir", workspaceDir)
 	}
 
-	model := task.Model
-	if model == "" {
-		model = "flash"
+	modelInput := task.Model
+	if modelInput == "" {
+		modelInput = "flash"
 	}
-	args = append(args, "--model", model)
-
-	effort := task.Effort
-	if effort == "" {
-		effort = "low"
+	resolvedModel := modelInput
+	resolvedEffort := task.Effort
+	if cap, inferredEffort, ok := domain.LookupModelCapability(modelInput, nil); ok {
+		resolvedModel = cap.ID
+		if inferredEffort != "" {
+			resolvedEffort = inferredEffort
+		} else if resolvedEffort == "" {
+			resolvedEffort = cap.DefaultEffort
+		}
+		if len(cap.SupportedEfforts) == 0 {
+			resolvedEffort = ""
+		}
 	}
-	args = append(args, "--effort", effort)
+	if resolvedModel != "" {
+		args = append(args, "--model", resolvedModel)
+	}
+	if resolvedEffort != "" {
+		args = append(args, "--effort", resolvedEffort)
+	}
 
 	if convID != "" {
 		args = append(args, "--conversation", convID)
+	}
+
+	inboundMsg := map[string]any{
+		"event": "user",
+		"message": map[string]any{
+			"content": prompt,
+		},
+	}
+	inboundJSON, err := json.Marshal(inboundMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal inbound stream message: %w", err)
 	}
 
 	cmd := exec.CommandContext(execCtx, e.binaryPath, args...)
@@ -95,7 +119,7 @@ func (e *taskExecutor) executeTurn(
 		cmd.Dir = workspaceDir
 	}
 	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
-	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

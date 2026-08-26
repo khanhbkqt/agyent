@@ -3,6 +3,7 @@ package agy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -195,7 +196,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	defer cancel()
 
 	// Build CLI arguments for streaming
-	args := []string{"--output-format", "stream-json", "--project", "outside-of-project"}
+	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", "outside-of-project"}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
@@ -226,6 +227,17 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		args = append(args, "--model", req.Model)
 	}
 
+	inboundMsg := map[string]any{
+		"event": "user",
+		"message": map[string]any{
+			"content": req.Prompt,
+		},
+	}
+	inboundJSON, err := json.Marshal(inboundMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal inbound stream message: %w", err)
+	}
+
 	cmd := exec.CommandContext(execCtx, h.binaryPath, args...)
 	if req.WorkspaceDir != "" {
 		cmd.Dir = req.WorkspaceDir
@@ -233,7 +245,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
 
 	// STDIN Streaming
-	cmd.Stdin = strings.NewReader(req.Prompt)
+	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
