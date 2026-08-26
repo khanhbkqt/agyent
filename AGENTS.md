@@ -102,6 +102,7 @@ agyent/
 │   ├── context-management-architecture.md # 5-Tier context hierarchy & skills
 │   ├── model-and-effort-selection-architecture.md # Dynamic Model & Reasoning Effort Selection
 │   ├── agent-self-learning-and-evolution-architecture.md # Autonomous reflection & 4D memory
+│   ├── security-and-guardrails-architecture.md # Universal Security Gateway & Guardrails
 │   ├── multi-account-architecture.md # Multi-Account Profile Virtualization & Auto-Cooldown Failover
 │   └── plans/                # Master roadmap & historical milestone execution logs
 │
