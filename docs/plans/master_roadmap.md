@@ -19,7 +19,8 @@ Master roadmap and overall progress tracking dashboard for **agyent**, upgraded 
 | 9 | [System Meta-Instruction & Context](milestone-9-system-meta-instruction-and-context.md) | Static Level 0 Identity Anchor, Prompt Assembly, Two-Tier Memory Pipeline | Backend Agent | Done | 100% | 2026-08-25 |
 | 10 | [Agent Self-Learning & Evolution](milestone-10-agent-self-learning-and-evolution.md) | Async Feedback Sensing, Conflict Resolution, Memory Compaction, Security Redaction | Backend Agent | Done | 100% | 2026-08-26 |
 | 11 | [Model & Effort Selection](milestone-11-model-and-effort-selection.md) | Dynamic Model Discovery (agy models), 5-Tier Precedence, Subset Effort Clamping, Audit Tracking | Principal Architect / Backend Agent | Done | 100% | 2026-08-26 |
-| 12 | [Sub-Agent Dispatch & Orchestration](milestone-12-subagent-dispatch-and-orchestration.md) | Non-Blocking Dispatch, Subprocess Worker Pool, Live Stream Telemetry, 3 Callback Modes | Systems Architect / Backend Agent | In Progress | 40% | 2026-08-28 |
+| 12 | [Sub-Agent Dispatch & Orchestration](milestone-12-subagent-dispatch-and-orchestration.md) | Non-Blocking Dispatch, Subprocess Worker Pool, Live Stream Telemetry, 3 Callback Modes | Systems Architect / Backend Agent | Done | 100% | 2026-08-26 |
+| 13 | [Agent Ownership & Multi-Bot Gateway](milestone-13-agent-ownership-and-multi-bot-gateway.md) | Multi-Bot Pools, Dedicated Agent Binding, Per-Agent Ownership, Granular RBAC, Namespaced SessionKey | Principal Architect / Backend Agent | Planned | 0% | 2026-08-29 |
 
 ---
 
@@ -57,6 +58,10 @@ graph TD
     M7 --> M8[M8: Multi-Conversation & Lifecycle GC]
     M7 --> M9[M9: System Meta-Instruction & Context]
     M9 --> M10[M10: Agent Self-Learning & Evolution]
+    M6 --> M11[M11: Model & Effort Selection]
+    M6 --> M12[M12: Sub-Agent Dispatch & Orchestration]
+    M5 --> M13[M13: Agent Ownership & Multi-Bot Gateway]
+    M6 --> M13
 ```
 
 ---
@@ -72,3 +77,5 @@ graph TD
 - [x] Passed 100% of Unit, Concurrency, and Integration Test Matrices (`go test ./...`).
 - [x] Followed Conventional Commits convention.
 - [x] Fully integrated Context Scopes & Memory Evolution per M9 & M10.
+- [x] Implemented Dynamic Model & Effort Selection Engine (M11).
+- [x] Implemented Non-Blocking Sub-Agent Dispatching & Multi-Agent Orchestration (M12).
