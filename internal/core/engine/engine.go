@@ -30,8 +30,9 @@ type Engine struct {
 	contextResolver ports.ContextResolverPort
 	mcpRegistry     ports.MCPRegistryPort
 	pluginManager   ports.PluginManagerPort
-	temporal        ports.TemporalContextPort
-	evolution       ports.EvolutionOrchestratorPort
+	temporal           ports.TemporalContextPort
+	evolution          ports.EvolutionOrchestratorPort
+	subagentDispatcher ports.SubagentDispatcherPort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -88,6 +89,16 @@ func NewEngine(
 	return e
 }
 
+// SetSubagentDispatcher injects the background subagent dispatcher.
+func (e *Engine) SetSubagentDispatcher(s ports.SubagentDispatcherPort) {
+	e.subagentDispatcher = s
+}
+
+// GetSubagentDispatcher returns the active subagent dispatcher instance.
+func (e *Engine) GetSubagentDispatcher() ports.SubagentDispatcherPort {
+	return e.subagentDispatcher
+}
+
 // IsStreamingEnabled returns the current dynamic streaming mode status.
 func (e *Engine) IsStreamingEnabled() bool {
 	return e.streamingEnabled.Load()
@@ -118,6 +129,14 @@ func (e *Engine) Start(ctx context.Context) error {
 	if err := e.channel.Start(ctx, e.inboundChan); err != nil {
 		e.running.Store(false)
 		return fmt.Errorf("failed to start channel adapter: %w", err)
+	}
+
+	// 2. Start subagent dispatcher worker pool if present
+	if e.subagentDispatcher != nil {
+		if err := e.subagentDispatcher.Start(e.ctx); err != nil {
+			slog.Warn("failed to start subagent dispatcher", "error", err)
+		}
+		e.subscribeSubagentEvents()
 	}
 
 	// 2. Consume from inbound queue and ingest into Debouncer
@@ -627,6 +646,10 @@ func (e *Engine) Stop(ctx context.Context) error {
 		_ = e.evolution.Stop(ctx)
 	}
 
+	if e.subagentDispatcher != nil {
+		_ = e.subagentDispatcher.Stop(ctx)
+	}
+
 	e.turnsMu.Lock()
 	for k, cancel := range e.activeTurns {
 		cancel()
@@ -692,4 +715,86 @@ func isEffortError(err error, result *domain.ExecutionResult) bool {
 		strings.Contains(low, "effort not supported") ||
 		strings.Contains(low, "unrecognized effort") ||
 		strings.Contains(low, "invalid effort")
+}
+
+func (e *Engine) subscribeSubagentEvents() {
+	if e.eventBus == nil {
+		return
+	}
+
+	e.eventBus.SubscribeAsync(domain.EventSubagentWaitingInput, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.SubagentEventPayload)
+		if !ok {
+			return
+		}
+		task := payload.Task
+
+		if task.CallbackMode == domain.CallbackInvokeMain {
+			syntheticMsg := domain.CanonicalMessage{
+				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
+				Timestamp: time.Now(),
+				Channel:   "telegram",
+				Chat: domain.ChatContext{
+					ID: extractChatIDFromSessionKey(task.ParentSessionKey),
+				},
+				Text: fmt.Sprintf("[SYSTEM NOTIFICATION: Subagent Task #%s (@%s) is WAITING FOR INPUT]\nTask: %s\nQuestion: %q\n\nPlease evaluate the question. If you know the answer from your rules/memory, call send_subagent_input(task_id: %q, input: \"...\") immediately. Otherwise, ask the user for clarification.",
+					task.ID, task.AgentName, task.Title, task.PendingQuestion, task.ID),
+			}
+			select {
+			case e.inboundChan <- syntheticMsg:
+			default:
+				slog.Warn("inbound queue full for subagent synthetic message", "task_id", task.ID)
+			}
+		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
+			chatID := extractChatIDFromSessionKey(task.ParentSessionKey)
+			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				ChatID: chatID,
+				Text: fmt.Sprintf("⏸️ **Sub-Agent @%s requires clarification:**\n📌 **Task:** %s (`%s`)\n\n❓ **Question:** %s\n\n_Use_ `/task reply %s <your response>` _to continue._",
+					task.AgentName, task.Title, task.ID, task.PendingQuestion, task.ID),
+				ParseMode: "Markdown",
+			})
+		}
+	})
+
+	e.eventBus.SubscribeAsync(domain.EventSubagentCompleted, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.SubagentEventPayload)
+		if !ok {
+			return
+		}
+		task := payload.Task
+
+		if task.CallbackMode == domain.CallbackInvokeMain {
+			syntheticMsg := domain.CanonicalMessage{
+				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
+				Timestamp: time.Now(),
+				Channel:   "telegram",
+				Chat: domain.ChatContext{
+					ID: extractChatIDFromSessionKey(task.ParentSessionKey),
+				},
+				Text: fmt.Sprintf("[SYSTEM NOTIFICATION: Subagent Task #%s (@%s) COMPLETED]\nTask Title: %s\nDuration: %.2fs | Total Tokens: %d\n\nResult Summary:\n%s\n\nPlease synthesize or report these findings to the user.",
+					task.ID, task.AgentName, task.Title, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
+			}
+			select {
+			case e.inboundChan <- syntheticMsg:
+			default:
+				slog.Warn("inbound queue full for subagent completion message", "task_id", task.ID)
+			}
+		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
+			chatID := extractChatIDFromSessionKey(task.ParentSessionKey)
+			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				ChatID: chatID,
+				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
+					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
+				ParseMode: "HTML",
+			})
+		}
+	})
+}
+
+func extractChatIDFromSessionKey(sessionKey string) string {
+	parts := strings.Split(sessionKey, ":")
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return sessionKey
 }

@@ -77,6 +77,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/projects", "/project", "/p":
 		responseText = e.handleProjectsCommand(ctx, session, args)
 
+	case "/tasks", "/subagents":
+		responseText, inlineKeyboard = e.handleTasksCommand(ctx, session, args)
+
+	case "/task":
+		responseText, inlineKeyboard = e.handleTaskSubcommand(ctx, session, args)
+
 	case "/conversations", "/c":
 		responseText, inlineKeyboard = e.handleConversationsDispatcher(ctx, session, args)
 
@@ -166,7 +172,14 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/p new <name> [path]`" + ` — Register a new project codebase.
 • ` + "`/p exit`" + ` (or ` + "`/p ~`" + `) — Exit project and return to Global Chat mode.
 • ` + "`/p info`" + ` — View details of the currently active project.
-• ` + "`/p reset`" + ` — Reset conversation history for the current project.`
+• ` + "`/p reset`" + ` — Reset conversation history for the current project.
+
+**⚡ Sub-Agent Background Tasks:**
+• ` + "`/tasks`" + ` (or ` + "`/subagents`" + `) — List active & recent background sub-agent tasks.
+• ` + "`/task <id>`" + ` — Inspect task status, elapsed duration, and step progress.
+• ` + "`/task reply <id> <text>`" + ` — Send answer to a sub-agent waiting for clarification.
+• ` + "`/task cancel <id>`" + ` — Terminate a running sub-agent task.
+• ` + "`/task clean`" + ` — Purge finished/cancelled sub-agent task records.`
 }
 
 func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Session) string {
@@ -1285,3 +1298,153 @@ func formatTimeAgo(t time.Time) string {
 	}
 	return fmt.Sprintf("%d days ago", days)
 }
+
+func (e *Engine) handleTasksCommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	if e.subagentDispatcher == nil {
+		return "⚠️ Subagent subsystem is not configured.", nil
+	}
+
+	tasks, total, err := e.subagentDispatcher.ListTasks(ctx, session.SessionKey, 10, 0)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to list tasks: %v", err), nil
+	}
+	if total == 0 {
+		return "📋 <b>No background sub-agent tasks found for this session.</b>\n\nMain Agent automatically delegates long-running tasks via <code>dispatch_subagent</code>.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 <b>Sub-Agent Tasks (%d total):</b>\n\n", total))
+
+	var keyboard domain.InlineKeyboard
+	for _, t := range tasks {
+		badge := "⏳"
+		switch t.Status {
+		case domain.TaskStatusCompleted:
+			badge = "✅"
+		case domain.TaskStatusWaitingInput:
+			badge = "⏸️"
+		case domain.TaskStatusFailed:
+			badge = "❌"
+		case domain.TaskStatusCancelled:
+			badge = "🛑"
+		case domain.TaskStatusRunning:
+			badge = "⚡"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s <b><code>%s</code></b> | @%s\n", badge, t.ID, t.AgentName))
+		sb.WriteString(fmt.Sprintf("   • <b>Title:</b> %s\n", t.Title))
+		sb.WriteString(fmt.Sprintf("   • <b>Status:</b> <code>%s</code>", t.Status))
+		if t.DurationSeconds > 0 {
+			sb.WriteString(fmt.Sprintf(" (%.1fs)", t.DurationSeconds))
+		}
+		if t.Status == domain.TaskStatusWaitingInput && t.PendingQuestion != "" {
+			sb.WriteString(fmt.Sprintf("\n   • ❓ <b>Question:</b> <i>%s</i>", t.PendingQuestion))
+		}
+		sb.WriteString("\n\n")
+
+		if t.IsActive() {
+			keyboard = append(keyboard, domain.InlineKeyboardRow{
+				{
+					Text:         fmt.Sprintf("ℹ️ Info %s", t.ID),
+					CallbackData: fmt.Sprintf("task:info:%s", t.ID),
+				},
+				{
+					Text:         fmt.Sprintf("🛑 Cancel %s", t.ID),
+					CallbackData: fmt.Sprintf("task:cancel:%s", t.ID),
+				},
+			})
+		}
+	}
+
+	sb.WriteString("💡 <i>Use <code>/task &lt;id&gt;</code> to inspect details or <code>/task reply &lt;id&gt; &lt;input&gt;</code> to respond.</i>")
+	return sb.String(), keyboard
+}
+
+func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	if e.subagentDispatcher == nil {
+		return "⚠️ Subagent subsystem is not configured.", nil
+	}
+	if len(args) == 0 {
+		return e.handleTasksCommand(ctx, session, nil)
+	}
+
+	subcmd := strings.ToLower(args[0])
+
+	switch subcmd {
+	case "cancel":
+		if len(args) < 2 {
+			return "⚠️ Usage: <code>/task cancel &lt;task_id&gt;</code>", nil
+		}
+		taskID := args[1]
+		if err := e.subagentDispatcher.CancelTask(ctx, taskID); err != nil {
+			return fmt.Sprintf("⚠️ Failed to cancel task <code>%s</code>: %v", taskID, err), nil
+		}
+		return fmt.Sprintf("🛑 <b>Task <code>%s</code> has been cancelled</b> and its process tree terminated.", taskID), nil
+
+	case "reply":
+		if len(args) < 3 {
+			return "⚠️ Usage: <code>/task reply &lt;task_id&gt; &lt;your response&gt;</code>", nil
+		}
+		taskID := args[1]
+		replyText := strings.Join(args[2:], " ")
+		if err := e.subagentDispatcher.SendTaskInput(ctx, taskID, replyText); err != nil {
+			return fmt.Sprintf("⚠️ Failed to send reply to task <code>%s</code>: %v", taskID, err), nil
+		}
+		return fmt.Sprintf("✅ <b>Reply injected into Task <code>%s</code>!</b> Sub-Agent has resumed background execution.", taskID), nil
+
+	case "clean", "purge":
+		purged, err := e.storage.PurgeSubagentTasks(ctx, 0)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to purge tasks: %v", err), nil
+		}
+		return fmt.Sprintf("🧹 <b>Cleaned up %d completed/failed/cancelled subagent tasks.</b>", purged), nil
+
+	default:
+		// Assume args[0] is task_id
+		taskID := args[0]
+		task, err := e.subagentDispatcher.GetTask(ctx, taskID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Task <code>%s</code> not found: %v", taskID, err), nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📋 <b>Sub-Agent Task Details: <code>%s</code></b>\n\n", task.ID))
+		sb.WriteString(fmt.Sprintf("• <b>Agent:</b> <code>@%s</code>\n", task.AgentName))
+		sb.WriteString(fmt.Sprintf("• <b>Title:</b> %s\n", task.Title))
+		sb.WriteString(fmt.Sprintf("• <b>Status:</b> <code>%s</code>\n", task.Status))
+		sb.WriteString(fmt.Sprintf("• <b>Model / Effort:</b> <code>%s</code> (<code>%s</code>)\n", task.Model, task.Effort))
+		sb.WriteString(fmt.Sprintf("• <b>Workspace Mode:</b> <code>%s</code>\n", task.WorkspaceMode))
+		sb.WriteString(fmt.Sprintf("• <b>Callback Mode:</b> <code>%s</code>\n", task.CallbackMode))
+		sb.WriteString(fmt.Sprintf("• <b>Duration:</b> <code>%.2fs</code>\n", task.DurationSeconds))
+		sb.WriteString(fmt.Sprintf("• <b>Tokens Used:</b> <code>%d</code>\n", task.Usage.TotalTokens))
+
+		if task.Status == domain.TaskStatusRunning {
+			sb.WriteString(fmt.Sprintf("\n⚡ <b>Live Execution:</b> Step %d | Tool: <code>%s</code>\n%s\n", task.CurrentStep, task.CurrentTool, task.ProgressMessage))
+		}
+
+		if task.Status == domain.TaskStatusWaitingInput {
+			sb.WriteString(fmt.Sprintf("\n⏸️ <b>Waiting for Input:</b>\n❓ <i>%s</i>\n\n👉 <b>To reply:</b> <code>/task reply %s &lt;your response&gt;</code>\n", task.PendingQuestion, task.ID))
+		}
+
+		if task.Status == domain.TaskStatusCompleted && task.ResultSummary != "" {
+			sb.WriteString("\n📝 <b>Result Summary:</b>\n" + task.ResultSummary + "\n")
+		}
+
+		if task.Status == domain.TaskStatusFailed && task.ErrorMessage != "" {
+			sb.WriteString("\n❌ <b>Error:</b> " + task.ErrorMessage + "\n")
+		}
+
+		var keyboard domain.InlineKeyboard
+		if task.IsActive() {
+			keyboard = append(keyboard, domain.InlineKeyboardRow{
+				{
+					Text:         "🛑 Cancel Task",
+					CallbackData: fmt.Sprintf("task:cancel:%s", task.ID),
+				},
+			})
+		}
+
+		return sb.String(), keyboard
+	}
+}
+

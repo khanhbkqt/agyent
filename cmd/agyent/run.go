@@ -21,6 +21,7 @@ import (
 	"agyent/internal/core/domain"
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
+	"agyent/internal/core/subagent"
 	"agyent/internal/logger"
 
 	"github.com/spf13/cobra"
@@ -130,6 +131,10 @@ var runCmd = &cobra.Command{
 
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
+
+		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
+		eng.SetSubagentDispatcher(subDispatcher)
+
 		if cfg.Evolution.Enabled {
 			evoOrch := evolutionAdapter.NewEvolutionOrchestrator(cfg, store, runner)
 			eng.SetEvolutionOrchestrator(evoOrch)

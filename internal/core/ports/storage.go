@@ -98,6 +98,7 @@ type StoragePort interface {
 	GroupRepository
 	AuditRepository
 	ConversationRepository
+	SubagentRepository
 
 	// Close gracefully closes any open database connections.
 	Close() error

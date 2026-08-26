@@ -64,6 +64,14 @@ type EvolutionConfig struct {
 	QueueCapacity            int     `yaml:"queue_capacity" json:"queue_capacity"`
 }
 
+// SubagentConfig contains configuration for Sub-Agent Background Dispatching & Worker Pool.
+type SubagentConfig struct {
+	MaxConcurrentWorkers  int    `yaml:"max_concurrent_workers" json:"max_concurrent_workers"`
+	DefaultTimeoutSeconds int    `yaml:"default_timeout_seconds" json:"default_timeout_seconds"`
+	DefaultModel          string `yaml:"default_model" json:"default_model"`
+	DefaultEffort         string `yaml:"default_effort" json:"default_effort"`
+}
+
 // Config represents the complete runtime configuration of agyent.
 type Config struct {
 	Server    ServerConfig    `yaml:"server" json:"server"`
@@ -72,6 +80,7 @@ type Config struct {
 	Storage   StorageConfig   `yaml:"storage" json:"storage"`
 	Logging   LoggingConfig   `yaml:"logging" json:"logging"`
 	Evolution EvolutionConfig `yaml:"evolution" json:"evolution"`
+	Subagent  SubagentConfig  `yaml:"subagent" json:"subagent"`
 }
 
 // DefaultConfig returns a new Config populated with sensible defaults.
@@ -117,6 +126,12 @@ func DefaultConfig() *Config {
 			ReflectionTimeoutSeconds: 30,
 			CompactionLineLimit:      200,
 			QueueCapacity:            100,
+		},
+		Subagent: SubagentConfig{
+			MaxConcurrentWorkers:  3,
+			DefaultTimeoutSeconds: 300,
+			DefaultModel:          "flash",
+			DefaultEffort:         "low",
 		},
 	}
 }
@@ -183,8 +198,8 @@ func (c *Config) String() string {
 	if c == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("Config{Server: %+v, Telegram: %s, AGY: %+v, Storage: %+v, Logging: %+v, Evolution: %+v}",
-		c.Server, c.Telegram.String(), c.AGY, c.Storage, c.Logging, c.Evolution)
+	return fmt.Sprintf("Config{Server: %+v, Telegram: %s, AGY: %+v, Storage: %+v, Logging: %+v, Evolution: %+v, Subagent: %+v}",
+		c.Server, c.Telegram.String(), c.AGY, c.Storage, c.Logging, c.Evolution, c.Subagent)
 }
 
 // Validate checks required fields and configuration constraints.
@@ -239,6 +254,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Evolution.ReflectionTimeoutSeconds < 0 {
 		return errors.New("evolution reflection_timeout_seconds cannot be negative")
+	}
+	if c.Subagent.MaxConcurrentWorkers < 0 {
+		return errors.New("subagent max_concurrent_workers cannot be negative")
+	}
+	if c.Subagent.DefaultTimeoutSeconds < 0 {
+		return errors.New("subagent default_timeout_seconds cannot be negative")
 	}
 	return nil
 }
@@ -419,6 +440,23 @@ func applyEnvOverrides(cfg *Config) {
 		if i, err := strconv.Atoi(v); err == nil {
 			cfg.Evolution.QueueCapacity = i
 		}
+	}
+
+	if v := os.Getenv("AGYENT_SUBAGENT_MAX_CONCURRENT_WORKERS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			cfg.Subagent.MaxConcurrentWorkers = i
+		}
+	}
+	if v := os.Getenv("AGYENT_SUBAGENT_DEFAULT_TIMEOUT_SECONDS"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			cfg.Subagent.DefaultTimeoutSeconds = i
+		}
+	}
+	if v := os.Getenv("AGYENT_SUBAGENT_DEFAULT_MODEL"); v != "" {
+		cfg.Subagent.DefaultModel = v
+	}
+	if v := os.Getenv("AGYENT_SUBAGENT_DEFAULT_EFFORT"); v != "" {
+		cfg.Subagent.DefaultEffort = v
 	}
 }
 

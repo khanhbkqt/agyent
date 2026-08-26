@@ -220,6 +220,14 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 	case strings.HasPrefix(data, "c:arc:"):
 		convID := strings.TrimPrefix(data, "c:arc:")
 		synthCmd = fmt.Sprintf("/c archive %s", convID)
+	case strings.HasPrefix(data, "task:info:"):
+		taskID := strings.TrimPrefix(data, "task:info:")
+		synthCmd = fmt.Sprintf("/task %s", taskID)
+	case strings.HasPrefix(data, "task:cancel:"):
+		taskID := strings.TrimPrefix(data, "task:cancel:")
+		synthCmd = fmt.Sprintf("/task cancel %s", taskID)
+	case data == "task:clean":
+		synthCmd = "/task clean"
 	default:
 		return nil
 	}

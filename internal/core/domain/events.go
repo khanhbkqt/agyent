@@ -20,7 +20,22 @@ const (
 	EventStreamTool   EventType = "stream.tool"
 	EventStreamResult EventType = "stream.result"
 	EventStreamError  EventType = "stream.error"
+
+	// Subagent Lifecycle & Coordination Events
+	EventSubagentDispatched   EventType = "subagent.dispatched"
+	EventSubagentProgress     EventType = "subagent.progress"
+	EventSubagentWaitingInput EventType = "subagent.waiting_input"
+	EventSubagentCompleted    EventType = "subagent.completed"
+	EventSubagentFailed       EventType = "subagent.failed"
+	EventSubagentCancelled    EventType = "subagent.cancelled"
 )
+
+// SubagentEventPayload carries subagent task lifecycle transitions on the EventBus.
+type SubagentEventPayload struct {
+	Task SubagentTask `json:"task"`
+}
+
+func (p SubagentEventPayload) GetSessionKey() string { return p.Task.ParentSessionKey }
 
 // SessionScopedPayload is an optional interface implemented by payloads that belong to a specific session.
 type SessionScopedPayload interface {

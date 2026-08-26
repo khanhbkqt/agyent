@@ -27,3 +27,14 @@ func killProcessTree(cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+// ConfigureCmd configures OS subprocess flags.
+func ConfigureCmd(cmd *exec.Cmd) {
+	configureCmd(cmd)
+}
+
+// KillProcessTree terminates the child process and all its descendants.
+func KillProcessTree(cmd *exec.Cmd) error {
+	return killProcessTree(cmd)
+}
+

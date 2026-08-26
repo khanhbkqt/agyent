@@ -12,6 +12,8 @@ import (
 var DefaultBotCommands = []gotgbot.BotCommand{
 	{Command: "help", Description: "Show commands guide and help details"},
 	{Command: "status", Description: "View system uptime, active agent & stats"},
+	{Command: "tasks", Description: "List active & recent background sub-agent tasks"},
+	{Command: "task", Description: "Inspect, reply, or cancel a sub-agent task"},
 	{Command: "model", Description: "Select or inspect active AI model"},
 	{Command: "effort", Description: "Set reasoning effort (low/med/high/none)"},
 	{Command: "tokens", Description: "View token usage & KV-cache metrics"},
