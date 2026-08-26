@@ -271,6 +271,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		})
 		return fmt.Errorf("failed to load session: %w", err)
 	}
+	session.UpdatedAt = time.Now()
+	_ = e.storage.SaveSession(turnCtx, session)
 
 	// 4. Resolve Active Agent & Check Bootstrap
 	agent, err := e.storage.GetAgent(turnCtx, session.ActiveAgent)

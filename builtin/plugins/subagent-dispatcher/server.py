@@ -17,7 +17,7 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low", workspace_mode="share", callback_mode="notify_user"):
+def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low", workspace_mode="share", callback_mode="notify_user", parent_session_key=""):
     if not title or not prompt:
         return {"error": "title and prompt are required"}
     
@@ -28,12 +28,29 @@ def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get active session from sessions table if exists
-        cursor.execute("SELECT session_key, global_conversation_id, active_project FROM sessions ORDER BY updated_at DESC LIMIT 1")
-        session_row = cursor.fetchone()
-        parent_session_key = session_row["session_key"] if session_row else "telegram:default"
-        parent_conv_id = session_row["global_conversation_id"] if session_row and session_row["global_conversation_id"] else ""
-        project_name = session_row["active_project"] if session_row and session_row["active_project"] else ""
+        parent_conv_id = ""
+        project_name = ""
+
+        if parent_session_key:
+            cursor.execute("SELECT session_key, global_conversation_id, active_project FROM sessions WHERE session_key = ?", (parent_session_key,))
+            session_row = cursor.fetchone()
+            if session_row:
+                parent_conv_id = session_row["global_conversation_id"] if session_row["global_conversation_id"] else ""
+                project_name = session_row["active_project"] if session_row["active_project"] else ""
+        else:
+            cursor.execute("""
+                SELECT session_key, global_conversation_id, active_project 
+                FROM sessions 
+                WHERE session_key NOT LIKE 'telegram:proof_%' AND session_key NOT LIKE 'telegram:test_%'
+                ORDER BY updated_at DESC LIMIT 1
+            """)
+            session_row = cursor.fetchone()
+            if not session_row:
+                cursor.execute("SELECT session_key, global_conversation_id, active_project FROM sessions ORDER BY updated_at DESC LIMIT 1")
+                session_row = cursor.fetchone()
+            parent_session_key = session_row["session_key"] if session_row else "telegram:default"
+            parent_conv_id = session_row["global_conversation_id"] if session_row and session_row["global_conversation_id"] else ""
+            project_name = session_row["active_project"] if session_row and session_row["active_project"] else ""
 
         insert_sql = """
             INSERT INTO subagent_tasks (
