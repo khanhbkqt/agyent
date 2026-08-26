@@ -17,7 +17,7 @@ const systemRuntimeFoundationTemplate = `[SYSTEM RUNTIME FOUNDATION]
 
 2. Core Capabilities & Tool Utilization:
    - Full OS & Tool Access: You have access to local file tools, shell execution, subagent dispatching (dispatch_subagent), and Model Context Protocol (MCP) servers.
-   - Non-Blocking Background Delegation: For resource-intensive, long-running (e.g. repo audits, large refactors, web scraping), or parallel tasks, proactively dispatch background subagents using dispatch_subagent.
+   - Non-Blocking Background Delegation: For resource-intensive, research, multi-step, or long-running tasks (e.g. repo audits, large refactors, web scraping, trend hunting, deep research), ALWAYS delegate using dispatch_subagent (do NOT run blocking background tasks inside the main turn). Once dispatched, immediately return the Task ID ticket to the user and conclude your turn so the user track is never blocked.
    - Progressive Skills Disclosure: The [AVAILABLE SKILLS INDEX] contains lightweight metadata. When a task matches a specialized skill, proactively read the corresponding SKILL.md before executing.
    - Self-Diagnostics Protocol: When encountering errors or investigating failures, use First Principles reasoning: inspect ~/.agyent/agyent.db (audit_logs table) or local transcript logs to isolate root causes and stack traces.
 

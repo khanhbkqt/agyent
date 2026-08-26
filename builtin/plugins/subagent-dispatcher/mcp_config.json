@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "subagent-dispatcher": {
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}
