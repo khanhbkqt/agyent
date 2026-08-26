@@ -186,6 +186,67 @@ func (s *SQLiteStore) ListActiveSubagentTasks(ctx context.Context, parentSession
 	return results, nil
 }
 
+// ListPendingSubagentTasks returns up to limit tasks in PENDING status ordered by created_at ASC.
+func (s *SQLiteStore) ListPendingSubagentTasks(ctx context.Context, limit int) ([]domain.SubagentTask, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	query := `
+		SELECT id, parent_session_key, parent_conversation_id, sub_conversation_id,
+		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
+		       status, current_step, current_tool, progress_message, pending_question,
+		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
+		       created_at, updated_at
+		FROM subagent_tasks
+		WHERE status = 'PENDING'
+		ORDER BY created_at ASC
+		LIMIT ?
+	`
+
+	rows, err := s.reader().QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending subagent tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var results []domain.SubagentTask
+	for rows.Next() {
+		var (
+			t             domain.SubagentTask
+			statusStr     string
+			cbModeStr     string
+			artifactsJSON string
+			createdAt     FlexTime
+			updatedAt     FlexTime
+		)
+
+		if err := rows.Scan(
+			&t.ID, &t.ParentSessionKey, &t.ParentConversationID, &t.SubConversationID,
+			&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
+			&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
+			&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
+			&createdAt, &updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan pending subagent task row: %w", err)
+		}
+
+		t.Status = domain.SubagentTaskStatus(statusStr)
+		t.CallbackMode = domain.SubagentCallbackMode(cbModeStr)
+		t.CreatedAt = createdAt.Time
+		t.UpdatedAt = updatedAt.Time
+		t.ParseArtifactsJSON(artifactsJSON)
+
+		results = append(results, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating pending subagent task rows: %w", err)
+	}
+
+	return results, nil
+}
+
 // SaveSubagentTask inserts or updates a full subagent task record.
 func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.SubagentTask) error {
 	if task == nil || task.ID == "" {

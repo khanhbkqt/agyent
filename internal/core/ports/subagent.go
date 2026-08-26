@@ -11,6 +11,7 @@ type SubagentRepository interface {
 	GetSubagentTask(ctx context.Context, id string) (*domain.SubagentTask, error)
 	ListSubagentTasks(ctx context.Context, parentSessionKey string, limit, offset int) ([]domain.SubagentTask, int, error)
 	ListActiveSubagentTasks(ctx context.Context, parentSessionKey string) ([]domain.SubagentTask, error)
+	ListPendingSubagentTasks(ctx context.Context, limit int) ([]domain.SubagentTask, error)
 	SaveSubagentTask(ctx context.Context, task *domain.SubagentTask) error
 	UpdateSubagentTaskProgress(ctx context.Context, id string, step int, tool, progressMsg string) error
 	UpdateSubagentTaskWaitingInput(ctx context.Context, id string, question, subConvID string) error

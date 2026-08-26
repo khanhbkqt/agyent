@@ -22,31 +22,42 @@ type mcpConfigFile struct {
 	MCPServers map[string]domain.MCPServerConfig `json:"mcpServers"`
 }
 
-// MCPSyncer safely synchronizes MCP server configurations to ~/.gemini/config/mcp_config.json
-// using in-process mutex, cross-process OS file locks, atomic write-rename, reference counting, and crash recovery.
+// MCPSyncer safely synchronizes MCP server configurations to ~/.gemini/antigravity-cli/mcp_config.json,
+// ~/.gemini/antigravity/mcp_config.json, and ~/.gemini/config/mcp_config.json using in-process mutex,
+// cross-process OS file locks, atomic write-rename, reference counting, and crash recovery.
 type MCPSyncer struct {
-	mu           sync.Mutex
-	configPath   string
-	lockFilePath string
-	baseServers  map[string]domain.MCPServerConfig
-	activeMounts map[string]int // serverKey -> activeRefCount
+	mu             sync.Mutex
+	configPath     string
+	allConfigPaths []string
+	lockFilePath   string
+	baseServers    map[string]domain.MCPServerConfig
+	activeMounts   map[string]int // serverKey -> activeRefCount
 }
 
 // NewMCPSyncer initializes a new MCPSyncer instance and performs startup crash recovery.
 func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
+	var allPaths []string
 	if configPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get user home: %w", err)
 		}
-		configPath = filepath.Join(home, ".gemini", "config", "mcp_config.json")
+		configPath = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
+		allPaths = []string{
+			filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
+		}
+	} else {
+		allPaths = []string{configPath}
 	}
 
 	syncer := &MCPSyncer{
-		configPath:   configPath,
-		lockFilePath: configPath + ".lock",
-		activeMounts: make(map[string]int),
-		baseServers:  make(map[string]domain.MCPServerConfig),
+		configPath:     configPath,
+		allConfigPaths: allPaths,
+		lockFilePath:   configPath + ".lock",
+		activeMounts:   make(map[string]int),
+		baseServers:    make(map[string]domain.MCPServerConfig),
 	}
 
 	if err := syncer.bootstrapClean(); err != nil {
@@ -188,25 +199,30 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 		return fmt.Errorf("failed to marshal mcp config: %w", err)
 	}
 
-	dir := filepath.Dir(s.configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+	targets := s.allConfigPaths
+	if len(targets) == 0 {
+		targets = []string{s.configPath}
 	}
 
-	tmpFile := fmt.Sprintf("%s.tmp.%d.%d", s.configPath, os.Getpid(), time.Now().UnixNano())
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write temp mcp config: %w", err)
-	}
+	for _, target := range targets {
+		dir := filepath.Dir(target)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			continue
+		}
 
-	f, err := os.Open(tmpFile)
-	if err == nil {
-		_ = f.Sync()
-		_ = f.Close()
-	}
+		tmpFile := fmt.Sprintf("%s.tmp.%d.%d", target, os.Getpid(), time.Now().UnixNano())
+		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+			continue
+		}
 
-	if err := os.Rename(tmpFile, s.configPath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to atomic rename mcp config: %w", err)
+		if f, err := os.Open(tmpFile); err == nil {
+			_ = f.Sync()
+			_ = f.Close()
+		}
+
+		if err := os.Rename(tmpFile, target); err != nil {
+			_ = os.Remove(tmpFile)
+		}
 	}
 
 	return nil

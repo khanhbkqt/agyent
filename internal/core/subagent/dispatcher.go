@@ -79,12 +79,60 @@ func (d *SubagentDispatcher) Start(ctx context.Context) error {
 		go d.workerLoop(i + 1)
 	}
 
+	d.wg.Add(1)
+	go d.pollerLoop()
+
 	slog.Info("subagent dispatcher started",
 		"workers", d.config.MaxConcurrentWorkers,
 		"timeout_seconds", d.config.DefaultTimeoutSeconds,
 	)
 
 	return nil
+}
+
+func (d *SubagentDispatcher) pollerLoop() {
+	defer d.wg.Done()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			d.enqueuePendingTasks()
+		}
+	}
+}
+
+func (d *SubagentDispatcher) enqueuePendingTasks() {
+	if d.storage == nil {
+		return
+	}
+	pendingTasks, err := d.storage.ListPendingSubagentTasks(d.ctx, 10)
+	if err != nil || len(pendingTasks) == 0 {
+		return
+	}
+
+	for _, task := range pendingTasks {
+		if !d.registry.Has(task.ID) {
+			tCtx := &taskRuntimeContext{
+				task:      task,
+				startedAt: time.Now(),
+			}
+			d.registry.Register(tCtx)
+
+			if d.eventBus != nil {
+				d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
+			}
+
+			select {
+			case d.taskQueue <- task:
+			default:
+				// Queue is full, will retry next tick
+			}
+		}
+	}
 }
 
 // Stop gracefully shuts down the worker pool and cancels running tasks.

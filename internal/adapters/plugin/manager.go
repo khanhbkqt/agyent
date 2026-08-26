@@ -34,13 +34,24 @@ func NewPluginManager(builtinDir string) *PluginManager {
 func (m *PluginManager) ListPlugins(ctx context.Context, globalHome, workspaceDir string) ([]domain.Plugin, error) {
 	pluginMap := make(map[string]domain.Plugin)
 
-	// 1. Scan Global Plugins (~/.agyent/plugins/)
+	// 1. Scan Built-in Plugins (builtin/plugins/)
+	if m.builtinDir != "" {
+		builtinRoot := m.builtinDir
+		if !filepath.IsAbs(builtinRoot) {
+			if abs, err := filepath.Abs(builtinRoot); err == nil {
+				builtinRoot = abs
+			}
+		}
+		m.scanPluginsInDir(builtinRoot, domain.ScopeGlobal, pluginMap)
+	}
+
+	// 2. Scan Global Plugins (~/.agyent/plugins/)
 	if globalHome != "" {
 		globalPluginRoot := filepath.Join(globalHome, "plugins")
 		m.scanPluginsInDir(globalPluginRoot, domain.ScopeGlobal, pluginMap)
 	}
 
-	// 2. Scan Workspace Plugins (<project>/.agents/plugins/)
+	// 3. Scan Workspace Plugins (<project>/.agents/plugins/)
 	if workspaceDir != "" {
 		wsPluginRoot := filepath.Join(workspaceDir, ".agents", "plugins")
 		m.scanPluginsInDir(wsPluginRoot, domain.ScopeWorkspace, pluginMap)

@@ -102,6 +102,11 @@ func (r *taskRegistry) Get(taskID string) (*taskRuntimeContext, bool) {
 	return val.(*taskRuntimeContext), true
 }
 
+func (r *taskRegistry) Has(taskID string) bool {
+	_, ok := r.tasks.Load(taskID)
+	return ok
+}
+
 func (r *taskRegistry) Delete(taskID string) {
 	r.tasks.Delete(taskID)
 }
