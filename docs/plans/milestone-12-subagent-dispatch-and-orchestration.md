@@ -124,9 +124,9 @@ flowchart TB
 
 - [x] Technical Architecture document authored at [`docs/subagent-architecture.md`](file:///c:/Users/stevan.nguyen/Desktop/projects/agyent/docs/subagent-architecture.md).
 - [x] POC program created and benchmarked against real `agy.exe` binary at [`cmd/poc_subagent/main.go`](file:///c:/Users/stevan.nguyen/Desktop/projects/agyent/cmd/poc_subagent/main.go).
-- [ ] SQLite Migration `000005_subagent_tasks.up.sql` integrated and tested.
-- [ ] `SubagentDispatcher` package implemented in `internal/core/subagent/`.
-- [ ] Internal Subagent Tools mounted and registered for the Main Agent.
-- [ ] Autonomous Callback & Proactive Telegram delivery working cleanly.
-- [ ] Windows Kernel Job Objects & POSIX Process Groups verified for 100% clean process termination.
-- [ ] 100% test pass rate on unit and integration test matrices (`go test ./...`).
+- [x] SQLite Migration `000006_subagent_tasks.up.sql` integrated and tested.
+- [x] `SubagentDispatcher` package implemented in `internal/core/subagent/`.
+- [x] Internal Subagent Tools mounted and registered for the Main Agent.
+- [x] Autonomous Callback & Proactive Telegram delivery working cleanly.
+- [x] Windows Kernel Job Objects & POSIX Process Groups verified for 100% clean process termination.
+- [x] 100% test pass rate on unit and integration test matrices (`go test ./...`).
