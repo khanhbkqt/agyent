@@ -51,15 +51,45 @@ func TestSnapshotWatcher_TC_WAT_02_IgnoredSourceCode(t *testing.T) {
 	beforeSnap, err := watcher.TakeSnapshot(tempDir)
 	require.NoError(t, err)
 
-	// Create source code files at root
+	// Create source code and system identity files at root
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "script.py"), []byte("print('hi')"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "app.js"), []byte("console.log()"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "README.md"), []byte("# Title"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte("# Title"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "MEMORY.md"), []byte("# Memory"), 0644))
 
 	artifacts, err := watcher.DetectArtifacts(tempDir, beforeSnap)
 	require.NoError(t, err)
-	assert.Empty(t, artifacts, "source code files should not be detected as uploadable artifacts")
+	assert.Empty(t, artifacts, "source code and system identity files should not be detected as uploadable artifacts")
+}
+
+func TestSnapshotWatcher_TC_WAT_05_MarkdownPlansAndDocuments(t *testing.T) {
+	tempDir := t.TempDir()
+	watcher := agy.NewSnapshotWatcher()
+
+	beforeSnap, err := watcher.TakeSnapshot(tempDir)
+	require.NoError(t, err)
+
+	// Create plans and doc files
+	planDir := filepath.Join(tempDir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(planDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(planDir, "camoufox_plan.md"), []byte("# Plan"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "spec.docx"), []byte("docx content"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "notes.txt"), []byte("txt content"), 0644))
+
+	artifacts, err := watcher.DetectArtifacts(tempDir, beforeSnap)
+	require.NoError(t, err)
+	assert.Len(t, artifacts, 3)
+
+	assert.Equal(t, "camoufox_plan.md", artifacts[0].FileName)
+	assert.Equal(t, "document", artifacts[0].Type)
+	assert.Equal(t, "text/markdown", artifacts[0].MIMEType)
+
+	assert.Equal(t, "notes.txt", artifacts[1].FileName)
+	assert.Equal(t, "document", artifacts[1].Type)
+
+	assert.Equal(t, "spec.docx", artifacts[2].FileName)
+	assert.Equal(t, "document", artifacts[2].Type)
 }
 
 func TestSnapshotWatcher_TC_WAT_03_ExcludedDirectoriesPruning(t *testing.T) {

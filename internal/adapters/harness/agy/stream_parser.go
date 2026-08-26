@@ -60,7 +60,8 @@ type ResultPayload struct {
 
 // StreamParser reads NDJSON lines from an io.Reader and translates them into domain.Events on the EventBus.
 type StreamParser struct {
-	eventBus ports.EventBusPort
+	eventBus         ports.EventBusPort
+	artifactDetector func() []domain.Attachment
 }
 
 // NewStreamParser creates a new StreamParser instance.
@@ -68,6 +69,11 @@ func NewStreamParser(bus ports.EventBusPort) *StreamParser {
 	return &StreamParser{
 		eventBus: bus,
 	}
+}
+
+// SetArtifactDetector sets an optional callback function to detect created or modified artifacts before emitting EventStreamResult.
+func (p *StreamParser) SetArtifactDetector(fn func() []domain.Attachment) {
+	p.artifactDetector = fn
 }
 
 // ParseAndEmitStream processes NDJSON lines from reader and dispatches domain events until EOF.
@@ -186,6 +192,10 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				if usage.TotalTokens == 0 {
 					usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.ThinkingTokens
 				}
+				var artifacts []domain.Attachment
+				if p.artifactDetector != nil {
+					artifacts = p.artifactDetector()
+				}
 				lastResult = &domain.StreamResultPayload{
 					SessionKey:      sessionKey,
 					ConversationID:  conversationID,
@@ -195,6 +205,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					DurationSeconds: res.DurationSeconds,
 					NumTurns:        res.NumTurns,
 					Usage:           usage,
+					Artifacts:       artifacts,
 				}
 				if p.eventBus != nil {
 					_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))

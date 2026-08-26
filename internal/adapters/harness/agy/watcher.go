@@ -33,11 +33,26 @@ var excludedDirMap = map[string]bool{
 	".cache":       true,
 }
 
+var excludedFilesMap = map[string]bool{
+	"identity.md":       true,
+	"soul.md":           true,
+	"user.md":           true,
+	"memory.md":         true,
+	"agents.md":         true,
+	"go.mod":            true,
+	"go.sum":            true,
+	"package.json":      true,
+	"package-lock.json": true,
+	"tsconfig.json":     true,
+	".gitignore":        true,
+}
+
 var allowedExtMap = map[string]string{
 	// Images / Charts
 	".png": "image", ".jpg": "image", ".jpeg": "image", ".svg": "image", ".webp": "image", ".gif": "image",
-	// Documents / Reports / Data
+	// Documents / Reports / Plans / Data
 	".pdf": "document", ".csv": "document", ".xlsx": "document", ".docx": "document", ".json": "document",
+	".txt": "document", ".md": "document", ".html": "document", ".xml": "document", ".yaml": "document", ".yml": "document",
 	// Archives
 	".zip": "archive", ".tar.gz": "archive", ".tar": "archive", ".gz": "archive", ".7z": "archive",
 	// Media
@@ -80,6 +95,11 @@ func (w *SnapshotWatcher) TakeSnapshot(rootDir string) (Snapshot, error) {
 			if path != cleanRoot && excludedDirMap[strings.ToLower(d.Name())] {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		baseName := strings.ToLower(d.Name())
+		if excludedFilesMap[baseName] {
 			return nil
 		}
 
@@ -163,9 +183,16 @@ func (w *SnapshotWatcher) DetectArtifacts(rootDir string, before Snapshot) ([]do
 
 		mimeType := mime.TypeByExtension(ext)
 		if mimeType == "" {
-			if ext == ".tar.gz" {
+			switch ext {
+			case ".md":
+				mimeType = "text/markdown"
+			case ".txt":
+				mimeType = "text/plain"
+			case ".yaml", ".yml":
+				mimeType = "application/x-yaml"
+			case ".tar.gz":
 				mimeType = "application/gzip"
-			} else {
+			default:
 				mimeType = "application/octet-stream"
 			}
 		}

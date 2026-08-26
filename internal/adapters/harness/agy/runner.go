@@ -278,6 +278,15 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	parser := NewStreamParser(h.eventBus)
+	if req.WorkspaceDir != "" {
+		parser.SetArtifactDetector(func() []domain.Attachment {
+			artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
+			if err != nil {
+				return nil
+			}
+			return artifacts
+		})
+	}
 	streamRes, parseErr := parser.ParseAndEmitStream(execCtx, sessionKey, stdoutPipe)
 
 	// Ensure stdoutPipe is closed so subprocess unblocks if still writing, preventing cmd.Wait() deadlock
@@ -316,10 +325,11 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		DurationSec:    streamRes.DurationSeconds,
 		Usage:          streamRes.Usage,
 		Error:          streamRes.Error,
+		Artifacts:      streamRes.Artifacts,
 	}
 
-	// Detect artifacts
-	if req.WorkspaceDir != "" {
+	// Fallback detect artifacts if not captured during stream
+	if len(res.Artifacts) == 0 && req.WorkspaceDir != "" {
 		artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
 		if err == nil {
 			res.Artifacts = artifacts

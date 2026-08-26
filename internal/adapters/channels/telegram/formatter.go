@@ -4,10 +4,27 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"unicode"
 )
+
+var (
+	winUserPathRegex  = regexp.MustCompile(`(?i)[a-zA-Z]:[/\\]Users[/\\][^/\\\s"'\)\]]+[/\\]?`)
+	unixUserPathRegex = regexp.MustCompile(`/(home|Users)/[^/\\\s"'\)\]]+[/\\]?`)
+)
+
+// SanitizePrivacyLeaks masks host user directory paths (e.g. C:\Users\username\ -> ~/)
+// to prevent accidental host path or OS username leaks in chat channels.
+func SanitizePrivacyLeaks(text string) string {
+	if text == "" {
+		return ""
+	}
+	text = winUserPathRegex.ReplaceAllString(text, "~/")
+	text = unixUserPathRegex.ReplaceAllString(text, "~/")
+	return text
+}
 
 var builderPool = sync.Pool{
 	New: func() any {
@@ -69,6 +86,8 @@ func FormatMarkdownToTelegramHTML(md string) string {
 	if strings.TrimSpace(md) == "" {
 		return md
 	}
+
+	md = SanitizePrivacyLeaks(md)
 
 	sb := builderPool.Get().(*strings.Builder)
 	sb.Reset()
@@ -439,6 +458,14 @@ func formatInlineMarkdown(text string) string {
 						sb.WriteString("</a>")
 						i = closeParen + 1
 						continue
+					} else if isFileOrLocalURI(rawURL) {
+						// Privacy protection: Sanitize local file:/// URLs or paths and render clean label as inline code
+						cleanLabel := formatInlineMarkdown(label)
+						sb.WriteString("<code>")
+						sb.WriteString(cleanLabel)
+						sb.WriteString("</code>")
+						i = closeParen + 1
+						continue
 					}
 				}
 			}
@@ -459,6 +486,23 @@ func formatInlineMarkdown(text string) string {
 	}
 
 	return sb.String()
+}
+
+func isFileOrLocalURI(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if strings.HasPrefix(lower, "file:") ||
+		strings.HasPrefix(lower, "./") ||
+		strings.HasPrefix(lower, "../") ||
+		strings.HasPrefix(lower, "/") ||
+		strings.HasPrefix(lower, "\\") ||
+		strings.HasPrefix(lower, "~/") ||
+		(len(lower) >= 2 && lower[1] == ':' && (lower[0] >= 'a' && lower[0] <= 'z')) {
+		return true
+	}
+	return false
 }
 
 func isValidURL(raw string) bool {

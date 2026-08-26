@@ -170,3 +170,45 @@ func TestFormatMarkdownToTelegramHTML_Blockquotes(t *testing.T) {
 	assert.Contains(t, result, "<blockquote>This is a quote\nSecond line of quote</blockquote>")
 	assert.Contains(t, result, "Normal line after.")
 }
+
+func TestFormatMarkdownToTelegramHTML_FileURILinkSanitization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "windows file URI markdown link",
+			input:    "em có thể mở rộng file [server.py](file:///C:/Users/stevan.nguyen/Desktop/projects/agyent/builtin/plugins/browser-camoufox/server.py) để bổ sung thêm",
+			expected: "em có thể mở rộng file <code>server.py</code> để bổ sung thêm",
+		},
+		{
+			name:     "unix file URI markdown link",
+			input:    "check out [main.go](file:///home/ubuntu/projects/agyent/main.go) please",
+			expected: "check out <code>main.go</code> please",
+		},
+		{
+			name:     "relative local path link",
+			input:    "see [config.yaml](./internal/config/config.yaml) for settings",
+			expected: "see <code>config.yaml</code> for settings",
+		},
+		{
+			name:     "raw host path masking in prose",
+			input:    "Saved to C:\\Users\\stevan.nguyen\\Desktop\\report.pdf successfully.",
+			expected: "Saved to ~/Desktop\\report.pdf successfully.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := FormatMarkdownToTelegramHTML(tt.input)
+			assert.Equal(t, tt.expected, actual)
+			// Ensure no raw host username or file:/// leaks remain in output or plaintext fallback
+			assert.NotContains(t, actual, "stevan.nguyen")
+			assert.NotContains(t, actual, "file:///")
+			plainText := StripHTMLTags(actual)
+			assert.NotContains(t, plainText, "stevan.nguyen")
+			assert.NotContains(t, plainText, "file:///")
+		})
+	}
+}
