@@ -312,6 +312,18 @@ sequenceDiagram
     Worker->>Worker: Continues execution to completion!
 ```
 
+### 6.3. Semantic Intent Interpretation & Clean AI-Native Resolution
+To avoid brittle language-specific regular expressions in the Go core daemon, `agyent` resolves conversational questions through a **Clean 2-Layer AI-Native Protocol**:
+
+1. **Sub-Agent Foundation Guardrail (Prompt Directive):**
+   - In Level 0 directives, sub-agents are explicitly instructed: *"If you need user clarification or a decision between multiple architectural options, explicitly invoke the `ask_question` tool. Do not conclude tasks with unresolved questions."*
+2. **Main Agent Cognitive Evaluation (Semantic Intent Fallback):**
+   - If a sub-agent happens to write a natural language question in its text response without calling `ask_question`, the Go engine delivers the output to the Main Agent via `CallbackInvokeMain`.
+   - The Main Agent's high-reasoning model (`gemini-pro`) natively understands the semantic meaning:
+     - **If it identifies an open question:** Main Agent checks project rules/memory to answer automatically via `send_subagent_input`, or escalates to the human user via Telegram.
+     - **If it identifies a completed report:** Main Agent summarizes the findings for the user.
+   - **Advantage:** Eliminates brittle regex string-matching in Go, supports all natural languages seamlessly, and maintains strict Clean Architecture standards.
+
 ---
 
 ## 7. Internal Subagent Tools Specification
