@@ -74,7 +74,6 @@ type AuditRepository interface {
 	GetTokenStats(ctx context.Context, sessionKey string, convID string) (*domain.TokenUsage, error)
 }
 
-
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.
 type ConversationRepository interface {
 	GetConversation(ctx context.Context, id string) (*domain.Conversation, error)

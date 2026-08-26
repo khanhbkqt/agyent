@@ -15,12 +15,12 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		rawModel          string
-		rawEffort         string
-		expectedModel     string
-		expectedEffort    string
-		expectedIsCustom  bool
+		name             string
+		rawModel         string
+		rawEffort        string
+		expectedModel    string
+		expectedEffort   string
+		expectedIsCustom bool
 	}{
 		{
 			name:             "Canonical Gemini 3.7 Flash with explicit high effort",
@@ -169,4 +169,3 @@ gpt-oss-120b-medium	GPT-OSS 120B (Medium)`
 	models := domain.ListAvailableModels()
 	assert.GreaterOrEqual(t, len(models), 5)
 }
-

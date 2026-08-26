@@ -38,10 +38,10 @@ func TestTemporalContext_FormatTemporalTag(t *testing.T) {
 			expectedTag: "[GAP: ~45m later]",
 		},
 		{
-			name:        "Long pause ~3h in afternoon",
-			lastTime:    baseTime,
-			currTime:    baseTime.Add(5 * time.Hour), // 14:00
-			contains:    "hours later",
+			name:     "Long pause ~3h in afternoon",
+			lastTime: baseTime,
+			currTime: baseTime.Add(5 * time.Hour), // 14:00
+			contains: "hours later",
 		},
 		{
 			name:        "Overnight next morning",
@@ -50,10 +50,10 @@ func TestTemporalContext_FormatTemporalTag(t *testing.T) {
 			expectedTag: "[GAP: Next morning, 08:30]",
 		},
 		{
-			name:        "3 days absence",
-			lastTime:    time.Date(2026, 8, 23, 10, 0, 0, 0, loc),
-			currTime:    time.Date(2026, 8, 26, 10, 0, 0, 0, loc),
-			contains:    "3 days later",
+			name:     "3 days absence",
+			lastTime: time.Date(2026, 8, 23, 10, 0, 0, 0, loc),
+			currTime: time.Date(2026, 8, 26, 10, 0, 0, 0, loc),
+			contains: "3 days later",
 		},
 	}
 

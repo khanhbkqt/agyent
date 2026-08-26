@@ -256,4 +256,3 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 
 	return sb.String()
 }
-

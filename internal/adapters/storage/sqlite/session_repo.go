@@ -108,6 +108,25 @@ func (s *SQLiteStore) SaveSession(ctx context.Context, session *domain.Session) 
 	}
 	updatedAtMs := timeToMilli(updatedAt)
 
+	if session.ActiveAgent == "" {
+		session.ActiveAgent = "agyent"
+	}
+
+	// Ensure active_agent exists in agents table to satisfy foreign key constraint
+	var agentExists int
+	_ = tx.QueryRowContext(ctx, `SELECT 1 FROM agents WHERE name = ?`, session.ActiveAgent).Scan(&agentExists)
+	if agentExists == 0 {
+		nowMs := timeToMilli(time.Now())
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO agents (name, description, status, workspace_path, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(name) DO NOTHING
+		`, session.ActiveAgent, "Agyent - Autonomous All-in-One Personal AI Assistant & Pair Programmer", "uninitialized", "", nowMs, nowMs)
+		if err != nil {
+			return fmt.Errorf("failed to auto-seed agent %s: %w", session.ActiveAgent, err)
+		}
+	}
+
 	query := `
 		INSERT INTO sessions (
 			session_key, active_agent, active_project, global_conversation_id, active_model, active_effort, updated_at

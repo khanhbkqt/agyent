@@ -139,7 +139,20 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		ReplyToMessageID: replyToMsgID,
 	}
 
-	// 5. Send to inbound channel
+	// 5. Proactively trigger typing indicator immediately (<200ms user feedback)
+	// so the user gets instant visual feedback while the debouncer coalesces messages
+	// and the AGY CLI subprocess initializes.
+	if !cMsg.IsCommand() && b != nil {
+		go func(chatID, threadID int64) {
+			opts := &gotgbot.SendChatActionOpts{}
+			if threadID != 0 {
+				opts.MessageThreadId = threadID
+			}
+			_, _ = b.SendChatAction(chatID, "typing", opts)
+		}(msg.Chat.Id, threadID)
+	}
+
+	// 6. Send to inbound channel
 	if r.inbound != nil {
 		select {
 		case r.inbound <- cMsg:

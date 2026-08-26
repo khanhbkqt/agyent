@@ -263,13 +263,13 @@ func LookupModelCapability(nameOrAlias string, customAliases map[string]string) 
 // NormalizeModelAndEffort canonicalizes a model alias and enforces effort capability constraints.
 //
 // Specific agy Rules:
-// 1. If model does NOT support effort (e.g. claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium):
-//    normalizedEffort is returned as empty string ("") so that --effort is omitted.
-// 2. If model requires effort and only supports a subset (e.g. gemini-3.1-pro only supports [low, high]):
-//    - If requested effort is "medium", it is normalized/clamped to DefaultEffort ("high").
-//    - If effort is empty, it uses DefaultEffort ("high").
-// 3. If model is unknown/custom:
-//    - Passthrough model name and effort as requested.
+//  1. If model does NOT support effort (e.g. claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b-medium):
+//     normalizedEffort is returned as empty string ("") so that --effort is omitted.
+//  2. If model requires effort and only supports a subset (e.g. gemini-3.1-pro only supports [low, high]):
+//     - If requested effort is "medium", it is normalized/clamped to DefaultEffort ("high").
+//     - If effort is empty, it uses DefaultEffort ("high").
+//  3. If model is unknown/custom:
+//     - Passthrough model name and effort as requested.
 func NormalizeModelAndEffort(rawModel, rawEffort string, customAliases map[string]string) (canonicalModel string, normalizedEffort string, isCustom bool) {
 	cleanModel := strings.TrimSpace(rawModel)
 	cleanEffort := strings.ToLower(strings.TrimSpace(rawEffort))

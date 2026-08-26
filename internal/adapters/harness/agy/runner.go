@@ -368,4 +368,3 @@ func (h *Harness) ListAvailableModels(ctx context.Context) ([]domain.ModelCapabi
 
 	return domain.ListAvailableModels(), nil
 }
-

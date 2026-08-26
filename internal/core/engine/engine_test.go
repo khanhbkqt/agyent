@@ -416,7 +416,6 @@ func TestEngine_NewAgentBootstrapFlow(t *testing.T) {
 	err = eng.HandleDebouncedMessage(ctx, msgTurn3)
 	require.NoError(t, err)
 
-
 	require.Len(t, runner.executeCalls, 3)
 	promptTurn3 := runner.executeCalls[2].Prompt
 
@@ -429,7 +428,6 @@ func TestEngine_NewAgentBootstrapFlow(t *testing.T) {
 	assert.Contains(t, promptTurn3, "Specialty: Go Architecture")
 	assert.Contains(t, promptTurn3, "[USER MESSAGE]\nBắt đầu phiên mới nào")
 }
-
 
 func TestEngine_SlashCommandsSuite(t *testing.T) {
 	eng, _, channel, store, _, cleanup := setupTestEngine(t)

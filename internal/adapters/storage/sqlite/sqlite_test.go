@@ -67,6 +67,21 @@ func TestSQLiteStore_SessionCRUD_And_DualScopeIsolation(t *testing.T) {
 		assert.Equal(t, "dev_expert", sess2.ActiveAgent)
 	})
 
+	t.Run("TC-SESS-02b: GetOrCreateSession on Fresh DB Auto-seeds Agent", func(t *testing.T) {
+		freshStore := setupIsolatedStore(t)
+		freshKey := "telegram:brand_new_user"
+		sess, err := freshStore.GetOrCreateSession(ctx, freshKey, "agyent")
+		require.NoError(t, err)
+		assert.Equal(t, freshKey, sess.SessionKey)
+		assert.Equal(t, "agyent", sess.ActiveAgent)
+
+		// Verify agent was automatically inserted into agents table
+		agent, err := freshStore.GetAgent(ctx, "agyent")
+		require.NoError(t, err)
+		assert.Equal(t, "agyent", agent.Name)
+		assert.Equal(t, domain.StatusUninitialized, agent.Status)
+	})
+
 	t.Run("TC-SESS-04: Save and Update Session", func(t *testing.T) {
 		key := "telegram:user_update"
 		sess := &domain.Session{
@@ -869,4 +884,3 @@ func TestSQLiteStore_FlexTime_StringAndNumericTimestamps(t *testing.T) {
 	assert.Len(t, logs, 1)
 	assert.Equal(t, 2026, logs[0].CreatedAt.Year())
 }
-

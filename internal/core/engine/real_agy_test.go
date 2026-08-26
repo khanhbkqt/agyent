@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 func skipIfNoRealAGY(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
@@ -464,7 +463,6 @@ func TestRealAGY_EndToEnd_EngineTurnContinuation_TokenOptimization(t *testing.T)
 	require.NoError(t, eng.Start(ctx))
 	defer eng.Stop(ctx)
 
-
 	sessionKey := "telegram:8544450322"
 	sess, err := store.GetOrCreateSession(ctx, sessionKey, "test_agent")
 	require.NoError(t, err)
@@ -562,7 +560,6 @@ func TestRealAGY_EndToEnd_CacheHit_Verification(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(agentWorkspace, "IDENTITY.md"), []byte("# AGENT IDENTITY\n- **Name**: CacheBot\n- **Role**: Cache Test Assistant"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(agentWorkspace, "USER.md"), []byte("Name: Khánh Nguyễn\nID: 8544450322"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(agentWorkspace, "MEMORY.md"), []byte("# LONG TERM MEMORY\n"+seedText), 0644))
-
 
 	mcpPath := filepath.Join(tmpDir, "mcp_config.json")
 	builtinDir := filepath.Join(tmpDir, "builtin_plugins")
@@ -669,7 +666,6 @@ func TestRealAGY_EndToEnd_CacheHit_Verification(t *testing.T) {
 	t.Log("--- Executing Turn 2 (Continuation query on warm KV-cache) ---")
 	err = eng.HandleDebouncedMessage(ctx, msgTurn2)
 	require.NoError(t, err)
-
 
 	logs, err = store.ListAuditLogs(ctx, sessionKey, 10)
 	require.NoError(t, err)
@@ -869,7 +865,3 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 	assert.Equal(t, "low", logs[0].Effort, "AuditLog must record exact resolved effort")
 	t.Logf("Live Turn Success! Model: %s | Effort: %s | Tokens: %d", logs[0].Model, logs[0].Effort, logs[0].Usage.TotalTokens)
 }
-
-
-
-

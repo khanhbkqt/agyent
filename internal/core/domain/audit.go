@@ -36,7 +36,6 @@ func (t TokenUsage) EffectiveCostSavingsRatio() float64 {
 	return (savedEquivalentTokens / float64(t.InputTokens)) * 100.0
 }
 
-
 // AuditLog tracks execution history, latency, token metrics, and operational status.
 type AuditLog struct {
 	ID              int64      `json:"id"`

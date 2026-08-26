@@ -1285,4 +1285,3 @@ func formatTimeAgo(t time.Time) string {
 	}
 	return fmt.Sprintf("%d days ago", days)
 }
-

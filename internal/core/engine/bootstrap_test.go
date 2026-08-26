@@ -219,4 +219,3 @@ func TestComposeContinuationPrompt(t *testing.T) {
 	assert.Contains(t, p3, "User Prompt: Xem file này giúp anh")
 	assert.NotContains(t, p3, "[SYSTEM RUNTIME FOUNDATION]")
 }
-

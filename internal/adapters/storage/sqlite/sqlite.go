@@ -22,13 +22,13 @@ var migrationFS embed.FS
 
 // Compile-time interface compliance assertions.
 var (
-	_ ports.StoragePort          = (*SQLiteStore)(nil)
-	_ ports.SessionRepository    = (*SQLiteStore)(nil)
-	_ ports.AgentRepository      = (*SQLiteStore)(nil)
-	_ ports.ProjectRepository    = (*SQLiteStore)(nil)
-	_ ports.UserRepository       = (*SQLiteStore)(nil)
-	_ ports.GroupRepository      = (*SQLiteStore)(nil)
-	_ ports.AuditRepository      = (*SQLiteStore)(nil)
+	_ ports.StoragePort            = (*SQLiteStore)(nil)
+	_ ports.SessionRepository      = (*SQLiteStore)(nil)
+	_ ports.AgentRepository        = (*SQLiteStore)(nil)
+	_ ports.ProjectRepository      = (*SQLiteStore)(nil)
+	_ ports.UserRepository         = (*SQLiteStore)(nil)
+	_ ports.GroupRepository        = (*SQLiteStore)(nil)
+	_ ports.AuditRepository        = (*SQLiteStore)(nil)
 	_ ports.ConversationRepository = (*SQLiteStore)(nil)
 )
 

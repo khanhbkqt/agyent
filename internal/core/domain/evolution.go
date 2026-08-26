@@ -23,10 +23,10 @@ const (
 type MemoryCategory string
 
 const (
-	CategoryPreference MemoryCategory = "preference"  // Targets USER.md
-	CategoryLesson     MemoryCategory = "lesson"      // Targets memory/YYYY-MM-DD.md & MEMORY.md
-	CategoryADR        MemoryCategory = "adr"         // Targets MEMORY.md (Decisions)
-	CategoryDailyNote  MemoryCategory = "daily_note"  // Targets memory/YYYY-MM-DD.md
+	CategoryPreference MemoryCategory = "preference" // Targets USER.md
+	CategoryLesson     MemoryCategory = "lesson"     // Targets memory/YYYY-MM-DD.md & MEMORY.md
+	CategoryADR        MemoryCategory = "adr"        // Targets MEMORY.md (Decisions)
+	CategoryDailyNote  MemoryCategory = "daily_note" // Targets memory/YYYY-MM-DD.md
 )
 
 // TaskProgressState represents whether a conversation task is completed or paused mid-work.

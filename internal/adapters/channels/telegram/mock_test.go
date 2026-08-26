@@ -46,20 +46,20 @@ type SentMediaRecord struct {
 }
 
 type MockTelegramServer struct {
-	Server          *httptest.Server
-	Token           string
-	mu              sync.Mutex
-	msgSeq          int64
-	SentMessages    []SentMessageRecord
-	EditMessages    []EditMessageRecord
-	ChatActions     []ChatActionRecord
-	SentMedia       []SentMediaRecord
-	NextErrorStatus int
-	NextErrorBody   string
-	NextEditError   error
-	Simulate429Once bool
-	Simulate400Once bool
-	RetryAfterSec   int
+	Server             *httptest.Server
+	Token              string
+	mu                 sync.Mutex
+	msgSeq             int64
+	SentMessages       []SentMessageRecord
+	EditMessages       []EditMessageRecord
+	ChatActions        []ChatActionRecord
+	SentMedia          []SentMediaRecord
+	NextErrorStatus    int
+	NextErrorBody      string
+	NextEditError      error
+	Simulate429Once    bool
+	Simulate400Once    bool
+	RetryAfterSec      int
 	FilesMap           map[string][]byte
 	GetMeCount         int64
 	RegisteredCommands []gotgbot.BotCommand

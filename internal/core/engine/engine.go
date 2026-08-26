@@ -233,6 +233,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	e.registerActiveTurn(sessionKey, turnCancel)
 	defer e.unregisterActiveTurn(sessionKey)
 
+	// Refresh typing indicator while resolving session and context
+	_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
+
 	// 3. Load Session from Storage
 	defaultAgent := "agyent"
 	session, err := e.storage.GetOrCreateSession(turnCtx, sessionKey, defaultAgent)
@@ -419,6 +422,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		defer stopHeartbeat()
 
 		concurrency.SafeGo(func() {
+			_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
 			ticker := time.NewTicker(4 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -542,7 +546,6 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			_ = e.storage.TouchConversation(turnCtx, sessionKey, agent.Name, session.ActiveProject, execResult.ConversationID, msg.Text)
 		}
 	}
-
 
 	_ = e.storage.LogAudit(turnCtx, audit)
 
@@ -690,4 +693,3 @@ func isEffortError(err error, result *domain.ExecutionResult) bool {
 		strings.Contains(low, "unrecognized effort") ||
 		strings.Contains(low, "invalid effort")
 }
-
