@@ -245,7 +245,8 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 
 	sess.Mu.Lock()
 	sess.State = StateFinalizing
-	if p.Response != "" && sess.Buffer.Len() == 0 {
+	if p.Response != "" && (sess.Buffer.Len() == 0 || len(p.Response) > sess.Buffer.Len()) {
+		sess.Buffer.Reset()
 		sess.Buffer.WriteString(p.Response)
 		sess.Dirty = true
 	}
@@ -394,34 +395,8 @@ func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *Strea
 		return
 	}
 
-	formatted := FormatMarkdownToTelegramHTML(text)
-	opts := &gotgbot.SendMessageOpts{
-		ParseMode: "HTML",
-	}
-	if sess.ThreadID != 0 {
-		opts.MessageThreadId = sess.ThreadID
-	}
-
-	msg, err := dt.bot.SendMessage(sess.ChatID, formatted, opts)
-	if err != nil {
-		var tgErr *gotgbot.TelegramError
-		if errors.As(err, &tgErr) {
-			if tgErr.Code == 400 {
-				opts.ParseMode = ""
-				msg, err = dt.bot.SendMessage(sess.ChatID, StripHTMLTags(formatted), opts)
-			} else if tgErr.Code == 429 {
-				retrySec := 1
-				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
-					retrySec = int(tgErr.ResponseParams.RetryAfter)
-				}
-				if sleepCancellable(ctx, sess.DoneChan, time.Duration(retrySec)*time.Second) {
-					msg, err = dt.bot.SendMessage(sess.ChatID, formatted, opts)
-				}
-			}
-		}
-	}
-
-	if err == nil && msg != nil {
+	msg := dt.sendMessageWithFallback(sess.ChatID, sess.ThreadID, text)
+	if msg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = msg.MessageId
 		sess.LastSentText = text
@@ -459,37 +434,7 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 		return
 	}
 
-	// Format text with HTML and auto-closing
-	formatted := FormatMarkdownToTelegramHTML(text)
-
-	opts := &gotgbot.EditMessageTextOpts{
-		ChatId:    chatID,
-		MessageId: msgID,
-		Text:      formatted,
-		ParseMode: "HTML",
-	}
-
-	_, _, err := dt.bot.EditMessageText(opts)
-	if err != nil {
-		var tgErr *gotgbot.TelegramError
-		if errors.As(err, &tgErr) {
-			// Handle 400 Bad Request entity parse error -> Fallback to Sanitized PlainText
-			if tgErr.Code == 400 {
-				opts.ParseMode = ""
-				opts.Text = StripHTMLTags(formatted)
-				_, _, _ = dt.bot.EditMessageText(opts)
-			} else if tgErr.Code == 429 {
-				// Handle 429 Rate Limit with cancellable sleep
-				retrySec := 1
-				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
-					retrySec = int(tgErr.ResponseParams.RetryAfter)
-				}
-				if sleepCancellable(ctx, sess.DoneChan, time.Duration(retrySec)*time.Second) {
-					_, _, _ = dt.bot.EditMessageText(opts)
-				}
-			}
-		}
-	}
+	dt.editMessageWithFallback(chatID, msgID, text)
 
 	sess.Mu.Lock()
 	sess.LastSentText = text
@@ -505,36 +450,11 @@ func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, ful
 	}
 
 	// 1. Finalize Chunk 0 on current message
-	chunk0 := FormatMarkdownToTelegramHTML(chunks[0])
-	editOpts := &gotgbot.EditMessageTextOpts{
-		ChatId:    sess.ChatID,
-		MessageId: sess.CurrentMsgID,
-		Text:      chunk0,
-		ParseMode: "HTML",
-	}
-	if _, _, err := dt.bot.EditMessageText(editOpts); err != nil {
-		editOpts.ParseMode = ""
-		editOpts.Text = StripHTMLTags(chunk0)
-		_, _, _ = dt.bot.EditMessageText(editOpts)
-	}
+	dt.editMessageWithFallback(sess.ChatID, sess.CurrentMsgID, chunks[0])
 
 	// 2. Spawn Chunk 1 on new message
-	chunk1 := FormatMarkdownToTelegramHTML(chunks[1])
-	sendOpts := &gotgbot.SendMessageOpts{
-		ParseMode: "HTML",
-	}
-	if sess.ThreadID != 0 {
-		sendOpts.MessageThreadId = sess.ThreadID
-	}
-	newMsg, err := dt.bot.SendMessage(sess.ChatID, chunk1, sendOpts)
-	if err != nil {
-		var tgErr *gotgbot.TelegramError
-		if errors.As(err, &tgErr) && tgErr.Code == 400 {
-			sendOpts.ParseMode = ""
-			newMsg, err = dt.bot.SendMessage(sess.ChatID, StripHTMLTags(chunk1), sendOpts)
-		}
-	}
-	if err == nil && newMsg != nil {
+	newMsg := dt.sendMessageWithFallback(sess.ChatID, sess.ThreadID, chunks[1])
+	if newMsg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = newMsg.MessageId
 		sess.Buffer.Reset()
@@ -555,28 +475,95 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	text := sess.Buffer.String()
 	msgID := sess.CurrentMsgID
 	chatID := sess.ChatID
+	threadID := sess.ThreadID
 	sess.State = StateCompleted
 	sess.Mu.Unlock()
 
-	if msgID == 0 && strings.TrimSpace(text) != "" {
-		dt.sendInitialMessage(context.Background(), sess)
+	if strings.TrimSpace(text) == "" {
 		return
 	}
 
-	if msgID != 0 && strings.TrimSpace(text) != "" {
-		formatted := FormatMarkdownToTelegramHTML(text)
-		opts := &gotgbot.EditMessageTextOpts{
-			ChatId:    chatID,
-			MessageId: msgID,
-			Text:      formatted,
-			ParseMode: "HTML",
+	chunks := SplitMarkdownPreservingCodeBlocks(text, 4000)
+	if len(chunks) == 0 {
+		return
+	}
+
+	// Case 1: Initial message was never sent yet
+	if msgID == 0 {
+		for _, chunk := range chunks {
+			dt.sendMessageWithFallback(chatID, threadID, chunk)
 		}
-		if _, _, err := dt.bot.EditMessageText(opts); err != nil {
-			opts.ParseMode = ""
-			opts.Text = StripHTMLTags(formatted)
-			_, _, _ = dt.bot.EditMessageText(opts)
+		return
+	}
+
+	// Case 2: Edit first chunk into existing message
+	dt.editMessageWithFallback(chatID, msgID, chunks[0])
+
+	// Case 3: Send any subsequent overflow chunks (>4000 chars total) as new messages
+	for i := 1; i < len(chunks); i++ {
+		dt.sendMessageWithFallback(chatID, threadID, chunks[i])
+	}
+}
+
+func (dt *DeliveryThrottler) editMessageWithFallback(chatID, msgID int64, text string) {
+	if dt.bot == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	formatted := FormatMarkdownToTelegramHTML(text)
+	opts := &gotgbot.EditMessageTextOpts{
+		ChatId:    chatID,
+		MessageId: msgID,
+		Text:      formatted,
+		ParseMode: "HTML",
+	}
+	if _, _, err := dt.bot.EditMessageText(opts); err != nil {
+		var tgErr *gotgbot.TelegramError
+		if errors.As(err, &tgErr) {
+			if tgErr.Code == 400 {
+				opts.ParseMode = ""
+				opts.Text = StripHTMLTags(formatted)
+				_, _, _ = dt.bot.EditMessageText(opts)
+			} else if tgErr.Code == 429 {
+				retrySec := 1
+				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
+					retrySec = int(tgErr.ResponseParams.RetryAfter)
+				}
+				time.Sleep(time.Duration(retrySec) * time.Second)
+				_, _, _ = dt.bot.EditMessageText(opts)
+			}
 		}
 	}
+}
+
+func (dt *DeliveryThrottler) sendMessageWithFallback(chatID, threadID int64, text string) *gotgbot.Message {
+	if dt.bot == nil || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	formatted := FormatMarkdownToTelegramHTML(text)
+	opts := &gotgbot.SendMessageOpts{
+		ParseMode: "HTML",
+	}
+	if threadID != 0 {
+		opts.MessageThreadId = threadID
+	}
+	msg, err := dt.bot.SendMessage(chatID, formatted, opts)
+	if err != nil {
+		var tgErr *gotgbot.TelegramError
+		if errors.As(err, &tgErr) {
+			if tgErr.Code == 400 {
+				opts.ParseMode = ""
+				msg, _ = dt.bot.SendMessage(chatID, StripHTMLTags(formatted), opts)
+			} else if tgErr.Code == 429 {
+				retrySec := 1
+				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
+					retrySec = int(tgErr.ResponseParams.RetryAfter)
+				}
+				time.Sleep(time.Duration(retrySec) * time.Second)
+				msg, _ = dt.bot.SendMessage(chatID, formatted, opts)
+			}
+		}
+	}
+	return msg
 }
 
 // Stop drains all active streaming sessions.

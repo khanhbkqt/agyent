@@ -358,3 +358,53 @@ func TestThrottler_ZeroIdleMemoryCleanup(t *testing.T) {
 
 	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Map size must be exactly 0 when idle")
 }
+
+// TC-THR-09: Large Message Result Overflow (>5000 chars on OnStreamResult)
+func TestThrottler_LargeMessageResultOverflow(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_09")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.1, true)
+
+	sessionKey := "telegram:998877:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_09",
+	}))
+
+	// Initial short delta
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey: sessionKey,
+		TextDelta:  "Draft message before waiting...",
+	}))
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	// Stream finishes with a massive 5500-char response in Result event
+	largeResponse := "Header Report:\n\n" + strings.Repeat("Section analysis item with detailed information.\n", 130) + "\nConclusion."
+	require.Greater(t, len(largeResponse), 5000)
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_09",
+		Status:         "SUCCESS",
+		Response:       largeResponse,
+	}))
+	require.NoError(t, err)
+
+	// Must edit message 1 with chunk 0 AND send message 2 with chunk 1
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	assert.GreaterOrEqual(t, len(mockServer.SentMessages), 2, "Must spawn subsequent message for >4000 char response")
+	assert.GreaterOrEqual(t, len(mockServer.EditMessages), 1, "Must edit initial message with chunk 0")
+	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Must clean up session")
+}
