@@ -33,6 +33,7 @@ config.yaml
 
 # Runtime agent memory & system logs
 memory/
+projects/
 .system_generated/
 .agents/skills/dummy-skill/
 

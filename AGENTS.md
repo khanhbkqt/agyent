@@ -104,6 +104,7 @@ agyent/
 │   ├── agent-self-learning-and-evolution-architecture.md # Autonomous reflection & 4D memory
 │   ├── security-and-guardrails-architecture.md # Universal Security Gateway & Guardrails
 │   ├── multi-account-architecture.md # Multi-Account Profile Virtualization & Auto-Cooldown Failover
+│   ├── agent-ownership-and-multi-bot-architecture.md # Multi-Bot Gateway & Per-Agent Ownership (RBAC)
 │   └── plans/                # Master roadmap & historical milestone execution logs
 │
 ├── scripts/                  # Helper scripts & systemd service units
