@@ -83,9 +83,9 @@ flowchart TB
 ## 3. Detailed Phase Breakdown
 
 ### Phase 1: Database Migration & Core Domain Entities
-- **SQLite Migration (`000005_subagent_tasks.up.sql`):** Create table `subagent_tasks` with indexing on `parent_session_key`, `status`, and `created_at`.
-- **Domain Entities (`internal/core/domain/subagent.go`):** Declare `SubagentTask`, `SubagentTaskStatus` (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`), and `SubagentCallbackMode`.
-- **Port Contracts (`internal/core/ports/subagent.go`):** Define `SubagentDispatcherPort` and repository extensions in `StoragePort`.
+- **SQLite Migration (`000005_subagent_tasks.up.sql`):** Create table `subagent_tasks` with indexing on `parent_session_key`, `status`, and `created_at`, including `pending_question` field.
+- **Domain Entities (`internal/core/domain/subagent.go`):** Declare `SubagentTask`, `SubagentTaskStatus` (`PENDING`, `RUNNING`, `WAITING_FOR_INPUT`, `COMPLETED`, `FAILED`, `CANCELLED`), and `SubagentCallbackMode`.
+- **Port Contracts (`internal/core/ports/subagent.go`):** Define `SubagentDispatcherPort` with `SendTaskInput` and repository extensions in `StoragePort`.
 
 ### Phase 2: Subagent Dispatcher Engine & Worker Pool
 - **Package (`internal/core/subagent/`):**
@@ -98,15 +98,17 @@ flowchart TB
 - **Internal Subagent Tools:**
   - `dispatch_subagent`: Parameters for `title`, `prompt`, `agent_name`, `model`, `workspace_mode`, and `callback_mode`.
   - `check_subagent_progress`: Returns live step, running duration, active tool, and recent logs.
+  - `send_subagent_input`: Sends clarification input to resume sub-agents in `WAITING_FOR_INPUT` status via `agy --conversation <sub_id>`.
   - `cancel_subagent_task`: Forcefully terminates a running task and tears down the process tree.
   - `list_subagents`: Lists active and completed tasks for the session.
 - **Level 0 System Prompt Directives:** Guide the Main Agent to proactively delegate long-running or repository-wide subtasks.
 
 ### Phase 4: Inter-Agent Return Protocols & Telegram Delivery
-- **Synthetic System Turn Handler (`internal/core/engine/engine.go`):** Handles `CallbackInvokeMain`, acquiring session lock when idle or enqueuing to debouncer.
+- **Synthetic System Turn Handler (`internal/core/engine/engine.go`):** Handles `CallbackInvokeMain` and `WAITING_FOR_INPUT` clarification callbacks, acquiring session lock when idle or enqueuing to debouncer.
 - **Telegram Live Status Updates (`internal/adapters/channels/telegram/`):**
   - Proactive completion cards with Markdown summaries and inline action buttons.
-  - Slash commands: `/tasks`, `/task <id>`, `/task cancel <id>`, `/task clean`.
+  - Clarification alerts when sub-agent requires human decision.
+  - Slash commands: `/tasks`, `/task <id>`, `/task reply <id> <input>`, `/task cancel <id>`, `/task clean`.
 
 ### Phase 5: Verification & End-to-End Benchmark Suite
 - **Stress & Concurrency Scenarios:**

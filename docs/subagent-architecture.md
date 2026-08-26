@@ -16,6 +16,7 @@ In earlier versions of `agyent`, each user interaction is processed as a synchro
 - **Non-Blocking Main Track (< 1ms Dispatch):** Main Agent dispatches background tasks, returns an acknowledgment ticket immediately, and releases the session lock within sub-seconds.
 - **True OS Subprocess Concurrency:** Each dispatched sub-agent runs as an independent OS child process (`agy.exe --output-format stream-json`) with dedicated conversation isolation.
 - **Zero Context Pollution:** Intermediate raw logs remain isolated within the sub-agent’s ephemeral workspace/brain directory (`~/.gemini/antigravity/brain/<sub_conv_id>/`). Only distilled summaries and artifacts are reported back.
+- **Interactive Multi-Turn Continuation (`WAITING_FOR_INPUT`):** If a sub-agent encounters ambiguities or needs user input/decisions, it enters `WAITING_FOR_INPUT`. The Main Agent can either resolve it autonomously or escalate to the human user via Telegram, resuming the exact sub-agent session via `agy --conversation <sub_conv_id>` with zero memory/CPU waste during idle periods.
 - **Multi-Tier Model Selection (Cost Optimization):** Main Agent leverages reasoning-capable models (e.g., `gemini-pro`), while background workers execute via cost-efficient models (e.g., `gemini-flash` or `gemini-flash-lite`), cutting token expenditures by 70–85%.
 - **Zero-CGO & Memory-Safe Process Management:** Pure-Go SQLite WAL persistence with Windows Kernel Job Objects and POSIX process groups guaranteeing 100% process tree termination without PID or goroutine leaks.
 
@@ -75,9 +76,9 @@ flowchart TB
     NDJSONScanner -->|Sync State| SQLiteDB
     SubHarness <--> SubBrain
 
-    NDJSONScanner -->|5. On Result Payload| EventBridge
+    NDJSONScanner -->|5. On Result / Question Payload| EventBridge
     EventBridge -->|Mode A: Proactive Notification| TelegramOut
-    EventBridge -->|Mode B: Autonomous Callback| EngineRouter
+    EventBridge -->|Mode B: Autonomous Callback / Clarification| EngineRouter
     EventBridge -->|Mode C: Silent Memory Sync| MemoryStore
 ```
 
@@ -101,10 +102,11 @@ CREATE TABLE IF NOT EXISTS subagent_tasks (
     effort TEXT NOT NULL DEFAULT 'low',                       -- Reasoning effort (low, medium, high)
     workspace_mode TEXT NOT NULL DEFAULT 'share',             -- "share" (Project CWD) or "scratch" (Isolated Sandbox)
     callback_mode TEXT NOT NULL DEFAULT 'notify_user',        -- "notify_user" | "callback_main" | "silent"
-    status TEXT NOT NULL DEFAULT 'PENDING',                   -- PENDING | RUNNING | COMPLETED | FAILED | CANCELLED
+    status TEXT NOT NULL DEFAULT 'PENDING',                   -- PENDING | RUNNING | WAITING_FOR_INPUT | COMPLETED | FAILED | CANCELLED
     current_step INTEGER NOT NULL DEFAULT 0,                  -- Active Step Index
     current_tool TEXT NOT NULL DEFAULT '',                    -- Name of tool currently in ACTIVE state
     progress_message TEXT NOT NULL DEFAULT '',                -- Real-time human-readable progress note
+    pending_question TEXT NOT NULL DEFAULT '',                -- Clarification question when status == WAITING_FOR_INPUT
     result_summary TEXT NOT NULL DEFAULT '',                  -- Distilled summary Markdown
     artifacts_json TEXT NOT NULL DEFAULT '[]',                -- JSON array of generated artifacts
     error_message TEXT NOT NULL DEFAULT '',                   -- Failure details if status == FAILED
@@ -136,11 +138,12 @@ import "time"
 type SubagentTaskStatus string
 
 const (
-	TaskStatusPending   SubagentTaskStatus = "PENDING"
-	TaskStatusRunning   SubagentTaskStatus = "RUNNING"
-	TaskStatusCompleted SubagentTaskStatus = "COMPLETED"
-	TaskStatusFailed    SubagentTaskStatus = "FAILED"
-	TaskStatusCancelled SubagentTaskStatus = "CANCELLED"
+	TaskStatusPending      SubagentTaskStatus = "PENDING"
+	TaskStatusRunning      SubagentTaskStatus = "RUNNING"
+	TaskStatusWaitingInput SubagentTaskStatus = "WAITING_FOR_INPUT"
+	TaskStatusCompleted    SubagentTaskStatus = "COMPLETED"
+	TaskStatusFailed       SubagentTaskStatus = "FAILED"
+	TaskStatusCancelled    SubagentTaskStatus = "CANCELLED"
 )
 
 type SubagentCallbackMode string
@@ -169,6 +172,7 @@ type SubagentTask struct {
 	CurrentStep          int                  `json:"current_step"`
 	CurrentTool          string               `json:"current_tool"`
 	ProgressMessage      string               `json:"progress_message"`
+	PendingQuestion      string               `json:"pending_question,omitempty"`
 	ResultSummary        string               `json:"result_summary"`
 	Artifacts            []Attachment         `json:"artifacts,omitempty"`
 	ErrorMessage         string               `json:"error_message,omitempty"`
@@ -200,6 +204,9 @@ type SubagentDispatcherPort interface {
 	// ListActiveTasks returns all in-flight tasks for a given session.
 	ListActiveTasks(ctx context.Context, sessionKey string) ([]domain.SubagentTask, error)
 
+	// SendTaskInput resumes a sub-agent waiting for clarification (WAITING_FOR_INPUT).
+	SendTaskInput(ctx context.Context, taskID string, input string) error
+
 	// CancelTask forcefully halts a running task and tears down the associated process tree.
 	CancelTask(ctx context.Context, taskID string) error
 
@@ -228,13 +235,19 @@ The `StreamParser` scans stdout lines up to **10MB per line** using `bufio.Scann
    - Updates `task.CurrentTool = step.ToolName`.
    - Increments `task.CurrentStep = step.StepIndex`.
    - Records `task.ProgressMessage = "Executing tool <name>..."`.
-3. **`result` Event:**
+3. **`step_update` (type: `tool` / `ask_question`, state: `WAITING_FOR_INPUT`):**
+   - Updates `task.Status = TaskStatusWaitingInput`.
+   - Records `task.PendingQuestion = step.QuestionText`.
+   - Emits `domain.EventSubagentWaitingInput` to EventBus for Main Agent callback or human escalation.
+4. **`result` Event:**
    - Extracts `result.Response`, `result.Usage`, and `result.DurationSeconds`.
    - Flushes output to `subagent_tasks` and invokes the configured `CallbackMode`.
 
 ---
 
-## 6. Inter-Agent Communication & Return Mechanisms
+## 6. Inter-Agent Communication & Return Protocols
+
+### 6.1. Task Completion Workflow
 
 ```mermaid
 sequenceDiagram
@@ -268,21 +281,113 @@ sequenceDiagram
     end
 ```
 
+### 6.2. Interactive Multi-Turn Clarification & Resumption (`WAITING_FOR_INPUT`)
+
+When a sub-agent hits an ambiguity, permission check, or calls `ask_question`:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Telegram)
+    participant Engine as agyent Engine
+    participant MainAgent as Main Agent
+    participant Dispatcher as Subagent Dispatcher
+    participant Worker as Background Sub-Agent (conv-sub-89a1)
+
+    Worker->>Dispatcher: Hits Clarification: WAITING_FOR_INPUT ("Should we migrate to DB schema v2?")
+    Dispatcher->>Engine: Emit Event: subagent.waiting_input (Task #sub-89a1)
+    
+    alt Flow A: Autonomous Main Agent Resolution (Knowledge in Context)
+        Engine->>MainAgent: Synthetic Callback Turn: "[SYSTEM: Subagent #sub-89a1 is waiting for input]"
+        MainAgent->>MainAgent: Evaluates AGENTS.md rules -> Decides Schema v2 is standard
+        MainAgent->>Dispatcher: Tool Call: send_subagent_input(task_id: "sub-89a1", input: "Use Schema v2")
+    else Flow B: Human-in-the-Loop Escalation
+        Engine->>User: Telegram Alert with Inline Buttons: "❓ Subagent @coder asks: Migrate to v2?"
+        User->>Engine: User clicks [ 🚀 Migrate to v2 ]
+        Engine->>Dispatcher: SendTaskInput(taskID: "sub-89a1", input: "User selected Migrate to v2")
+    end
+
+    Note over Dispatcher,Worker: Zero-RAM Idle: Re-spawns agy --conversation <sub_conv_id> with continuation prompt
+    Dispatcher->>Worker: Resumes Sub-Agent Subprocess with user answer
+    Worker->>Worker: Continues execution to completion!
+```
+
 ---
 
-## 7. Concurrency, Safety & Error Handling
+## 7. Internal Subagent Tools Specification
 
-### 7.1. Concurrency Isolation (FIFO Mutex Decoupling)
+Main Agent is equipped with the following tool signatures:
+
+```json
+[
+  {
+    "name": "dispatch_subagent",
+    "description": "Delegate a long-running, multi-file, or heavy research task to a background sub-agent without blocking the main track.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Concise summary title of the task" },
+        "prompt": { "type": "string", "description": "Comprehensive instructions for the sub-agent" },
+        "agent_name": { "type": "string", "description": "Target persona ('researcher', 'coder', 'agyent')", "default": "agyent" },
+        "model": { "type": "string", "enum": ["flash", "flash_lite", "pro"], "default": "flash" },
+        "workspace_mode": { "type": "string", "enum": ["share", "scratch", "persona"], "default": "share" },
+        "callback_mode": { "type": "string", "enum": ["notify_user", "callback_main", "silent"], "default": "notify_user" }
+      },
+      "required": ["title", "prompt"]
+    }
+  },
+  {
+    "name": "check_subagent_progress",
+    "description": "Query real-time progress, active step, duration, and recent tool logs for a sub-agent task.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string", "description": "Sub-agent Task ID" }
+      },
+      "required": ["task_id"]
+    }
+  },
+  {
+    "name": "send_subagent_input",
+    "description": "Send an answer or directive to a sub-agent currently in WAITING_FOR_INPUT status to resume its execution.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string", "description": "Sub-agent Task ID" },
+        "input": { "type": "string", "description": "Answer or follow-up instruction" }
+      },
+      "required": ["task_id", "input"]
+    }
+  },
+  {
+    "name": "cancel_subagent_task",
+    "description": "Forcefully terminate a running background sub-agent task and clean up its process tree.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": { "type": "string", "description": "Sub-agent Task ID to cancel" }
+      },
+      "required": ["task_id"]
+    }
+  }
+]
+```
+
+---
+
+## 8. Concurrency, Safety & Error Handling
+
+### 8.1. Concurrency Isolation (FIFO Mutex Decoupling)
 - **Main Session Key:** `telegram:<chat_id>[:<thread_id>]` is acquired only during prompt dispatch (~500µs).
 - **Sub-Agent Session Key:** `subtask:telegram:<chat_id>:<task_uuid>` operates under an isolated lock scope, preventing any lock contention with ongoing user messages.
 
-### 7.2. Process Tree Termination
+### 8.2. Process Tree Termination
 - **Windows Kernel Job Object:** Processes are attached via `CreateJobObject` + `SetInformationJobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Process trees are guaranteed to terminate upon cancellation or timeout without orphaned child processes.
 - **POSIX Process Groups:** Processes are assigned `Setpgid: true` and cleanly killed via negative PID signal (`syscall.Kill(-pid, syscall.SIGKILL)`).
 
 ---
 
-## 8. Empirical Benchmark Validation (POC Findings)
+## 9. Empirical Benchmark Validation (POC Findings)
 
 Empirical results captured using the live `agy.exe` (v1.1.20) binary in `cmd/poc_subagent/main.go`:
 
@@ -298,11 +403,12 @@ Empirical results captured using the live `agy.exe` (v1.1.20) binary in `cmd/poc
 
 ---
 
-## 9. User Slash Commands Reference
+## 10. User Slash Commands Reference
 
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| **`/tasks`** (or **`/subagents`**) | `/tasks` | Displays active and recently completed background sub-agent tasks with live progress and inline action buttons. |
-| **`/task <id>`** | `/task sub-89a1` | Inspects detailed status, elapsed duration, recent tool executions, and logs for a specific task. |
+| **`/tasks`** (or **`/subagents`**) | `/tasks` | Displays active, waiting, and completed background sub-agent tasks with live progress and inline action buttons. |
+| **`/task <id>`** | `/task sub-89a1` | Inspects detailed status, elapsed duration, pending questions, recent tool executions, and logs for a specific task. |
+| **`/task reply <id> <text>`** | `/task reply sub-89a1 Migrate to v2` | Sends input to a sub-agent in `WAITING_FOR_INPUT` status to resume execution. |
 | **`/task cancel <id>`** | `/task cancel sub-89a1` | Forcefully terminates a running sub-agent task and releases associated system resources immediately. |
 | **`/task clean`** | `/task clean` | Purges completed, failed, or expired sub-agent records from the local SQLite store. |
