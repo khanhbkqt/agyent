@@ -15,6 +15,7 @@ func TestFormatSessionKey(t *testing.T) {
 		channel  string
 		chatID   string
 		threadID int64
+		botID    int64
 		expected string
 	}{
 		{
@@ -22,6 +23,7 @@ func TestFormatSessionKey(t *testing.T) {
 			channel:  "telegram",
 			chatID:   "123456789",
 			threadID: 0,
+			botID:    0,
 			expected: "telegram:123456789",
 		},
 		{
@@ -29,6 +31,7 @@ func TestFormatSessionKey(t *testing.T) {
 			channel:  "telegram",
 			chatID:   "-1001987654321",
 			threadID: 0,
+			botID:    0,
 			expected: "telegram:-1001987654321",
 		},
 		{
@@ -36,23 +39,119 @@ func TestFormatSessionKey(t *testing.T) {
 			channel:  "telegram",
 			chatID:   "-1001987654321",
 			threadID: 42,
+			botID:    0,
 			expected: "telegram:-1001987654321:42",
+		},
+		{
+			name:     "Namespaced with botID",
+			channel:  "telegram",
+			chatID:   "123456789",
+			threadID: 0,
+			botID:    987654321,
+			expected: "telegram:987654321:123456789",
+		},
+		{
+			name:     "Namespaced with botID and threadID",
+			channel:  "telegram",
+			chatID:   "-1001987654321",
+			threadID: 42,
+			botID:    987654321,
+			expected: "telegram:987654321:-1001987654321:42",
 		},
 		{
 			name:     "Trims and Normalizes",
 			channel:  " TELEGRAM ",
 			chatID:   " 987654 ",
 			threadID: 10,
+			botID:    0,
 			expected: "telegram:987654:10",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := domain.FormatSessionKey(tt.channel, tt.chatID, tt.threadID)
+			var result string
+			if tt.botID > 0 {
+				result = domain.FormatSessionKey(tt.channel, tt.chatID, tt.threadID, tt.botID)
+			} else {
+				result = domain.FormatSessionKey(tt.channel, tt.chatID, tt.threadID)
+			}
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestExtractChatIDFromSessionKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionKey string
+		expected   string
+	}{
+		{
+			name:       "Legacy 2-part key",
+			sessionKey: "telegram:123456",
+			expected:   "123456",
+		},
+		{
+			name:       "Legacy 3-part key with negative group ID",
+			sessionKey: "telegram:-100123456:42",
+			expected:   "-100123456",
+		},
+		{
+			name:       "Namespaced 3-part key",
+			sessionKey: "telegram:987654321:123456",
+			expected:   "123456",
+		},
+		{
+			name:       "Namespaced 3-part key with negative group chat",
+			sessionKey: "telegram:987654321:-100987654",
+			expected:   "-100987654",
+		},
+		{
+			name:       "Namespaced 4-part key with group topic",
+			sessionKey: "telegram:987654321:-100987654:42",
+			expected:   "-100987654",
+		},
+		{
+			name:       "Invalid/single part fallback",
+			sessionKey: "single_string",
+			expected:   "single_string",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			chatID := domain.ExtractChatIDFromSessionKey(tc.sessionKey)
+			assert.Equal(t, tc.expected, chatID)
+		})
+	}
+}
+
+func TestAgent_OwnershipAndPermissions(t *testing.T) {
+	agent := domain.Agent{
+		Name:          "dev_architect",
+		Description:   "Senior Dev Architect",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: "/home/user/.agyent/workspace-dev_architect",
+		OwnerID:       "1001",
+		IsPublic:      false,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+
+	assert.Equal(t, "1001", agent.OwnerID)
+	assert.False(t, agent.IsPublic)
+
+	perm := domain.AgentPermission{
+		AgentName: "dev_architect",
+		UserID:    "2002",
+		Role:      "operator",
+		GrantedBy: "1001",
+		GrantedAt: time.Now(),
+	}
+
+	assert.Equal(t, "operator", perm.Role)
+	assert.Equal(t, "2002", perm.UserID)
 }
 
 func TestFormatProjectID(t *testing.T) {

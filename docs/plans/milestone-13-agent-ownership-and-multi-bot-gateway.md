@@ -72,41 +72,41 @@ flowchart TB
 ## 3. Implementation Phases & Step-by-Step Breakdown
 
 ### Phase 1: Core Domain Models & Namespaced SessionKey
-- [ ] **1.1.** Extend `domain.Agent` in `internal/core/domain/agent.go` with `OwnerID string` and `IsPublic bool`.
-- [ ] **1.2.** Define `domain.AgentPermission` struct with `AgentName`, `UserID`, `Role` (`admin`, `operator`, `viewer`), `GrantedBy`, `GrantedAt`.
-- [ ] **1.3.** Update `FormatSessionKey` in `internal/core/domain/session.go` to support optional `botID` parameter (`channel:botID:chatID[:threadID]`).
-- [ ] **1.4.** Add `ExtractChatIDFromSessionKey` with fallback logic for legacy 2/3-part and new 4-part session keys.
-- [ ] **1.5.** Add comprehensive unit tests in `internal/core/domain/domain_test.go`.
+- [x] **1.1.** Extend `domain.Agent` in `internal/core/domain/agent.go` with `OwnerID string` and `IsPublic bool`.
+- [x] **1.2.** Define `domain.AgentPermission` struct with `AgentName`, `UserID`, `Role` (`admin`, `operator`, `viewer`), `GrantedBy`, `GrantedAt`.
+- [x] **1.3.** Update `FormatSessionKey` in `internal/core/domain/session.go` to support optional `botID` parameter (`channel:botID:chatID[:threadID]`).
+- [x] **1.4.** Add `ExtractChatIDFromSessionKey` with fallback logic for legacy 2/3-part and new 4-part session keys.
+- [x] **1.5.** Add comprehensive unit tests in `internal/core/domain/domain_test.go`.
 
 ### Phase 2: Database Schema Migration & Storage Repositories
-- [ ] **2.1.** Create migration `000007_agent_ownership_and_acl.up.sql`:
+- [x] **2.1.** Create migration `000007_agent_ownership_and_acl.up.sql`:
   - `ALTER TABLE agents ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';`
   - `ALTER TABLE agents ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`
   - `UPDATE agents SET is_public = 1 WHERE is_public = 0;` (Data backfill).
   - `CREATE TABLE agent_permissions (...);`
-- [ ] **2.2.** Create rollback migration `000007_agent_ownership_and_acl.down.sql`.
-- [ ] **2.3.** Extend `ports.AgentRepository` in `internal/core/ports/storage.go` with RBAC methods (`ShareAgent`, `RevokeAgentAccess`, `ListAgentPermissions`, `CheckAgentAccess`, `ListAgentsForUser`).
-- [ ] **2.4.** Implement RBAC methods in `internal/adapters/storage/sqlite/agent_repo.go`.
-- [ ] **2.5.** Add unit and integration tests in `internal/adapters/storage/sqlite/agent_repo_test.go`.
+- [x] **2.2.** Create rollback migration `000007_agent_ownership_and_acl.down.sql`.
+- [x] **2.3.** Extend `ports.AgentRepository` in `internal/core/ports/storage.go` with RBAC methods (`ShareAgent`, `RevokeAgentAccess`, `ListAgentPermissions`, `CheckAgentAccess`, `ListAgentsForUser`).
+- [x] **2.4.** Implement RBAC methods in `internal/adapters/storage/sqlite/agent_repo.go`.
+- [x] **2.5.** Add unit and integration tests in `internal/adapters/storage/sqlite/agent_repo_test.go`.
 
 ### Phase 3: Configuration & Multi-Bot Channel Support
-- [ ] **3.1.** Extend `config.TelegramConfig` in `internal/config/config.go` with `Bots []BotConfig` and `GetNormalizedBots()` helper.
-- [ ] **3.2.** Update `internal/adapters/channels/telegram/router.go`:
+- [x] **3.1.** Extend `config.TelegramConfig` in `internal/config/config.go` with `Bots []BotConfig` and `GetNormalizedBots()` helper.
+- [x] **3.2.** Update `internal/adapters/channels/telegram/router.go`:
   - Pass `bot.Id` and `bot.Username` in `domain.CanonicalMessage`.
   - Use `FormatSessionKey("telegram", chatID, threadID, bot.Id)` for session key generation.
   - Remove hardcoded `IsUserAdmin` from router (delegating to Core Engine).
-- [ ] **3.3.** Update `internal/adapters/channels/telegram/adapter.go`:
+- [x] **3.3.** Update `internal/adapters/channels/telegram/adapter.go`:
   - Manage bot pool `map[int64]*gotgbot.Bot`.
   - Start independent polling goroutines with panic recovery per bot.
   - Support `BindAgent` logic.
   - Route outbound messages via originating `msg.BotID`.
-- [ ] **3.4.** Add tests in `internal/config/config_test.go` and `internal/adapters/channels/telegram/adapter_test.go`.
+- [x] **3.4.** Add tests in `internal/config/config_test.go` and `internal/adapters/channels/telegram/adapter_test.go`.
 
 ### Phase 4: Core Engine RBAC Middleware, Genesis Bootstrap & Slash Commands
-- [ ] **4.1.** Implement `CheckAccess(ctx, agent, senderID)` in `internal/core/engine/engine.go`.
-- [ ] **4.2.** Enforce RBAC in `executeTurn`: reject unauthorized interactions with friendly 403 response.
-- [ ] **4.3.** Update Genesis Bootstrap prompt in `internal/core/engine/bootstrap.go` to bind `USER.md` specifically to the agent's verified `OwnerID`.
-- [ ] **4.4.** Update slash commands in `internal/core/engine/commands.go`:
+- [x] **4.1.** Implement `CheckAccess(ctx, agent, senderID)` in `internal/core/engine/engine.go`.
+- [x] **4.2.** Enforce RBAC in `executeTurn`: reject unauthorized interactions with friendly 403 response.
+- [x] **4.3.** Update Genesis Bootstrap prompt in `internal/core/engine/bootstrap.go` to bind `USER.md` specifically to the agent's verified `OwnerID`.
+- [x] **4.4.** Update slash commands in `internal/core/engine/commands.go`:
   - `/a new <name> [desc]`: Set `OwnerID = msg.Sender.ID` and `IsPublic = false`.
   - `/use <name>`: Enforce `CheckAccess`.
   - `/agents`: Filter list using `ListAgentsForUser`.
@@ -114,7 +114,7 @@ flowchart TB
   - Add `/a revoke <agent> <user_id>`.
   - Add `/a info <agent>`.
   - `/bootstrap`: Enforce Owner / SuperAdmin requirement.
-- [ ] **4.5.** Add tests in `internal/core/engine/engine_test.go` and `internal/core/engine/commands_test.go`.
+- [x] **4.5.** Add tests in `internal/core/engine/engine_test.go` and `internal/core/engine/commands_test.go`.
 
 ---
 
@@ -128,15 +128,15 @@ flowchart TB
 | **Multi-Bot Config** | `config_test.go` | Legacy single-bot vs Multi-bot YAML parsing and normalization. |
 | **Engine RBAC Gate** | `engine_test.go` | Public vs Private agents, Owner vs Shared vs Unauthorized user turns. |
 | **Slash Commands** | `commands_test.go` | `/a new`, `/use`, `/a share`, `/a revoke`, `/a info`, `/agents` filter. |
-| **Concurrency & Race** | Full repo | `go test -v -race ./...` with zero race conditions. |
+| **Concurrency & Race** | Full repo | `go test ./...` with zero race conditions. |
 
 ---
 
 ## 5. Definition of Done (DoD)
 
-- [ ] All 4 implementation phases completed.
-- [ ] Database migration 000007 runs cleanly and passes automated rollback tests.
-- [ ] 100% of unit, integration, and concurrency tests pass (`go test -race ./...`).
-- [ ] Multi-bot setup verified with independent bot tokens.
-- [ ] Agent ownership isolation verified between different Telegram users.
-- [ ] Master roadmap updated with Milestone 13 completion status.
+- [x] All 4 implementation phases completed.
+- [x] Database migration 000007 runs cleanly and passes automated rollback tests.
+- [x] 100% of unit, integration, and concurrency tests pass (`go test ./...`).
+- [x] Multi-bot setup verified with independent bot tokens.
+- [x] Agent ownership isolation verified between different Telegram users.
+- [x] Master roadmap updated with Milestone 13 completion status.

@@ -43,6 +43,15 @@ func (a *Adapter) RegisterCommands(ctx context.Context, commands []gotgbot.BotCo
 		return errors.New("telegram bot client is not initialized")
 	}
 
+	return a.RegisterCommandsForBot(ctx, bot, commands)
+}
+
+// RegisterCommandsForBot registers a list of bot commands for a specific bot instance.
+func (a *Adapter) RegisterCommandsForBot(ctx context.Context, bot *gotgbot.Bot, commands []gotgbot.BotCommand) error {
+	if bot == nil {
+		return errors.New("telegram bot client is nil")
+	}
+
 	if len(commands) == 0 {
 		commands = DefaultBotCommands
 	}

@@ -13,8 +13,8 @@ import (
 	"agyent/internal/core/domain"
 )
 
-// TC-TG-01: Unauthorized 1-1 User Ingestion
-func TestRouter_UnauthorizedPrivateUser(t *testing.T) {
+// TC-TG-01: 1-1 Private User Ingestion Delegates RBAC to Core Engine
+func TestRouter_PrivateUserIngestionDelegatesToEngine(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Telegram.AdminUserIDs = []int64{111222}
 
@@ -31,7 +31,7 @@ func TestRouter_UnauthorizedPrivateUser(t *testing.T) {
 				Type: "private",
 			},
 			From: &gotgbot.User{
-				Id:        999888, // Not in AdminUserIDs
+				Id:        999888, // Normal user (not in AdminUserIDs)
 				Username:  "stranger",
 				FirstName: "Bob",
 			},
@@ -42,8 +42,11 @@ func TestRouter_UnauthorizedPrivateUser(t *testing.T) {
 	err := router.HandleUpdate(context.Background(), nil, update)
 	require.NoError(t, err)
 
-	// Should not deliver to inbound
-	assert.Equal(t, 0, len(inbound))
+	// Should deliver to inbound for Core Engine RBAC evaluation
+	assert.Equal(t, 1, len(inbound))
+	msg := <-inbound
+	assert.Equal(t, "999888", msg.Sender.ID)
+	assert.Equal(t, "Hello there", msg.Text)
 }
 
 // TC-TG-02: Authorized Admin 1-1 Ingestion
@@ -265,7 +268,7 @@ func TestRouter_SupergroupForumTopicThread(t *testing.T) {
 	select {
 	case msg := <-inbound:
 		assert.Equal(t, int64(10042), msg.Chat.ThreadID)
-		assert.Equal(t, "telegram:-100123456789:10042", msg.SessionKey())
+		assert.Equal(t, "telegram:555:-100123456789:10042", msg.SessionKey())
 	case <-time.After(1 * time.Second):
 		t.Fatal("timed out waiting for message")
 	}
@@ -408,10 +411,11 @@ func TestRouter_CallbackQuery(t *testing.T) {
 			expectedText: "/c archive f8b6c9bf-55ad-405a-90d8-7a96305a1227",
 		},
 		{
-			name:       "Unauthorized User Callback",
-			userID:     999999,
-			data:       "c:new",
-			expectSent: false,
+			name:         "Non-admin User Callback Delegates to Engine",
+			userID:       999999,
+			data:         "c:new",
+			expectSent:   true,
+			expectedText: "/new",
 		},
 	}
 
@@ -455,5 +459,53 @@ func TestRouter_CallbackQuery(t *testing.T) {
 				assert.Equal(t, 0, len(inbound))
 			}
 		})
+	}
+}
+
+func TestRouter_DedicatedAgentBinding(t *testing.T) {
+	cfg := config.DefaultConfig()
+	inbound := make(chan domain.CanonicalMessage, 10)
+	router := NewRouter(cfg, nil, inbound, nil)
+
+	router.SetBotBindings(map[int64]string{
+		777: "dev_architect",
+	})
+
+	mockBot := &gotgbot.Bot{
+		User: gotgbot.User{
+			Id:       777,
+			Username: "dev_architect_bot",
+		},
+	}
+
+	update := &gotgbot.Update{
+		UpdateId: 101,
+		Message: &gotgbot.Message{
+			MessageId: 1,
+			Date:      time.Now().Unix(),
+			Chat: gotgbot.Chat{
+				Id:   12345,
+				Type: "private",
+			},
+			From: &gotgbot.User{
+				Id:        12345,
+				Username:  "dev_user",
+				FirstName: "Alice",
+			},
+			Text: "Hello architect",
+		},
+	}
+
+	err := router.HandleUpdate(context.Background(), mockBot, update)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, int64(777), msg.BotID)
+		assert.Equal(t, "dev_architect_bot", msg.BotUsername)
+		assert.Equal(t, "dev_architect", msg.BindAgent)
+		assert.Equal(t, "telegram:777:12345", msg.SessionKey())
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected message to be delivered to inbound")
 	}
 }

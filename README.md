@@ -57,9 +57,9 @@ flowchart LR
 
 ---
 
-## ⚡ Key Features
-
 - **⚡ Lightweight Go Static Binary:** Ultra-fast startup (<10ms), minimal CPU/RAM footprint on low-spec VPS environments, zero CGO dependencies (utilizing Pure-Go SQLite via `modernc.org/sqlite`).
+- **🤖 Multi-Bot Lifecycle Pools & Dedicated Persona Binding:** Run multiple independent Telegram bots simultaneously within a single daemon process with fault isolation. Bind dedicated bot tokens directly to specialized agent personas (e.g. `@dev_architect`, `@security_auditor`).
+- **👥 Granular Agent Ownership & RBAC:** Verified agent creator ownership (`OwnerID`) and permission control (`agent_permissions`), isolating workspaces (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`) with secure collaboration sharing (`admin`, `operator`, `viewer`).
 - **🧠 Full Autonomous Power of `agy`:** Native shell execution, recursive code search, intelligent file patch editing, multi-agent dispatching, and MCP tools via structured subprocess JSON streaming.
 - **⚡ Prefix KV-Cache Preservation:** Fixed Level 0–3 system foundation prompt hierarchy ensuring ~85–95% cache hit rates on large context windows, reducing Turn-to-First-Token (TTFT) latency by up to 80% and slashing token costs (~75% savings on Gemini 0.25x Cache Read pricing).
 - **🎭 Workspace-First Multi-Agent Architecture:** Each agent profile maintains an independent workspace containing its Identity (`IDENTITY.md`), Soul (`SOUL.md`), Owner Profile (`USER.md`), and Long-Term Memory (`MEMORY.md`).
@@ -71,7 +71,7 @@ flowchart LR
 - **📨 Robust OpenClaw Message Handling:**
   - Canonical message formatting (`CanonicalMessage`).
   - 2.0s sliding-window debouncing via Go channels to merge rapid bursts of user messages.
-  - FIFO session locking per user/topic to eliminate race conditions.
+  - Namespaced session keys (`channel:bot_id:chat_id[:thread_id]`) and FIFO session locking per user/topic to eliminate race conditions.
   - Heartbeat typing indicators (4.0s) and smart Markdown chunking.
 - **🛡️ Universal AI Security Gateway & Dual-Plane Guardrails:**
   - Synchronous native Antigravity lifecycle hook interception (`PreToolUse` & `PostToolUse`) with sub-5ms local IPC socket and fail-safe **Default-Deny** fallback.
@@ -176,7 +176,12 @@ The wizard will guide you through:
 | `/c <#>` | Quickly switch to a conversation by index number (e.g. `/c 2`). |
 | `/new` | Start a fresh, clean conversation context. |
 | `/pin` / `/unpin` | Pin or unpin the active conversation to protect from automated GC. |
-| `/agents` / `/use <name>` | List registered agent profiles or switch active agent. |
+| `/agents` / `/a list` | List all agent profiles accessible to your user. |
+| `/use <name>` | Switch active agent profile (evaluates granular RBAC permissions). |
+| `/a new <name> [desc]` | Register and initialize a new private agent persona with verified ownership. |
+| `/a share <agent> <user_id> [role]` | Grant collaborator access (`admin`, `operator`, `viewer`) to another user. |
+| `/a revoke <agent> <user_id>` | Revoke collaborator access from a user. |
+| `/a info [agent]` | Inspect agent metadata, visibility, owner ID, and active collaborators. |
 | `/projects` / `/p <name>` | List attached project codebases or switch into project context. |
 | `/p exit` | Exit project mode and return to Global Chat mode. |
 | `/security` or `/sec` | View Security Gateway dashboard and switch active preset (`developer`, `balanced`, `strict`, `read_only`). |
@@ -209,6 +214,7 @@ Detailed architecture specifications and engineering decisions are available in 
 
 - 🏛️ [**System Architecture**](docs/architecture.md): 4-tier system design and component interactions.
 - 🧩 [**Extensible Architecture**](docs/extensible-architecture.md): Microkernel, Ports & Adapters, and Lifecycle Event Hooks.
+- 🤖 [**Agent Ownership & Multi-Bot Architecture**](docs/agent-ownership-and-multi-bot-architecture.md): Multi-Bot Gateway, dedicated persona bindings, and granular RBAC.
 - 🧬 [**Agent Lifecycle & Bootstrap**](docs/lifecycle-and-bootstrap.md): Genesis Onboarding Protocol and dynamic identity synthesis.
 - 📨 [**Message Pipeline**](docs/message-pipeline.md): Go channel debouncing, mention filtering, and bidirectional media sync.
 - 📂 [**Multi-Project Management**](docs/multi-project.md): Dual-scope context isolation and codebase switching.
@@ -220,7 +226,7 @@ Detailed architecture specifications and engineering decisions are available in 
 - ⚡ [**Model & Reasoning Effort Selection**](docs/model-and-effort-selection-architecture.md): 5-tier resolution hierarchy, dynamic discovery from `agy models`, and subset effort clamping.
 - 🧬 [**Agent Self-Learning & Evolution**](docs/agent-self-learning-and-evolution-architecture.md): Autonomous reflection, 4D memory synthesis, and conflict resolution.
 - 🛡️ [**Security & Guardrails Architecture**](docs/security-and-guardrails-architecture.md): Universal Gateway security, non-blocking HITL state machine, and sub-agent jailing.
-- 🗺️ [**Master Roadmap & Milestone Plans**](docs/plans/master_roadmap.md): Milestone 1 through Milestone 10 architecture execution records.
+- 🗺️ [**Master Roadmap & Milestone Plans**](docs/plans/master_roadmap.md): Milestone 1 through Milestone 14 architecture execution records.
 
 ---
 

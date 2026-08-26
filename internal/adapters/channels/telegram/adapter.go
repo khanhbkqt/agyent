@@ -22,10 +22,13 @@ import (
 
 var _ ports.ChannelPort = (*Adapter)(nil)
 
-// Adapter implements ports.ChannelPort for Telegram messaging.
+// Adapter implements ports.ChannelPort for Telegram messaging with multi-bot lifecycle support.
 type Adapter struct {
 	cfg        *config.Config
-	bot        *gotgbot.Bot
+	bots       map[int64]*gotgbot.Bot     // Active bot pool keyed by Bot ID
+	botConfigs map[int64]config.BotConfig // Bot configurations keyed by Bot ID
+	bindAgents map[int64]string           // Dedicated agent persona bindings
+	bot        *gotgbot.Bot               // Primary/fallback bot instance
 	botOpts    *gotgbot.BotOpts
 	eventBus   ports.EventBusPort
 	throttler  *DeliveryThrottler
@@ -55,22 +58,34 @@ func WithBotOpts(opts *gotgbot.BotOpts) Option {
 func WithBot(bot *gotgbot.Bot) Option {
 	return func(a *Adapter) {
 		a.bot = bot
+		if bot != nil {
+			if a.bots == nil {
+				a.bots = make(map[int64]*gotgbot.Bot)
+			}
+			a.bots[bot.Id] = bot
+		}
 	}
 }
 
 // NewAdapter constructs a new Telegram channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Adapter {
 	a := &Adapter{
-		cfg:       cfg,
-		eventBus:  bus,
-		hitlCoord: NewHITLCoordinator(nil, cfg, nil),
-		pollDone:  make(chan struct{}),
+		cfg:        cfg,
+		bots:       make(map[int64]*gotgbot.Bot),
+		botConfigs: make(map[int64]config.BotConfig),
+		bindAgents: make(map[int64]string),
+		eventBus:   bus,
+		hitlCoord:  NewHITLCoordinator(nil, cfg, nil),
+		pollDone:   make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(a)
 	}
-	if a.bot != nil && a.hitlCoord != nil {
-		a.hitlCoord.SetBot(a.bot)
+	if a.bot != nil {
+		a.bots[a.bot.Id] = a.bot
+		if a.hitlCoord != nil {
+			a.hitlCoord.SetBot(a.bot)
+		}
 	}
 	return a
 }
@@ -87,7 +102,19 @@ func (a *Adapter) HITLCoordinator() *HITLCoordinator {
 	return a.hitlCoord
 }
 
-// Start initializes Telegram bot, connects event listeners, and starts polling or webhook.
+func (a *Adapter) getBot(botID int64) *gotgbot.Bot {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if botID > 0 {
+		if b, exists := a.bots[botID]; exists {
+			return b
+		}
+	}
+	return a.bot
+}
+
+// Start initializes Telegram bot pool, connects event listeners, and starts polling or webhook.
 func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMessage) error {
 	a.mu.Lock()
 	if a.running {
@@ -95,18 +122,42 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 		return errors.New("telegram adapter already running")
 	}
 
-	// 1. Initialize gotgbot.Bot if not injected
-	if a.bot == nil {
-		if a.cfg == nil || a.cfg.Telegram.BotToken == "" {
-			a.mu.Unlock()
-			return errors.New("telegram bot token is missing in config")
+	// 1. Initialize gotgbot.Bot pool from normalized bot configurations
+	if a.cfg != nil {
+		normalizedBots := a.cfg.Telegram.GetNormalizedBots()
+		for _, bCfg := range normalizedBots {
+			if a.bot != nil && len(a.bots) == 1 && a.bots[a.bot.Id] != nil {
+				// Single custom bot injected
+				a.botConfigs[a.bot.Id] = bCfg
+				if bCfg.BindAgent != "" {
+					a.bindAgents[a.bot.Id] = bCfg.BindAgent
+				}
+				break
+			}
+
+			bot, err := gotgbot.NewBot(bCfg.BotToken, a.botOpts)
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to initialize telegram bot token",
+					slog.String("name", bCfg.Name),
+					slog.String("error", err.Error()),
+				)
+				continue // Fault isolation: failed bot token does not fail other healthy bots
+			}
+
+			a.bots[bot.Id] = bot
+			a.botConfigs[bot.Id] = bCfg
+			if bCfg.BindAgent != "" {
+				a.bindAgents[bot.Id] = bCfg.BindAgent
+			}
+			if a.bot == nil {
+				a.bot = bot
+			}
 		}
-		bot, err := gotgbot.NewBot(a.cfg.Telegram.BotToken, a.botOpts)
-		if err != nil {
-			a.mu.Unlock()
-			return fmt.Errorf("failed to create telegram bot: %w", err)
-		}
-		a.bot = bot
+	}
+
+	if len(a.bots) == 0 {
+		a.mu.Unlock()
+		return errors.New("no telegram bots were successfully initialized")
 	}
 
 	// 2. Initialize subsystems
@@ -126,6 +177,7 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	}
 	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn)
 	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
+	a.router.SetBotBindings(a.bindAgents)
 
 	// 3. Bind EventBus subscriptions
 	if a.eventBus != nil {
@@ -144,8 +196,10 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	a.pollDone = make(chan struct{})
 	a.mu.Unlock()
 
-	// 4. Automatically register bot commands with Telegram API
-	_ = a.RegisterCommands(pollCtx, DefaultBotCommands)
+	// 4. Automatically register bot commands with Telegram API for all bots
+	for _, bot := range a.bots {
+		_ = a.RegisterCommandsForBot(pollCtx, bot, DefaultBotCommands)
+	}
 
 	// 5. Start polling or webhook
 	mode := "polling"
@@ -153,7 +207,10 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 		mode = a.cfg.Telegram.Mode
 	}
 
-	slog.InfoContext(ctx, "Starting Telegram channel adapter", slog.String("mode", mode))
+	slog.InfoContext(ctx, "Starting Telegram channel adapter",
+		slog.String("mode", mode),
+		slog.Int("active_bots", len(a.bots)),
+	)
 
 	if mode == "webhook" {
 		return a.startWebhook(pollCtx)
@@ -166,8 +223,40 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 func (a *Adapter) startPolling(ctx context.Context) {
 	defer close(a.pollDone)
 
+	var wg sync.WaitGroup
+	a.mu.RLock()
+	bots := make([]*gotgbot.Bot, 0, len(a.bots))
+	for _, b := range a.bots {
+		bots = append(bots, b)
+	}
+	a.mu.RUnlock()
+
+	for _, bot := range bots {
+		wg.Add(1)
+		bCfg := a.botConfigs[bot.Id]
+		currentBot := bot
+		go func() {
+			defer wg.Done()
+			a.startPollingForBot(ctx, currentBot, bCfg)
+		}()
+	}
+
+	wg.Wait()
+}
+
+func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg config.BotConfig) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "Recovered from panic in bot polling worker",
+				slog.Int64("bot_id", bot.Id),
+				slog.String("bot_username", bot.Username),
+				slog.Any("panic", r),
+			)
+		}
+	}()
+
 	// Delete any existing webhook before polling
-	_, _ = a.bot.DeleteWebhook(&gotgbot.DeleteWebhookOpts{DropPendingUpdates: false})
+	_, _ = bot.DeleteWebhook(&gotgbot.DeleteWebhookOpts{DropPendingUpdates: false})
 
 	var offset int64 = 0
 	for {
@@ -177,14 +266,18 @@ func (a *Adapter) startPolling(ctx context.Context) {
 		default:
 		}
 
-		updates, err := a.bot.GetUpdates(&gotgbot.GetUpdatesOpts{
+		updates, err := bot.GetUpdates(&gotgbot.GetUpdatesOpts{
 			Offset:  offset,
 			Limit:   100,
 			Timeout: 1, // Short timeout to allow rapid cancellation
 		})
 
 		if err != nil {
-			slog.WarnContext(ctx, "Telegram polling error", slog.String("error", err.Error()))
+			slog.WarnContext(ctx, "Telegram polling error",
+				slog.Int64("bot_id", bot.Id),
+				slog.String("bot_username", bot.Username),
+				slog.String("error", err.Error()),
+			)
 			select {
 			case <-ctx.Done():
 				return
@@ -197,7 +290,7 @@ func (a *Adapter) startPolling(ctx context.Context) {
 			if u.UpdateId >= offset {
 				offset = u.UpdateId + 1
 			}
-			_ = a.router.HandleUpdate(ctx, a.bot, &u)
+			_ = a.router.HandleUpdate(ctx, bot, &u)
 		}
 	}
 }
@@ -237,8 +330,8 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 
 // Send dispatches an outbound text message to the target chat/thread.
 func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
+	bot := a.getBot(msg.BotID)
 	a.mu.RLock()
-	bot := a.bot
 	mediaMgr := a.mediaMgr
 	a.mu.RUnlock()
 

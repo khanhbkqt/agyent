@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -224,6 +225,56 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 	return e.executeTurn(ctx, msg, false)
 }
 
+// IsSuperAdmin checks if a user ID is listed in the administrator whitelist.
+func (e *Engine) IsSuperAdmin(senderID string) bool {
+	if e.cfg == nil {
+		return true
+	}
+	if len(e.cfg.Telegram.AdminUserIDs) == 0 && len(e.cfg.Security.AdminUserIDs) == 0 {
+		return true
+	}
+	id, err := strconv.ParseInt(senderID, 10, 64)
+	if err != nil {
+		return false
+	}
+	for _, admin := range e.cfg.Telegram.AdminUserIDs {
+		if admin == id {
+			return true
+		}
+	}
+	for _, admin := range e.cfg.Security.AdminUserIDs {
+		if admin == id {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckAccess evaluates whether a sender has access to interact with an agent profile.
+func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID string) (bool, string, error) {
+	if agent == nil {
+		return false, "", nil
+	}
+
+	// 1. Check if public agent (or default 'agyent' with empty owner)
+	if agent.IsPublic || (agent.Name == "agyent" && agent.OwnerID == "") {
+		return true, "public", nil
+	}
+
+	// 2. Check if verified creator/owner
+	if agent.OwnerID != "" && agent.OwnerID == senderID {
+		return true, "owner", nil
+	}
+
+	// 3. Check if SuperAdmin
+	if e.IsSuperAdmin(senderID) {
+		return true, "admin", nil
+	}
+
+	// 4. Check collaborator permissions table in storage
+	return e.storage.CheckAgentAccess(ctx, agent.Name, senderID)
+}
+
 func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, isEphemeralOpt ...bool) error {
 	isEphemeral := len(isEphemeralOpt) > 0 && isEphemeralOpt[0]
 	sessionKey := msg.SessionKey()
@@ -247,6 +298,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			slog.String("error", err.Error()),
 		)
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
 			Text:             fmt.Sprintf("⚠️ Could not acquire session lock: %v. Please try again or use `/force_unlock`.", err),
@@ -268,6 +320,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	// 3. Load Session from Storage
 	defaultAgent := "agyent"
+	if msg.BindAgent != "" {
+		defaultAgent = msg.BindAgent
+	}
 	session, err := e.storage.GetOrCreateSession(turnCtx, sessionKey, defaultAgent)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to load session state",
@@ -275,6 +330,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			slog.String("error", err.Error()),
 		)
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
 			Text:             fmt.Sprintf("⚠️ Failed to load session state: %v", err),
@@ -282,19 +338,33 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		})
 		return fmt.Errorf("failed to load session: %w", err)
 	}
+
+	// If dedicated bot is bound to a specific agent, ensure session uses that agent
+	if msg.BindAgent != "" && session.ActiveAgent != msg.BindAgent {
+		session.ActiveAgent = msg.BindAgent
+		session.ActiveProject = ""
+	}
+
 	session.UpdatedAt = time.Now()
 	_ = e.storage.SaveSession(turnCtx, session)
 
-	// 4. Resolve Active Agent & Check Bootstrap
+	// 4. Resolve Active Agent & Evaluate RBAC Access
 	agent, err := e.storage.GetAgent(turnCtx, session.ActiveAgent)
 	if err != nil {
 		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
 		_ = os.MkdirAll(agentPath, 0755)
+		isPublic := (session.ActiveAgent == "agyent")
+		ownerID := ""
+		if !isPublic {
+			ownerID = msg.Sender.ID
+		}
 		agent = &domain.Agent{
 			Name:          session.ActiveAgent,
 			Description:   "Agyent - Trợ lý AI cá nhân đa năng",
 			Status:        domain.StatusUninitialized,
 			WorkspacePath: agentPath,
+			OwnerID:       ownerID,
+			IsPublic:      isPublic,
 			CreatedAt:     time.Now(),
 			UpdatedAt:     time.Now(),
 		}
@@ -303,6 +373,29 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	if agent.WorkspacePath == "" {
 		agent.WorkspacePath = config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, agent.Name)
+	}
+
+	// RBAC Checkpoint: Check if caller is authorized to interact with this agent
+	allowed, _, err := e.CheckAccess(turnCtx, agent, msg.Sender.ID)
+	if err != nil || !allowed {
+		slog.WarnContext(turnCtx, "RBAC Access Denied to agent",
+			slog.String("agent", agent.Name),
+			slog.String("sender_id", msg.Sender.ID),
+			slog.String("owner_id", agent.OwnerID),
+		)
+		ownerDesc := agent.OwnerID
+		if ownerDesc == "" {
+			ownerDesc = "admin"
+		}
+		_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+			BotID:            msg.BotID,
+			ChatID:           msg.Chat.ID,
+			ThreadID:         msg.Chat.ThreadID,
+			Text:             fmt.Sprintf("⛔ <b>Access Denied (403):</b> You do not have permission to access agent <code>@%s</code>.\nAsk the agent owner (User ID: <code>%s</code>) to grant you access via:\n<code>/a share %s %s [role]</code>", agent.Name, ownerDesc, agent.Name, msg.Sender.ID),
+			ParseMode:        "HTML",
+			ReplyToMessageID: msg.ID,
+		})
+		return nil
 	}
 
 	isBootstrap := !agent.IsInitialized()
@@ -813,9 +906,5 @@ func (e *Engine) subscribeSubagentEvents() {
 }
 
 func extractChatIDFromSessionKey(sessionKey string) string {
-	parts := strings.Split(sessionKey, ":")
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return sessionKey
+	return domain.ExtractChatIDFromSessionKey(sessionKey)
 }

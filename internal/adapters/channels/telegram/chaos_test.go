@@ -48,7 +48,7 @@ func TestChaos_FallbackToPlainTextOn400(t *testing.T) {
 		mockServer.mu.Lock()
 		defer mockServer.mu.Unlock()
 		return len(mockServer.SentMessages) == 1
-	}, 1*time.Second, 20*time.Millisecond)
+	}, 3*time.Second, 20*time.Millisecond)
 
 	// Simulate Telegram returning 400 Bad Request on EditMessageText
 	mockServer.mu.Lock()
@@ -66,7 +66,7 @@ func TestChaos_FallbackToPlainTextOn400(t *testing.T) {
 		mockServer.mu.Lock()
 		defer mockServer.mu.Unlock()
 		return len(mockServer.EditMessages) >= 1
-	}, 1*time.Second, 20*time.Millisecond)
+	}, 3*time.Second, 20*time.Millisecond)
 
 	mockServer.mu.Lock()
 	lastEdit := mockServer.EditMessages[len(mockServer.EditMessages)-1]

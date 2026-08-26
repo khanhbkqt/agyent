@@ -39,6 +39,13 @@ type AgentRepository interface {
 	ListAgents(ctx context.Context) ([]domain.Agent, error)
 	SaveAgent(ctx context.Context, agent *domain.Agent) error
 	DeleteAgent(ctx context.Context, name string) error
+
+	// Granular RBAC & Collaborator Sharing
+	ShareAgent(ctx context.Context, perm *domain.AgentPermission) error
+	RevokeAgentAccess(ctx context.Context, agentName, userID string) error
+	ListAgentPermissions(ctx context.Context, agentName string) ([]domain.AgentPermission, error)
+	CheckAgentAccess(ctx context.Context, agentName, userID string) (bool, string, error)
+	ListAgentsForUser(ctx context.Context, userID string) ([]domain.Agent, error)
 }
 
 // ProjectRepository defines persistence operations for managed projects.

@@ -345,3 +345,48 @@ func TestResolveAgentWorkspace(t *testing.T) {
 	assert.Equal(t, filepath.Join(baseDir, "workspace-coder"), config.ResolveAgentWorkspace(baseDir, "coder"))
 	assert.Equal(t, filepath.Join(baseDir, "workspace-researcher"), config.ResolveAgentWorkspace(baseDir, "researcher"))
 }
+
+func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
+	t.Run("Legacy Single Bot Fallback", func(t *testing.T) {
+		tg := config.TelegramConfig{
+			BotToken: "123456:LEGACY_TOKEN",
+		}
+		bots := tg.GetNormalizedBots()
+		assert.Len(t, bots, 1)
+		assert.Equal(t, "default", bots[0].Name)
+		assert.Equal(t, "123456:LEGACY_TOKEN", bots[0].BotToken)
+		assert.Empty(t, bots[0].BindAgent)
+	})
+
+	t.Run("Multi-Bot Config with Agent Binding", func(t *testing.T) {
+		tg := config.TelegramConfig{
+			Bots: []config.BotConfig{
+				{
+					Name:      "dev_bot",
+					BotToken:  "11111:DEV_TOKEN",
+					BindAgent: "dev_architect",
+				},
+				{
+					Name:      "assistant_bot",
+					BotToken:  "22222:ASSISTANT_TOKEN",
+					BindAgent: "personal_assistant",
+				},
+			},
+		}
+		bots := tg.GetNormalizedBots()
+		assert.Len(t, bots, 2)
+		assert.Equal(t, "dev_bot", bots[0].Name)
+		assert.Equal(t, "dev_architect", bots[0].BindAgent)
+		assert.Equal(t, "assistant_bot", bots[1].Name)
+		assert.Equal(t, "personal_assistant", bots[1].BindAgent)
+	})
+
+	t.Run("Validation Error when no bots configured", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Telegram.BotToken = ""
+		cfg.Telegram.Bots = nil
+		cfg.Telegram.AdminUserIDs = []int64{123}
+		assert.Error(t, cfg.Validate())
+	})
+}
+

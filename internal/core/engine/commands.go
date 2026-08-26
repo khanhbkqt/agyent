@@ -62,16 +62,16 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText, inlineKeyboard = e.handleEffortCommand(ctx, session, args)
 
 	case "/agents", "/agent", "/a":
-		responseText = e.handleAgentsCommand(ctx, session, args)
+		responseText = e.handleAgentsCommand(ctx, msg.Sender, session, args)
 
 	case "/bootstrap":
-		responseText = e.handleBootstrapCommand(ctx, session, args)
+		responseText = e.handleBootstrapCommand(ctx, msg.Sender, session, args)
 
 	case "/use":
 		if len(args) == 0 {
 			responseText = "⚠️ Usage: `/use <agent_name>`\nExample: `/use agyent`"
 		} else {
-			responseText = e.switchAgent(ctx, session, args[0])
+			responseText = e.switchAgent(ctx, msg.Sender, session, args[0])
 		}
 
 	case "/projects", "/project", "/p":
@@ -131,6 +131,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	}
 
 	return &domain.OutboundMessage{
+		BotID:            msg.BotID,
 		ChatID:           msg.Chat.ID,
 		ThreadID:         msg.Chat.ThreadID,
 		Text:             responseText,
@@ -167,10 +168,13 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/c archive`" + ` — Archive the current conversation.
 • ` + "`/c clean`" + ` — Trigger garbage collection for old archived sessions.
 
-**🤖 Agent Management:**
-• ` + "`/agents`" + ` (or ` + "`/a list`" + `) — List all registered agents.
-• ` + "`/use <name>`" + ` (or ` + "`/a <name>`" + `) — Switch active agent profile.
-• ` + "`/a new <name> [description]`" + ` — Register and initialize a new agent.
+**🤖 Agent Management & RBAC:**
+• ` + "`/agents`" + ` (or ` + "`/a list`" + `) — List all agents accessible to your user.
+• ` + "`/use <name>`" + ` (or ` + "`/a <name>`" + `) — Switch active agent profile (validates permissions).
+• ` + "`/a new <name> [description]`" + ` — Register a new private agent persona with verified ownership.
+• ` + "`/a share <agent> <user_id> [role]`" + ` — Grant collaborator access (` + "`admin`" + `, ` + "`operator`" + `, ` + "`viewer`" + `).
+• ` + "`/a revoke <agent> <user_id>`" + ` — Revoke collaborator access.
+• ` + "`/a info [agent]`" + ` — Inspect agent metadata, visibility, owner, and collaborators list.
 
 **📁 Multi-Project Management:**
 • ` + "`/projects`" + ` (or ` + "`/p list`" + `) — List all projects attached to active agent.
@@ -543,14 +547,20 @@ func (e *Engine) handleStreamCommand(args []string) string {
 	}
 }
 
-func (e *Engine) handleAgentsCommand(ctx context.Context, session *domain.Session, args []string) string {
+func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
 	if len(args) == 0 || args[0] == "list" {
-		agents, err := e.storage.ListAgents(ctx)
+		var agents []domain.Agent
+		var err error
+		if e.IsSuperAdmin(sender.ID) {
+			agents, err = e.storage.ListAgents(ctx)
+		} else {
+			agents, err = e.storage.ListAgentsForUser(ctx, sender.ID)
+		}
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to list agents: %v", err)
 		}
 		if len(agents) == 0 {
-			return "No agents registered yet. Use `/a new <name>` to create one."
+			return "No agents available for your user. Use `/a new <name>` to create one."
 		}
 
 		var sb strings.Builder
@@ -564,21 +574,38 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, session *domain.Sessio
 			if !a.IsInitialized() {
 				statusTag = "uninitialized (bootstrap on next turn)"
 			}
-			sb.WriteString(fmt.Sprintf("%s• *%s* — %s _[%s]_\n", marker, a.Name, a.Description, statusTag))
+
+			badge := " [Public]"
+			if a.OwnerID != "" {
+				if a.OwnerID == sender.ID {
+					badge = " [Owner]"
+				} else {
+					_, role, _ := e.storage.CheckAgentAccess(ctx, a.Name, sender.ID)
+					if role != "" {
+						badge = fmt.Sprintf(" [Shared: %s]", role)
+					} else {
+						badge = " [Private]"
+					}
+				}
+			}
+
+			sb.WriteString(fmt.Sprintf("%s• *%s*%s — %s _[%s]_\n", marker, a.Name, badge, a.Description, statusTag))
 		}
 		sb.WriteString("\nUse `/use <name>` to switch active agent.")
 		return sb.String()
 	}
 
-	if args[0] == "bootstrap" {
-		return e.handleBootstrapCommand(ctx, session, args[1:])
-	}
+	subCmd := strings.ToLower(args[0])
 
-	if args[0] == "new" || args[0] == "create" {
+	switch subCmd {
+	case "bootstrap":
+		return e.handleBootstrapCommand(ctx, sender, session, args[1:])
+
+	case "new", "create":
 		if len(args) < 2 {
 			return "⚠️ Usage: `/a new <agent_name> [description]`\nExample: `/a new dev_architect Cloud & Go Systems Architect`"
 		}
-		name := args[1]
+		name := strings.TrimSpace(args[1])
 		desc := "AI Assistant"
 		if len(args) > 2 {
 			desc = strings.Join(args[2:], " ")
@@ -594,6 +621,8 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, session *domain.Sessio
 			Description:   desc,
 			Status:        domain.StatusUninitialized,
 			WorkspacePath: agentPath,
+			OwnerID:       sender.ID,
+			IsPublic:      false,
 			CreatedAt:     time.Now(),
 			UpdatedAt:     time.Now(),
 		}
@@ -606,13 +635,125 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, session *domain.Sessio
 		session.ActiveProject = ""
 		_ = e.storage.SaveSession(ctx, session)
 
-		return fmt.Sprintf("🎉 **Agent `%s` created** and set as active!\nWorkspace: `%s`\nGenesis bootstrap protocol will activate on your first message.", name, agentPath)
-	}
+		return fmt.Sprintf("🎉 **Agent `%s` created** (Owner: `%s`) and set as active!\nWorkspace: `%s`\nGenesis bootstrap protocol will activate on your first message.", name, sender.ID, agentPath)
 
-	return e.switchAgent(ctx, session, args[0])
+	case "share":
+		if len(args) < 3 {
+			return "⚠️ Usage: `/a share <agent_name> <user_id> [role]`\nExample: `/a share dev_architect 123456789 operator`\nAllowed roles: `admin`, `operator`, `viewer`"
+		}
+		agentName := strings.TrimSpace(args[1])
+		targetUserID := strings.TrimSpace(args[2])
+		role := "operator"
+		if len(args) > 3 {
+			role = strings.ToLower(strings.TrimSpace(args[3]))
+		}
+		if role != "admin" && role != "operator" && role != "viewer" {
+			return "⚠️ Invalid role. Allowed roles: `admin`, `operator`, `viewer`."
+		}
+
+		agent, err := e.storage.GetAgent(ctx, agentName)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
+		}
+
+		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+			return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the owner of agent <code>@%s</code> or a superadmin can share access.", agentName)
+		}
+
+		perm := &domain.AgentPermission{
+			AgentName: agentName,
+			UserID:    targetUserID,
+			Role:      role,
+			GrantedBy: sender.ID,
+			GrantedAt: time.Now(),
+		}
+		if err := e.storage.ShareAgent(ctx, perm); err != nil {
+			return fmt.Sprintf("⚠️ Failed to share agent: %v", err)
+		}
+
+		return fmt.Sprintf("✅ **Access granted!** User `%s` now has `%s` access to agent `@%s`.", targetUserID, role, agentName)
+
+	case "revoke":
+		if len(args) < 3 {
+			return "⚠️ Usage: `/a revoke <agent_name> <user_id>`\nExample: `/a revoke dev_architect 123456789`"
+		}
+		agentName := strings.TrimSpace(args[1])
+		targetUserID := strings.TrimSpace(args[2])
+
+		agent, err := e.storage.GetAgent(ctx, agentName)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
+		}
+
+		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+			return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the owner of agent <code>@%s</code> or a superadmin can revoke access.", agentName)
+		}
+
+		if err := e.storage.RevokeAgentAccess(ctx, agentName, targetUserID); err != nil {
+			return fmt.Sprintf("⚠️ Failed to revoke access: %v", err)
+		}
+
+		return fmt.Sprintf("🚫 **Access revoked!** User `%s` no longer has access to agent `@%s`.", targetUserID, agentName)
+
+	case "info":
+		agentName := session.ActiveAgent
+		if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
+			agentName = strings.TrimSpace(args[1])
+		}
+
+		agent, err := e.storage.GetAgent(ctx, agentName)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
+		}
+
+		allowed, role, _ := e.CheckAccess(ctx, agent, sender.ID)
+		if !allowed {
+			return fmt.Sprintf("⛔ <b>Access Denied:</b> You do not have permission to view info for agent <code>@%s</code>.", agentName)
+		}
+
+		perms, _ := e.storage.ListAgentPermissions(ctx, agentName)
+
+		visibility := "🔒 Private"
+		if agent.IsPublic {
+			visibility = "🌐 Public"
+		}
+		ownerDisplay := agent.OwnerID
+		if ownerDisplay == "" {
+			ownerDisplay = "(system / admin)"
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🤖 <b>Agent Information: <code>@%s</code></b>\n", agent.Name))
+		sb.WriteString(fmt.Sprintf("• <b>Description:</b> %s\n", agent.Description))
+		sb.WriteString(fmt.Sprintf("• <b>Status:</b> <code>%s</code>\n", agent.Status))
+		sb.WriteString(fmt.Sprintf("• <b>Visibility:</b> %s\n", visibility))
+		sb.WriteString(fmt.Sprintf("• <b>Owner ID:</b> <code>%s</code>\n", ownerDisplay))
+		sb.WriteString(fmt.Sprintf("• <b>Your Effective Role:</b> <code>%s</code>\n", role))
+		sb.WriteString(fmt.Sprintf("• <b>Workspace Path:</b> <code>%s</code>\n", agent.WorkspacePath))
+		if agent.DefaultModel != "" {
+			sb.WriteString(fmt.Sprintf("• <b>Default Model:</b> <code>%s</code>\n", agent.DefaultModel))
+		}
+		if agent.DefaultEffort != "" {
+			sb.WriteString(fmt.Sprintf("• <b>Default Effort:</b> <code>%s</code>\n", agent.DefaultEffort))
+		}
+
+		sb.WriteString(fmt.Sprintf("\n👥 <b>Collaborators (%d):</b>\n", len(perms)))
+		if len(perms) == 0 {
+			sb.WriteString("  <i>No external collaborators shared.</i>\n")
+		} else {
+			for _, p := range perms {
+				sb.WriteString(fmt.Sprintf("  • User <code>%s</code> — Role: <code>%s</code> (Granted by: <code>%s</code>)\n", p.UserID, p.Role, p.GrantedBy))
+			}
+		}
+
+		return sb.String()
+
+	default:
+		return e.switchAgent(ctx, sender, session, args[0])
+	}
 }
 
-func (e *Engine) handleBootstrapCommand(ctx context.Context, session *domain.Session, args []string) string {
+func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
 	agentName := session.ActiveAgent
 	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 		agentName = strings.TrimSpace(args[0])
@@ -621,6 +762,10 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, session *domain.Ses
 	agent, err := e.storage.GetAgent(ctx, agentName)
 	if err != nil {
 		return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
+	}
+
+	if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+		return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the agent owner (User ID: <code>%s</code>) or an administrator can re-trigger Genesis Bootstrap.", agent.OwnerID)
 	}
 
 	agent.Status = domain.StatusUninitialized
@@ -636,7 +781,7 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, session *domain.Ses
 	return fmt.Sprintf("🔄 **Agent `%s` reset for Genesis Bootstrap.**\nWorkspace: `%s`\nYour next message will initiate the bootstrap protocol and generate identity files (`AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`).", agent.Name, agent.WorkspacePath)
 }
 
-func (e *Engine) switchAgent(ctx context.Context, session *domain.Session, agentName string) string {
+func (e *Engine) switchAgent(ctx context.Context, sender domain.SenderUser, session *domain.Session, agentName string) string {
 	if e.HasActiveTurn(session.SessionKey) {
 		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before switching agent."
 	}
@@ -644,6 +789,15 @@ func (e *Engine) switchAgent(ctx context.Context, session *domain.Session, agent
 	agent, err := e.storage.GetAgent(ctx, agentName)
 	if err != nil {
 		return fmt.Sprintf("⚠️ Agent `%s` not found. Use `/agents` to view available agents.", agentName)
+	}
+
+	allowed, _, err := e.CheckAccess(ctx, agent, sender.ID)
+	if err != nil || !allowed {
+		ownerDesc := agent.OwnerID
+		if ownerDesc == "" {
+			ownerDesc = "admin"
+		}
+		return fmt.Sprintf("⛔ <b>Access Denied (403):</b> You do not have permission to switch to agent <code>@%s</code>.\nAsk the agent owner (User ID: <code>%s</code>) to grant you access via:\n<code>/a share %s %s [role]</code>", agent.Name, ownerDesc, agent.Name, sender.ID)
 	}
 
 	session.ActiveAgent = agent.Name

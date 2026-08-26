@@ -20,8 +20,8 @@ Master roadmap and overall progress tracking dashboard for **agyent**, upgraded 
 | 10 | [Agent Self-Learning & Evolution](milestone-10-agent-self-learning-and-evolution.md) | Async Feedback Sensing, Conflict Resolution, Memory Compaction, Security Redaction | Backend Agent | Done | 100% | 2026-08-26 |
 | 11 | [Model & Effort Selection](milestone-11-model-and-effort-selection.md) | Dynamic Model Discovery (agy models), 5-Tier Precedence, Subset Effort Clamping, Audit Tracking | Principal Architect / Backend Agent | Done | 100% | 2026-08-26 |
 | 12 | [Sub-Agent Dispatch & Orchestration](milestone-12-subagent-dispatch-and-orchestration.md) | Non-Blocking Dispatch, Subprocess Worker Pool, Live Stream Telemetry, 3 Callback Modes | Systems Architect / Backend Agent | Done | 100% | 2026-08-26 |
-| 13 | [Agent Ownership & Multi-Bot Gateway](milestone-13-agent-ownership-and-multi-bot-gateway.md) | Multi-Bot Pools, Dedicated Agent Binding, Per-Agent Ownership, Granular RBAC, Namespaced SessionKey | Principal Architect / Backend Agent | Planned | 0% | 2026-08-29 |
-| 14 | [Universal AI Security & Guardrails](milestone-14-security-and-guardrails.md) | PreToolUse Hook Bridge, Non-Blocking HITL, Sliding-Window DLP, Filesystem Jail, Sub-Agent Governance | Security Architect / Backend Agent | Planned | 0% | 2026-08-31 |
+| 13 | [Agent Ownership & Multi-Bot Gateway](milestone-13-agent-ownership-and-multi-bot-gateway.md) | Multi-Bot Pools, Dedicated Agent Binding, Per-Agent Ownership, Granular RBAC, Namespaced SessionKey | Principal Architect / Backend Agent | Done | 100% | 2026-08-26 |
+| 14 | [Universal AI Security & Guardrails](milestone-14-security-and-guardrails.md) | PreToolUse Hook Bridge, Non-Blocking HITL, Sliding-Window DLP, Filesystem Jail, Sub-Agent Governance | Security Architect / Backend Agent | Done | 100% | 2026-08-26 |
 
 ---
 

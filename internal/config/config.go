@@ -17,13 +17,38 @@ type ServerConfig struct {
 	Port int    `yaml:"port" json:"port"`
 }
 
+// BotConfig represents an individual bot instance configuration in a multi-bot gateway setup.
+type BotConfig struct {
+	Name      string `yaml:"name" json:"name"`
+	BotToken  string `yaml:"bot_token" json:"bot_token"`
+	BindAgent string `yaml:"bind_agent" json:"bind_agent"` // Optional: Dedicated agent persona binding (e.g. "dev_architect")
+}
+
 // TelegramConfig contains Telegram bot and access control configuration.
 type TelegramConfig struct {
-	BotToken        string   `yaml:"bot_token" json:"bot_token"`
-	Mode            string   `yaml:"mode" json:"mode"` // "polling" or "webhook"
-	WebhookURL      string   `yaml:"webhook_url" json:"webhook_url"`
-	AdminUserIDs    []int64  `yaml:"admin_user_ids" json:"admin_user_ids"`
-	AllowedGroupIDs []string `yaml:"allowed_group_ids" json:"allowed_group_ids"`
+	BotToken        string      `yaml:"bot_token" json:"bot_token"` // Legacy single-bot token fallback
+	Bots            []BotConfig `yaml:"bots" json:"bots"`           // Multi-bot lifecycle pool
+	Mode            string      `yaml:"mode" json:"mode"`           // "polling" or "webhook"
+	WebhookURL      string      `yaml:"webhook_url" json:"webhook_url"`
+	AdminUserIDs    []int64     `yaml:"admin_user_ids" json:"admin_user_ids"`
+	AllowedGroupIDs []string    `yaml:"allowed_group_ids" json:"allowed_group_ids"`
+}
+
+// GetNormalizedBots returns the full list of bot configurations.
+// If Bots is empty but BotToken is set, it synthesizes a single BotConfig from BotToken.
+func (t TelegramConfig) GetNormalizedBots() []BotConfig {
+	if len(t.Bots) > 0 {
+		return t.Bots
+	}
+	if strings.TrimSpace(t.BotToken) != "" {
+		return []BotConfig{
+			{
+				Name:     "default",
+				BotToken: strings.TrimSpace(t.BotToken),
+			},
+		}
+	}
+	return nil
 }
 
 // AGYConfig contains Antigravity CLI execution parameters.
@@ -471,7 +496,15 @@ func (t TelegramConfig) String() string {
 	if len(t.BotToken) > 8 {
 		maskedToken = t.BotToken[:6] + ":***"
 	}
-	return fmt.Sprintf("{BotToken: %s, Mode: %s, AdminUserIDs: %v, AllowedGroupIDs: %v}", maskedToken, t.Mode, t.AdminUserIDs, t.AllowedGroupIDs)
+	var maskedBots []string
+	for _, b := range t.Bots {
+		bMasked := "***"
+		if len(b.BotToken) > 8 {
+			bMasked = b.BotToken[:6] + ":***"
+		}
+		maskedBots = append(maskedBots, fmt.Sprintf("{Name: %s, Token: %s, Bind: %s}", b.Name, bMasked, b.BindAgent))
+	}
+	return fmt.Sprintf("{BotToken: %s, Bots: %v, Mode: %s, AdminUserIDs: %v, AllowedGroupIDs: %v}", maskedToken, maskedBots, t.Mode, t.AdminUserIDs, t.AllowedGroupIDs)
 }
 
 // String returns a redacted string representation of Config for safe logging.
@@ -485,8 +518,14 @@ func (c *Config) String() string {
 
 // Validate checks required fields and configuration constraints.
 func (c *Config) Validate() error {
-	if strings.TrimSpace(c.Telegram.BotToken) == "" {
+	normalizedBots := c.Telegram.GetNormalizedBots()
+	if len(normalizedBots) == 0 {
 		return errors.New("telegram bot token is required")
+	}
+	for _, b := range normalizedBots {
+		if strings.TrimSpace(b.BotToken) == "" {
+			return errors.New("telegram bot token cannot be empty")
+		}
 	}
 	if len(c.Telegram.AdminUserIDs) == 0 {
 		return errors.New("at least one telegram admin user ID is required")

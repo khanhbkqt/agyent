@@ -35,6 +35,9 @@ type CanonicalMessage struct {
 	ID               string       `json:"id"`
 	Timestamp        time.Time    `json:"timestamp"`
 	Channel          string       `json:"channel"` // e.g. "telegram"
+	BotID            int64        `json:"bot_id,omitempty"`
+	BotUsername      string       `json:"bot_username,omitempty"`
+	BindAgent        string       `json:"bind_agent,omitempty"` // Dedicated bound agent for this bot
 	Sender           SenderUser   `json:"sender"`
 	Chat             ChatContext  `json:"chat"`
 	Text             string       `json:"text"`
@@ -69,6 +72,7 @@ type InlineKeyboard []InlineKeyboardRow
 
 // OutboundMessage represents a standardized response to be sent to a channel.
 type OutboundMessage struct {
+	BotID            int64                `json:"bot_id,omitempty"` // Originating bot ID for multi-bot outbound routing
 	ChatID           string               `json:"chat_id"`
 	ThreadID         int64                `json:"thread_id,omitempty"`
 	Text             string               `json:"text"`
@@ -80,7 +84,7 @@ type OutboundMessage struct {
 
 // SessionKey returns the unique session key for this message's chat and thread context.
 func (m *CanonicalMessage) SessionKey() string {
-	return FormatSessionKey(m.Channel, m.Chat.ID, m.Chat.ThreadID)
+	return FormatSessionKey(m.Channel, m.Chat.ID, m.Chat.ThreadID, m.BotID)
 }
 
 // CleanText returns the trimmed text with excess whitespace normalized.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
@@ -20,20 +21,30 @@ type Router struct {
 	inbound         chan<- domain.CanonicalMessage
 	mediaMgr        *MediaManager
 	hitlCoordinator *HITLCoordinator
+	bindAgents      map[int64]string
+	mu              sync.RWMutex
 }
 
 // NewRouter creates a new update Router.
 func NewRouter(cfg *config.Config, bot *gotgbot.Bot, inbound chan<- domain.CanonicalMessage, mediaMgr *MediaManager, hitlCoord ...*HITLCoordinator) *Router {
 	r := &Router{
-		cfg:      cfg,
-		bot:      bot,
-		inbound:  inbound,
-		mediaMgr: mediaMgr,
+		cfg:        cfg,
+		bot:        bot,
+		inbound:    inbound,
+		mediaMgr:   mediaMgr,
+		bindAgents: make(map[int64]string),
 	}
 	if len(hitlCoord) > 0 {
 		r.hitlCoordinator = hitlCoord[0]
 	}
 	return r
+}
+
+// SetBotBindings updates the mapping of bot IDs to dedicated bound agent personas.
+func (r *Router) SetBotBindings(bindings map[int64]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bindAgents = bindings
 }
 
 // HandleUpdate processes a Telegram update with whitelist security and group routing rules.
@@ -55,24 +66,22 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		return nil
 	}
 
-	// 1. Authorization checks
+	botUsername := ""
+	var botID int64
+	if b != nil {
+		botUsername = b.Username
+		botID = b.Id
+	}
+
+	// 1. Authorization & Group Routing
 	var isMentioned, isReplyToBot bool
 	if msg.Chat.Type == "private" {
-		if !IsUserAdmin(r.cfg, msg.From.Id) {
-			// Unauthorized 1-1 user: silently drop
-			return nil
-		}
+		// In Hexagonal & Multi-Bot RBAC, 1-1 private interactions are forwarded
+		// to Core Engine for centralized access evaluation (CheckAccess).
 	} else if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" {
 		if !IsGroupAllowed(r.cfg, msg.Chat.Id) {
 			// Unauthorized group: silently drop
 			return nil
-		}
-
-		botUsername := ""
-		var botID int64
-		if b != nil {
-			botUsername = b.Username
-			botID = b.Id
 		}
 
 		shouldProcess, mentioned, replied := IsMessageForBot(botUsername, botID, msg)
@@ -93,10 +102,6 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		rawText = msg.Caption
 	}
 
-	botUsername := ""
-	if b != nil {
-		botUsername = b.Username
-	}
 	cleanText := ExtractCleanText(botUsername, rawText)
 
 	// 3. Extract media attachments
@@ -121,10 +126,20 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		replyToMsgID = strconv.FormatInt(msg.ReplyToMessage.MessageId, 10)
 	}
 
+	r.mu.RLock()
+	var bindAgent string
+	if r.bindAgents != nil && botID > 0 {
+		bindAgent = r.bindAgents[botID]
+	}
+	r.mu.RUnlock()
+
 	cMsg := domain.CanonicalMessage{
-		ID:        strconv.FormatInt(msg.MessageId, 10),
-		Timestamp: msgTime,
-		Channel:   "telegram",
+		ID:          strconv.FormatInt(msg.MessageId, 10),
+		Timestamp:   msgTime,
+		Channel:     "telegram",
+		BotID:       botID,
+		BotUsername: botUsername,
+		BindAgent:   bindAgent,
 		Sender: domain.SenderUser{
 			ID:       strconv.FormatInt(msg.From.Id, 10),
 			Username: msg.From.Username,
@@ -175,17 +190,20 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		return nil
 	}
 
-	// 1. Authorization check
-	if !IsUserAdmin(r.cfg, cb.From.Id) {
-		if b != nil {
-			_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{
-				Text: "⛔ Access denied. You are not authorized to access agyent.",
-			})
+	var botID int64
+	var botUsername string
+	var bindAgent string
+	if b != nil {
+		botID = b.Id
+		botUsername = b.Username
+		r.mu.RLock()
+		if r.bindAgents != nil {
+			bindAgent = r.bindAgents[botID]
 		}
-		return nil
+		r.mu.RUnlock()
 	}
 
-	// 2. Answer callback query to dismiss loading state
+	// 1. Answer callback query to dismiss loading state
 	if b != nil {
 		_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{})
 	}
@@ -195,7 +213,7 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		return nil
 	}
 
-	// 3. Handle HITL interactive approval callback
+	// 2. Handle HITL interactive approval callback
 	if strings.HasPrefix(data, "hitl:") {
 		if r.hitlCoordinator != nil {
 			return r.hitlCoordinator.HandleCallback(context.Background(), cb.Id, cb.From.Id, data)
@@ -203,7 +221,7 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		return nil
 	}
 
-	// 4. Map compact callback data into synthesized slash command
+	// 3. Map compact callback data into synthesized slash command
 	var synthCmd string
 	switch {
 	case strings.HasPrefix(data, "sec:preset:"):
@@ -276,9 +294,12 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 	fullName := strings.TrimSpace(cb.From.FirstName + " " + cb.From.LastName)
 
 	cMsg := domain.CanonicalMessage{
-		ID:        strconv.FormatInt(msgID, 10),
-		Timestamp: time.Now(),
-		Channel:   "telegram",
+		ID:          strconv.FormatInt(msgID, 10),
+		Timestamp:   time.Now(),
+		Channel:     "telegram",
+		BotID:       botID,
+		BotUsername: botUsername,
+		BindAgent:   bindAgent,
 		Sender: domain.SenderUser{
 			ID:       strconv.FormatInt(cb.From.Id, 10),
 			Username: cb.From.Username,

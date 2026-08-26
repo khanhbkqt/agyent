@@ -319,6 +319,7 @@ func TestEngine_NewAgentBootstrapFlow(t *testing.T) {
 		Description:   "Coder Bot Assistant",
 		Status:        domain.StatusUninitialized,
 		WorkspacePath: agentWorkspace,
+		OwnerID:       "8544450322",
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
@@ -617,3 +618,151 @@ func TestEngine_WorkspaceHookAutoProvisioning(t *testing.T) {
 	assert.Contains(t, string(data), "agyent-security-gate")
 	assert.Contains(t, string(data), "hook-bridge pre")
 }
+
+func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
+	eng, _, channel, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	user1 := domain.SenderUser{ID: "111", Username: "alice"}
+	user2 := domain.SenderUser{ID: "222", Username: "bob"}
+	chat1 := domain.ChatContext{ID: "111", Type: "private"}
+	chat2 := domain.ChatContext{ID: "222", Type: "private"}
+
+	// 1. User 1 creates private agent 'alice_sec'
+	createMsg := domain.CanonicalMessage{
+		ID:        "msg-create-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    user1,
+		Chat:      chat1,
+		Text:      "/a new alice_sec Alice Private Security Agent",
+	}
+	err := eng.HandleDebouncedMessage(ctx, createMsg)
+	require.NoError(t, err)
+
+	agent, err := store.GetAgent(ctx, "alice_sec")
+	require.NoError(t, err)
+	assert.Equal(t, "alice_sec", agent.Name)
+	assert.Equal(t, "111", agent.OwnerID)
+	assert.False(t, agent.IsPublic)
+
+	// 2. User 2 (unauthorized) tries to switch to 'alice_sec' -> 403
+	switchMsg := domain.CanonicalMessage{
+		ID:        "msg-switch-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    user2,
+		Chat:      chat2,
+		Text:      "/use alice_sec",
+	}
+	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	require.NoError(t, err)
+	sent := channel.GetSentMessages()
+	lastSent := sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Access Denied")
+
+	// 3. User 1 shares agent with User 2
+	shareMsg := domain.CanonicalMessage{
+		ID:        "msg-share-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    user1,
+		Chat:      chat1,
+		Text:      "/a share alice_sec 222 operator",
+	}
+	err = eng.HandleDebouncedMessage(ctx, shareMsg)
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Access granted")
+
+	// 4. User 2 switches to 'alice_sec' -> Succeeded
+	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Switched active agent to **alice_sec**")
+
+	// 5. User 1 inspects agent info -> contains collaborator info
+	infoMsg := domain.CanonicalMessage{
+		ID:        "msg-info-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    user1,
+		Chat:      chat1,
+		Text:      "/a info alice_sec",
+	}
+	err = eng.HandleDebouncedMessage(ctx, infoMsg)
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Collaborators (1)")
+	assert.Contains(t, lastSent.Text, "222")
+
+	// 6. User 1 revokes User 2
+	revokeMsg := domain.CanonicalMessage{
+		ID:        "msg-revoke-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    user1,
+		Chat:      chat1,
+		Text:      "/a revoke alice_sec 222",
+	}
+	err = eng.HandleDebouncedMessage(ctx, revokeMsg)
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Access revoked")
+
+	// 7. User 2 tries to switch again -> Access Denied
+	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Access Denied")
+}
+
+func TestEngine_DedicatedAgentBinding(t *testing.T) {
+	eng, runner, _, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	// Create dedicated agent
+	agent := &domain.Agent{
+		Name:          "dev_bot",
+		Description:   "Dedicated Dev Bot",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: t.TempDir(),
+		IsPublic:      true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	msg := domain.CanonicalMessage{
+		ID:          "msg-bot-bind-1",
+		Timestamp:   time.Now(),
+		Channel:     "telegram",
+		BotID:       9999,
+		BotUsername: "dev_agent_bot",
+		BindAgent:   "dev_bot",
+		Sender:      domain.SenderUser{ID: "555", Username: "developer"},
+		Chat:        domain.ChatContext{ID: "555", Type: "private"},
+		Text:        "Hello dedicated bot",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	session, err := store.GetSession(ctx, "telegram:9999:555")
+	require.NoError(t, err)
+	assert.Equal(t, "dev_bot", session.ActiveAgent)
+
+	require.NotEmpty(t, runner.executeCalls)
+}
+
