@@ -1,0 +1,28 @@
+[Unit]
+Description=agyent - High-Performance Go Core Gateway Daemon for Antigravity (AGY)
+Documentation=https://github.com/khanhbkqt/agyent
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+ExecStart=/usr/local/bin/agyent run -c /root/.agyent/config.yaml
+Restart=always
+RestartSec=5s
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# Process Environment
+Environment="NO_COLOR=1"
+Environment="TERM=dumb"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agyent
+
+[Install]
+WantedBy=multi-user.target

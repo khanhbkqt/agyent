@@ -1,0 +1,118 @@
+package domain
+
+import (
+	"strings"
+	"time"
+)
+
+// SenderUser represents the sender of an inbound message.
+type SenderUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username,omitempty"`
+	FullName string `json:"full_name,omitempty"`
+}
+
+// ChatContext represents the context of the chat or group where a message originated.
+type ChatContext struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"` // e.g. "private", "group", "supergroup", "channel"
+	Title    string `json:"title,omitempty"`
+	ThreadID int64  `json:"thread_id,omitempty"` // For Telegram forum topics / threads
+}
+
+// Attachment represents an inbound media or file attachment.
+type Attachment struct {
+	ID       string `json:"id"`
+	FileName string `json:"file_name"`
+	FilePath string `json:"file_path"`
+	MIMEType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+	Type     string `json:"type"` // "image", "document", "audio", "video", etc.
+}
+
+// CanonicalMessage is the standardized representation of any inbound message across channels.
+type CanonicalMessage struct {
+	ID               string       `json:"id"`
+	Timestamp        time.Time    `json:"timestamp"`
+	Channel          string       `json:"channel"` // e.g. "telegram"
+	Sender           SenderUser   `json:"sender"`
+	Chat             ChatContext  `json:"chat"`
+	Text             string       `json:"text"`
+	RawText          string       `json:"raw_text"`
+	Attachments      []Attachment `json:"attachments,omitempty"`
+	IsMentioned      bool         `json:"is_mentioned"`
+	IsReplyToBot     bool         `json:"is_reply_to_bot"`
+	ReplyToMessageID string       `json:"reply_to_message_id,omitempty"`
+}
+
+// OutboundAttachment represents a file or artifact to send out.
+type OutboundAttachment struct {
+	FilePath string `json:"file_path"`
+	FileName string `json:"file_name"`
+	MIMEType string `json:"mime_type"`
+	Caption  string `json:"caption,omitempty"`
+	Type     string `json:"type"` // "image", "document", etc.
+}
+
+// InlineButton represents an interactive button in a messaging UI.
+type InlineButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
+}
+
+// InlineKeyboardRow represents a single row of buttons in an inline keyboard.
+type InlineKeyboardRow []InlineButton
+
+// InlineKeyboard represents a multi-row interactive keyboard.
+type InlineKeyboard []InlineKeyboardRow
+
+// OutboundMessage represents a standardized response to be sent to a channel.
+type OutboundMessage struct {
+	ChatID           string               `json:"chat_id"`
+	ThreadID         int64                `json:"thread_id,omitempty"`
+	Text             string               `json:"text"`
+	ParseMode        string               `json:"parse_mode,omitempty"` // "MarkdownV2", "HTML", "Markdown", ""
+	Attachments      []OutboundAttachment `json:"attachments,omitempty"`
+	ReplyToMessageID string               `json:"reply_to_message_id,omitempty"`
+	InlineKeyboard   InlineKeyboard       `json:"inline_keyboard,omitempty"`
+}
+
+// SessionKey returns the unique session key for this message's chat and thread context.
+func (m *CanonicalMessage) SessionKey() string {
+	return FormatSessionKey(m.Channel, m.Chat.ID, m.Chat.ThreadID)
+}
+
+// CleanText returns the trimmed text with excess whitespace normalized.
+func (m *CanonicalMessage) CleanText() string {
+	return strings.TrimSpace(m.Text)
+}
+
+// IsCommand checks whether the message text starts with a slash command prefix '/'.
+func (m *CanonicalMessage) IsCommand() bool {
+	trimmed := strings.TrimSpace(m.Text)
+	return strings.HasPrefix(trimmed, "/")
+}
+
+// CommandArgs extracts the slash command and its arguments.
+// For instance: "/p@my_bot hello world" -> cmd: "/p", args: ["hello", "world"]
+func (m *CanonicalMessage) CommandArgs() (string, []string) {
+	trimmed := strings.TrimSpace(m.Text)
+	if !strings.HasPrefix(trimmed, "/") {
+		return "", nil
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return "", nil
+	}
+
+	rawCmd := fields[0]
+	// Remove bot username suffix if present, e.g. "/p@agyent_bot" -> "/p"
+	if atIdx := strings.Index(rawCmd, "@"); atIdx != -1 {
+		rawCmd = rawCmd[:atIdx]
+	}
+
+	args := fields[1:]
+	return rawCmd, args
+}

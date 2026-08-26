@@ -1,0 +1,140 @@
+package agy_test
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+
+	"agyent/internal/adapters/harness/agy"
+	"agyent/internal/core/domain"
+	"agyent/internal/core/eventbus"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
+)
+
+func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	parser := agy.NewStreamParser(bus)
+
+	t.Run("TC-BRG-01_StreamInitAndDeltaAndToolAndResult", func(t *testing.T) {
+		var (
+			mu        sync.Mutex
+			initEvt   *domain.StreamInitPayload
+			deltas    []string
+			toolEvts  []domain.StreamToolPayload
+			resultEvt *domain.StreamResultPayload
+		)
+
+		bus.SubscribeSync(domain.EventStreamInit, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamInitPayload)
+			initEvt = &p
+			mu.Unlock()
+			return nil
+		})
+
+		bus.SubscribeSync(domain.EventStreamDelta, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamDeltaPayload)
+			deltas = append(deltas, p.TextDelta)
+			mu.Unlock()
+			return nil
+		})
+
+		bus.SubscribeSync(domain.EventStreamTool, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamToolPayload)
+			toolEvts = append(toolEvts, p)
+			mu.Unlock()
+			return nil
+		})
+
+		bus.SubscribeSync(domain.EventStreamResult, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamResultPayload)
+			resultEvt = &p
+			mu.Unlock()
+			return nil
+		})
+
+		sampleNDJSON := `
+{"event":"init","conversation_id":"c-100","init":{"cwd":"/app","tools":["list_dir","generate_image"]}}
+{"event":"step_update","step_update":{"conversation_id":"c-100","step_index":1,"step_type":"tool","state":"ACTIVE","tool_name":"list_dir","tool_info":{"parameters":{"DirectoryPath":"/app"}}}}
+{"event":"step_update","step_update":{"conversation_id":"c-100","step_index":1,"step_type":"tool","state":"DONE","tool_name":"list_dir","duration_seconds":0.05,"tool_info":{"output":"main.go\n"}}}
+{"event":"step_update","step_update":{"conversation_id":"c-100","step_index":2,"step_type":"agent_response","text_delta":"Dưới đây "}}
+{"event":"step_update","step_update":{"conversation_id":"c-100","step_index":2,"step_type":"agent_response","text_delta":"là kết quả:"}}
+{"event":"result","result":{"conversation_id":"c-100","status":"SUCCESS","response":"Dưới đây là kết quả:","duration_seconds":1.2,"usage":{"input_tokens":100,"output_tokens":40,"thinking_tokens":10,"cache_read_tokens":80,"total_tokens":150}}}
+`
+
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:12345", strings.NewReader(sampleNDJSON))
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.Equal(t, "SUCCESS", res.Status)
+		assert.Equal(t, "c-100", res.ConversationID)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.NotNil(t, initEvt)
+		assert.Equal(t, "c-100", initEvt.ConversationID)
+		assert.Equal(t, []string{"list_dir", "generate_image"}, initEvt.Tools)
+
+		assert.Equal(t, []string{"Dưới đây ", "là kết quả:"}, deltas)
+		require.Len(t, toolEvts, 2)
+		assert.Equal(t, "ACTIVE", toolEvts[0].State)
+		assert.Equal(t, "DONE", toolEvts[1].State)
+
+		require.NotNil(t, resultEvt)
+		assert.Equal(t, 150, resultEvt.Usage.TotalTokens)
+		assert.Equal(t, 80, resultEvt.Usage.CacheReadTokens)
+		assert.Equal(t, 80.0, resultEvt.Usage.CacheHitRatio())
+	})
+
+	t.Run("TC-BRG-04_AbruptSubprocessTerminationWithoutResult", func(t *testing.T) {
+		var errEvt *domain.StreamErrorPayload
+		var mu sync.Mutex
+
+		bus.SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamErrorPayload)
+			errEvt = &p
+			mu.Unlock()
+			return nil
+		})
+
+		// Stream cut abruptly after delta
+		cutNDJSON := `
+{"event":"init","conversation_id":"c-cut"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"writing code..."}}
+`
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:999", strings.NewReader(cutNDJSON))
+		assert.Nil(t, res)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "incomplete stream")
+
+		mu.Lock()
+		require.NotNil(t, errEvt)
+		assert.Equal(t, "telegram:999", errEvt.SessionKey)
+		assert.Contains(t, errEvt.Error, "terminated abruptly")
+		mu.Unlock()
+	})
+
+	t.Run("TC-BRG-02_LargeNDJSONLineSupportUpTo2MB", func(t *testing.T) {
+		hugeText := strings.Repeat("A", 1024*1024) // 1MB text
+		ndjson := fmt.Sprintf(`{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"%s"}}
+{"event":"result","result":{"status":"SUCCESS","response":"done"}}
+`, hugeText)
+
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:large", strings.NewReader(ndjson))
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.Equal(t, "SUCCESS", res.Status)
+	})
+}

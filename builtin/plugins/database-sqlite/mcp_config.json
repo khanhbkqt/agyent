@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sqlite-inspector": {
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}

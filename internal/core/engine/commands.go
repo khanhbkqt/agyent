@@ -1,0 +1,1096 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"agyent/internal/config"
+	"agyent/internal/core/domain"
+)
+
+// HandleCommand processes slash commands and returns an outbound response.
+func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage) (*domain.OutboundMessage, error) {
+	cmd, args := msg.CommandArgs()
+	cmd = strings.ToLower(cmd)
+	sessionKey := msg.SessionKey()
+
+	defaultAgent := "agyent"
+	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
+	if err != nil {
+		return &domain.OutboundMessage{
+			ChatID:           msg.Chat.ID,
+			ThreadID:         msg.Chat.ThreadID,
+			Text:             fmt.Sprintf("⚠️ Failed to load session: %v", err),
+			ReplyToMessageID: msg.ID,
+		}, nil
+	}
+
+	var responseText string
+	var inlineKeyboard domain.InlineKeyboard
+
+	switch cmd {
+	case "/help":
+		responseText = e.handleHelpCommand()
+
+	case "/status":
+		responseText = e.handleStatusCommand(ctx, session)
+
+	case "/tokens", "/token", "/metrics":
+		responseText = e.handleTokensCommand(ctx, session)
+
+	case "/context":
+		responseText = e.handleContextCommand(ctx, session)
+
+	case "/skills", "/skill":
+		responseText = e.handleSkillsCommand(ctx, session, args)
+
+	case "/plugins", "/plugin":
+		responseText = e.handlePluginsCommand(ctx, session, args)
+
+	case "/stream":
+		responseText = e.handleStreamCommand(args)
+
+	case "/agents", "/agent", "/a":
+		responseText = e.handleAgentsCommand(ctx, session, args)
+
+	case "/bootstrap":
+		responseText = e.handleBootstrapCommand(ctx, session, args)
+
+	case "/use":
+		if len(args) == 0 {
+			responseText = "⚠️ Usage: `/use <agent_name>`\nExample: `/use agyent`"
+		} else {
+			responseText = e.switchAgent(ctx, session, args[0])
+		}
+
+	case "/projects", "/project", "/p":
+		responseText = e.handleProjectsCommand(ctx, session, args)
+
+	case "/conversations", "/c":
+		responseText, inlineKeyboard = e.handleConversationsDispatcher(ctx, session, args)
+
+	case "/new":
+		responseText = e.handleNewConversationCommand(ctx, session, args)
+
+	case "/pin":
+		responseText = e.handlePinCommand(ctx, session, args, true)
+
+	case "/unpin":
+		responseText = e.handlePinCommand(ctx, session, args, false)
+
+	case "/reset":
+		if e.HasActiveTurn(sessionKey) {
+			responseText = "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting."
+		} else {
+			session.ResetActiveConversationID()
+			if err := e.storage.SaveSession(ctx, session); err != nil {
+				responseText = fmt.Sprintf("⚠️ Failed to reset conversation: %v", err)
+			} else {
+				scope := "Global Mode"
+				if session.ActiveProject != "" {
+					scope = fmt.Sprintf("Project: %s", session.ActiveProject)
+				}
+				responseText = fmt.Sprintf("🔄 **Conversation context reset** for [%s • %s].\nNext message will start a fresh conversation session.", session.ActiveAgent, scope)
+			}
+		}
+
+	case "/force_unlock":
+		e.cancelActiveTurn(sessionKey)
+		unlocked := e.lockManager.ForceUnlock(sessionKey)
+		if unlocked {
+			responseText = "🔓 **Session lock forcefully released** and any active subprocess was cancelled."
+		} else {
+			responseText = "🔓 Session was not locked. Active state has been reset."
+		}
+
+	default:
+		responseText = fmt.Sprintf("❓ Unknown command `%s`. Type `/help` for available commands.", cmd)
+	}
+
+	return &domain.OutboundMessage{
+		ChatID:           msg.Chat.ID,
+		ThreadID:         msg.Chat.ThreadID,
+		Text:             responseText,
+		ParseMode:        "HTML",
+		ReplyToMessageID: msg.ID,
+		InlineKeyboard:   inlineKeyboard,
+	}, nil
+}
+
+func (e *Engine) handleHelpCommand() string {
+	return `🤖 **agyent Gateway Daemon — Commands Guide**
+
+**🌐 General & System:**
+• ` + "`/status`" + ` — View system uptime, active agent, scope, streaming mode, and resource stats.
+• ` + "`/tokens`" + ` (or ` + "`/metrics`" + `) — Inspect detailed token usage, KV-cache read tokens, and effective cost savings.
+• ` + "`/context`" + ` — Inspect active context directives, token budget, and active MCP servers.
+• ` + "`/skills`" + ` — List available Progressive Disclosure skills.
+• ` + "`/plugins`" + ` — Manage capability plugins (` + "`/plugins`" + `, ` + "`/plugin enable <name>`" + `, ` + "`/plugin disable <name>`" + `).
+• ` + "`/stream [on|off]`" + ` — Query or toggle Real-Time Streaming mode (` + "`stream-json`" + ` vs ` + "`batch`" + `).
+• ` + "`/reset`" + ` — Clear short-term conversation context for the active scope.
+• ` + "`/bootstrap [name]`" + ` (or ` + "`/a bootstrap`" + `) — Force re-trigger Genesis Bootstrap protocol for an agent.
+• ` + "`/force_unlock`" + ` — Emergency unlock session mutex and cancel hanging subprocess.
+• ` + "`/help`" + ` — Show this help message.
+
+**🧵 Conversation & Context:**
+• ` + "`/ask <prompt>`" + ` — Ask an isolated ephemeral question without polluting active context.
+• ` + "`/c`" + ` (or ` + "`/conversations`" + `) — View interactive conversation list with 1-touch buttons.
+• ` + "`/c <#>`" + ` — Fast switch to conversation by number (e.g. ` + "`/c 2`" + `).
+• ` + "`/new`" + ` — Start a fresh new conversation context.
+• ` + "`/pin`" + ` / ` + "`/unpin`" + ` — Pin or unpin the current active conversation.
+• ` + "`/c rename <title>`" + ` — Rename the current active conversation.
+• ` + "`/c archive`" + ` — Archive the current conversation.
+• ` + "`/c clean`" + ` — Trigger garbage collection for old archived sessions.
+
+**🤖 Agent Management:**
+• ` + "`/agents`" + ` (or ` + "`/a list`" + `) — List all registered agents.
+• ` + "`/use <name>`" + ` (or ` + "`/a <name>`" + `) — Switch active agent profile.
+• ` + "`/a new <name> [description]`" + ` — Register and initialize a new agent.
+
+**📁 Multi-Project Management:**
+• ` + "`/projects`" + ` (or ` + "`/p list`" + `) — List all projects attached to active agent.
+• ` + "`/p <name>`" + ` (or ` + "`/project use <name>`" + `) — Switch into a project workspace.
+• ` + "`/p new <name> [path]`" + ` — Register a new project codebase.
+• ` + "`/p exit`" + ` (or ` + "`/p ~`" + `) — Exit project and return to Global Chat mode.
+• ` + "`/p info`" + ` — View details of the currently active project.
+• ` + "`/p reset`" + ` — Reset conversation history for the current project.`
+}
+
+func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Session) string {
+	uptime := time.Since(e.startTime).Round(time.Second)
+
+	streamStatus := "OFF (Classic Batch json)"
+	if e.IsStreamingEnabled() {
+		streamStatus = "ON (Real-Time stream-json)"
+	}
+
+	scope := "🌐 Global Chat Mode"
+	cwd := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+	if session.ActiveAgent != "" {
+		if agent, err := e.storage.GetAgent(ctx, session.ActiveAgent); err == nil && agent != nil && agent.WorkspacePath != "" {
+			cwd = agent.WorkspacePath
+		}
+	}
+
+	convID := session.GlobalConversationID
+	if session.ActiveProject != "" {
+		scope = fmt.Sprintf("📁 In-Project: %s", session.ActiveProject)
+		projID := domain.FormatProjectID(session.ActiveAgent, session.ActiveProject)
+		if proj, err := e.storage.GetProject(ctx, projID); err == nil {
+			cwd = proj.ProjectPath
+		}
+		convID = session.ProjectConversationID
+	}
+
+	if convID == "" {
+		convID = "(none / new)"
+	}
+
+	return fmt.Sprintf(`🚀 **agyent Gateway Status**
+• **Uptime:** %s
+• **Active Agent:** %s
+• **Context Scope:** %s
+• **Working Directory:** %s
+• **Conversation ID:** %s
+• **Streaming Mode:** %s
+• **Active Locks:** %d
+• **Dropped Events:** %d
+• **AGY Binary:** %s (timeout: %ds)`,
+		uptime,
+		session.ActiveAgent,
+		scope,
+		cwd,
+		convID,
+		streamStatus,
+		e.lockManager.ActiveLockCount(),
+		e.eventBus.DroppedEventsCount(),
+		e.cfg.AGY.BinaryPath,
+		e.cfg.AGY.DefaultTimeoutSeconds,
+	)
+}
+
+func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Session) string {
+	activeConvID := session.GetActiveConversationID()
+	scopeLabel := "🌐 Global Chat Mode"
+	if session.ActiveProject != "" {
+		scopeLabel = fmt.Sprintf("📁 In-Project: %s", session.ActiveProject)
+	}
+
+	convStats, err := e.storage.GetTokenStats(ctx, session.SessionKey, activeConvID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to query token metrics: %v", err)
+	}
+
+	sessionStats, _ := e.storage.GetTokenStats(ctx, session.SessionKey, "")
+
+	if (convStats == nil || convStats.TotalTokens == 0) && (sessionStats == nil || sessionStats.TotalTokens == 0) {
+		return fmt.Sprintf("📊 **No token metrics recorded yet** for [%s • %s].\n\nSend a message to start a conversation session and track token metrics.", session.ActiveAgent, scopeLabel)
+	}
+
+	convTag := activeConvID
+	if convTag == "" {
+		convTag = "(uninitialized / new)"
+	} else if len(convTag) > 8 {
+		convTag = convTag[:8] + "..."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📊 **agyent Token Usage & Cache Metrics**\n"))
+	sb.WriteString(fmt.Sprintf("• **Active Agent:** %s\n", session.ActiveAgent))
+	sb.WriteString(fmt.Sprintf("• **Context Scope:** %s\n", scopeLabel))
+	recentLogs, _ := e.storage.ListAuditLogs(ctx, session.SessionKey, 5)
+	var latestLog *domain.AuditLog
+	for i := range recentLogs {
+		if recentLogs[i].ConversationID == activeConvID {
+			latestLog = &recentLogs[i]
+			break
+		}
+	}
+
+	if latestLog != nil && latestLog.Usage.TotalTokens > 0 {
+		latestHitRatio := latestLog.Usage.CacheHitRatio()
+		cacheState := "⚪ COLD / UNCACHED"
+		if latestLog.Usage.CacheReadTokens > 0 {
+			cacheState = "⚡ WARM (KV-Cache Active)"
+		}
+
+		sb.WriteString("📐 **Active Turn Context Window:**\n")
+		sb.WriteString(fmt.Sprintf("• **Prompt Input Size:** %s\n", formatNumber(latestLog.Usage.InputTokens)))
+		sb.WriteString(fmt.Sprintf("• **⚡ KV-Cache Hit:** %s (%.1f%% Cache Hit)\n", formatNumber(latestLog.Usage.CacheReadTokens), latestHitRatio))
+		sb.WriteString(fmt.Sprintf("• **Fresh Uncached Input:** %s\n", formatNumber(latestLog.Usage.UncachedInputTokens())))
+		sb.WriteString(fmt.Sprintf("• **Turn Output:** %s (Thinking: %s)\n", formatNumber(latestLog.Usage.OutputTokens), formatNumber(latestLog.Usage.ThinkingTokens)))
+		sb.WriteString(fmt.Sprintf("• **Cache State:** %s\n\n", cacheState))
+	}
+
+	if convStats != nil && convStats.TotalTokens > 0 {
+		hitRatio := convStats.CacheHitRatio()
+		costSaved := convStats.EffectiveCostSavingsRatio()
+
+		sb.WriteString("🧵 **Conversation Cumulative Billed:**\n")
+		sb.WriteString(fmt.Sprintf("• **Total Input Billed:** %s\n", formatNumber(convStats.InputTokens)))
+		sb.WriteString(fmt.Sprintf("• **⚡ Total Cache Read:** %s (%.1f%%)\n", formatNumber(convStats.CacheReadTokens), hitRatio))
+		sb.WriteString(fmt.Sprintf("• **Total Fresh Input:** %s\n", formatNumber(convStats.UncachedInputTokens())))
+		sb.WriteString(fmt.Sprintf("• **Total Output Billed:** %s (Thinking: %s)\n", formatNumber(convStats.OutputTokens), formatNumber(convStats.ThinkingTokens)))
+		sb.WriteString(fmt.Sprintf("• **Total Billed Tokens:** %s\n", formatNumber(convStats.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Savings:** ~%.1f%% (Gemini 0.25x Cache)\n\n", costSaved))
+	}
+
+	if sessionStats != nil && sessionStats.TotalTokens > 0 {
+		sessionHitRatio := sessionStats.CacheHitRatio()
+		sessionCostSaved := sessionStats.EffectiveCostSavingsRatio()
+
+		sb.WriteString("🌐 **Session Lifetime:**\n")
+		sb.WriteString(fmt.Sprintf("• **Lifetime Input:** %s | **Cached:** %s (%.1f%%)\n", formatNumber(sessionStats.InputTokens), formatNumber(sessionStats.CacheReadTokens), sessionHitRatio))
+		sb.WriteString(fmt.Sprintf("• **Lifetime Output:** %s | **Thinking:** %s\n", formatNumber(sessionStats.OutputTokens), formatNumber(sessionStats.ThinkingTokens)))
+		sb.WriteString(fmt.Sprintf("• **Lifetime Total:** %s (Net Savings: ~%.1f%%)\n", formatNumber(sessionStats.TotalTokens), sessionCostSaved))
+	}
+
+	return sb.String()
+}
+
+func formatNumber(n int) string {
+	in := strconv.Itoa(n)
+	out := make([]byte, 0, len(in)+(len(in)-1)/3)
+	for i, c := range in {
+		if i > 0 && (len(in)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, byte(c))
+	}
+	return string(out)
+}
+
+func (e *Engine) handleContextCommand(ctx context.Context, session *domain.Session) string {
+	agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+	wsDir := agentPath
+	scopeLabel := "Global Scope"
+
+	if session.ActiveProject != "" {
+		projID := domain.FormatProjectID(session.ActiveAgent, session.ActiveProject)
+		if proj, err := e.storage.GetProject(ctx, projID); err == nil {
+			wsDir = proj.ProjectPath
+			scopeLabel = fmt.Sprintf("Project Scope (%s)", proj.ProjectName)
+		}
+	}
+
+	var resolved *domain.ResolvedContext
+	if e.contextResolver != nil {
+		resolved, _ = e.contextResolver.Resolve(ctx, agentPath, wsDir)
+	}
+
+	directivesLen := 0
+	numSkills := 0
+	if resolved != nil {
+		directivesLen = len(resolved.CombinedDirectives)
+		numSkills = len(resolved.SkillHeaders)
+	}
+
+	numPlugins := 0
+	numActiveMCP := 0
+	if e.pluginManager != nil {
+		plugins, _ := e.pluginManager.ListPlugins(ctx, agentPath, wsDir)
+		for _, p := range plugins {
+			if p.Manifest.Enabled {
+				numPlugins++
+				numActiveMCP += len(p.MCPServers)
+			}
+		}
+	}
+
+	return fmt.Sprintf(`🧠 **agyent Context Status & Token Budget**
+• **Active Agent:** %s
+• **Active Scope:** %s
+• **Working Directory:** %s
+• **Directives Size:** %d bytes
+• **Active Skills (Progressive Index):** %d skills
+• **Active Plugins:** %d plugins
+• **Active MCP Servers:** %d servers
+• **Pruning Policy:** Head-Tail Sandwich (Max: 2000 chars)
+• **Pre-Compaction Flush:** Enabled (Threshold: 75%%)`,
+		session.ActiveAgent,
+		scopeLabel,
+		wsDir,
+		directivesLen,
+		numSkills,
+		numPlugins,
+		numActiveMCP,
+	)
+}
+
+func (e *Engine) handleSkillsCommand(ctx context.Context, session *domain.Session, args []string) string {
+	agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+	wsDir := agentPath
+	if session.ActiveProject != "" {
+		projID := domain.FormatProjectID(session.ActiveAgent, session.ActiveProject)
+		if proj, err := e.storage.GetProject(ctx, projID); err == nil {
+			wsDir = proj.ProjectPath
+		}
+	}
+
+	if e.contextResolver == nil {
+		return "⚠️ ContextResolver is not configured on this engine."
+	}
+
+	skills, err := e.contextResolver.DiscoverSkills(ctx, agentPath, wsDir)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to discover skills: %v", err)
+	}
+
+	if len(skills) == 0 {
+		return fmt.Sprintf("📚 No custom skills found for agent **%s**.\nPlace skills in `<workspace>/.agents/skills/<name>/SKILL.md`.", session.ActiveAgent)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📚 **Available Skills for [%s]:**\n\n", session.ActiveAgent))
+	for _, s := range skills {
+		sb.WriteString(fmt.Sprintf("• **`%s`** _[%s]_\n  _%s_\n", s.Name, s.Scope, s.Description))
+	}
+	sb.WriteString("\n_Skills are loaded on-demand via Progressive Disclosure._")
+	return sb.String()
+}
+
+func (e *Engine) handlePluginsCommand(ctx context.Context, session *domain.Session, args []string) string {
+	agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+	wsDir := agentPath
+	if session.ActiveProject != "" {
+		projID := domain.FormatProjectID(session.ActiveAgent, session.ActiveProject)
+		if proj, err := e.storage.GetProject(ctx, projID); err == nil {
+			wsDir = proj.ProjectPath
+		}
+	}
+
+	if e.pluginManager == nil {
+		return "⚠️ PluginManager is not configured on this engine."
+	}
+
+	if len(args) == 0 || args[0] == "list" {
+		plugins, err := e.pluginManager.ListPlugins(ctx, agentPath, wsDir)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to list plugins: %v", err)
+		}
+
+		if len(plugins) == 0 {
+			return "🔌 No plugins installed. Use `/plugin install <name>` from built-in repository."
+		}
+
+		var sb strings.Builder
+		sb.WriteString("🔌 **Installed Plugins:**\n\n")
+		for _, p := range plugins {
+			status := "⚪ [DISABLED]"
+			if p.Manifest.Enabled {
+				status = "🟢 [ENABLED]"
+			}
+			sb.WriteString(fmt.Sprintf("• %s **%s** (v%s) _[%s]_\n  _%s_\n", status, p.Manifest.Name, p.Manifest.Version, p.Scope, p.Manifest.Description))
+		}
+		sb.WriteString("\nUse `/plugin enable <name>` or `/plugin disable <name>` to toggle.")
+		return sb.String()
+	}
+
+	subCmd := strings.ToLower(args[0])
+	switch subCmd {
+	case "enable", "on", "1":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/plugin enable <plugin_name>`"
+		}
+		name := args[1]
+		err := e.pluginManager.TogglePlugin(ctx, name, true, domain.ScopeWorkspace, wsDir)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to enable plugin %q: %v", name, err)
+		}
+		return fmt.Sprintf("🟢 Plugin **%s** is now **ENABLED**. Capabilities are active for your next turn.", name)
+
+	case "disable", "off", "0":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/plugin disable <plugin_name>`"
+		}
+		name := args[1]
+		err := e.pluginManager.TogglePlugin(ctx, name, false, domain.ScopeWorkspace, wsDir)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to disable plugin %q: %v", name, err)
+		}
+		return fmt.Sprintf("⚪ Plugin **%s** is now **DISABLED**. Associated tools and skills have been unmounted.", name)
+
+	case "install":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/plugin install <builtin_plugin_name>`\nAvailable builtins: `browser-camoufox`, `system-diagnostics`, `database-sqlite`"
+		}
+		name := args[1]
+		err := e.pluginManager.InstallBuiltinPlugin(ctx, name, domain.ScopeWorkspace, wsDir)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to install plugin %q: %v", name, err)
+		}
+		return fmt.Sprintf("🎉 Built-in plugin **%s** successfully installed to workspace `.agents/plugins/%s`!", name, name)
+
+	default:
+		return "⚠️ Unknown plugin subcommand. Use `/plugins`, `/plugin enable <name>`, `/plugin disable <name>`, or `/plugin install <name>`."
+	}
+}
+
+func (e *Engine) handleStreamCommand(args []string) string {
+	if len(args) == 0 {
+		status := "OFF"
+		if e.IsStreamingEnabled() {
+			status = "ON"
+		}
+		return fmt.Sprintf("⚡ **Streaming Mode** is currently **%s**.\nUse `/stream on` or `/stream off` to switch modes.", status)
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "on", "true", "1", "enable":
+		e.SetStreamingEnabled(true)
+		return "⚡ **Streaming Mode ENABLED** (`--output-format stream-json`).\nResponses will stream live with sub-second typing and progressive token edits."
+	case "off", "false", "0", "disable":
+		e.SetStreamingEnabled(false)
+		return "📦 **Streaming Mode DISABLED** (`--output-format json`).\nResponses will run in classic batch mode with periodic heartbeat typing."
+	default:
+		return "⚠️ Invalid argument. Use `/stream on` or `/stream off`."
+	}
+}
+
+func (e *Engine) handleAgentsCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if len(args) == 0 || args[0] == "list" {
+		agents, err := e.storage.ListAgents(ctx)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to list agents: %v", err)
+		}
+		if len(agents) == 0 {
+			return "No agents registered yet. Use `/a new <name>` to create one."
+		}
+
+		var sb strings.Builder
+		sb.WriteString("🤖 *Registered Agents:*\n")
+		for _, a := range agents {
+			marker := "  "
+			if a.Name == session.ActiveAgent {
+				marker = "👉 "
+			}
+			statusTag := "initialized"
+			if !a.IsInitialized() {
+				statusTag = "uninitialized (bootstrap on next turn)"
+			}
+			sb.WriteString(fmt.Sprintf("%s• *%s* — %s _[%s]_\n", marker, a.Name, a.Description, statusTag))
+		}
+		sb.WriteString("\nUse `/use <name>` to switch active agent.")
+		return sb.String()
+	}
+
+	if args[0] == "bootstrap" {
+		return e.handleBootstrapCommand(ctx, session, args[1:])
+	}
+
+	if args[0] == "new" || args[0] == "create" {
+		if len(args) < 2 {
+			return "⚠️ Usage: `/a new <agent_name> [description]`\nExample: `/a new dev_architect Cloud & Go Systems Architect`"
+		}
+		name := args[1]
+		desc := "AI Assistant"
+		if len(args) > 2 {
+			desc = strings.Join(args[2:], " ")
+		}
+
+		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, name)
+		if err := os.MkdirAll(agentPath, 0755); err != nil {
+			return fmt.Sprintf("⚠️ Failed to create agent directory: %v", err)
+		}
+
+		agent := &domain.Agent{
+			Name:          name,
+			Description:   desc,
+			Status:        domain.StatusUninitialized,
+			WorkspacePath: agentPath,
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		}
+
+		if err := e.storage.SaveAgent(ctx, agent); err != nil {
+			return fmt.Sprintf("⚠️ Failed to register agent: %v", err)
+		}
+
+		session.ActiveAgent = name
+		session.ActiveProject = ""
+		_ = e.storage.SaveSession(ctx, session)
+
+		return fmt.Sprintf("🎉 **Agent `%s` created** and set as active!\nWorkspace: `%s`\nGenesis bootstrap protocol will activate on your first message.", name, agentPath)
+	}
+
+	return e.switchAgent(ctx, session, args[0])
+}
+
+func (e *Engine) handleBootstrapCommand(ctx context.Context, session *domain.Session, args []string) string {
+	agentName := session.ActiveAgent
+	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+		agentName = strings.TrimSpace(args[0])
+	}
+
+	agent, err := e.storage.GetAgent(ctx, agentName)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
+	}
+
+	agent.Status = domain.StatusUninitialized
+	agent.UpdatedAt = time.Now()
+	if err := e.storage.SaveAgent(ctx, agent); err != nil {
+		return fmt.Sprintf("⚠️ Failed to update agent status: %v", err)
+	}
+
+	session.ActiveAgent = agentName
+	session.ResetActiveConversationID()
+	_ = e.storage.SaveSession(ctx, session)
+
+	return fmt.Sprintf("🔄 **Agent `%s` reset for Genesis Bootstrap.**\nWorkspace: `%s`\nYour next message will initiate the bootstrap protocol and generate identity files (`AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`).", agent.Name, agent.WorkspacePath)
+}
+
+func (e *Engine) switchAgent(ctx context.Context, session *domain.Session, agentName string) string {
+	if e.HasActiveTurn(session.SessionKey) {
+		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before switching agent."
+	}
+
+	agent, err := e.storage.GetAgent(ctx, agentName)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Agent `%s` not found. Use `/agents` to view available agents.", agentName)
+	}
+
+	session.ActiveAgent = agent.Name
+	session.ActiveProject = ""
+
+	// Restore latest conversation for the target agent in global mode to prevent context bleed
+	latest, _, err := e.storage.ListRecentConversations(ctx, session.SessionKey, agent.Name, "", 1, 0)
+	if err == nil && len(latest) > 0 {
+		session.GlobalConversationID = latest[0].ID
+	} else {
+		session.GlobalConversationID = ""
+	}
+
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to update session: %v", err)
+	}
+
+	return fmt.Sprintf("🔄 Switched active agent to **%s** (%s).\nContext returned to Global Mode.", agent.Name, agent.Description)
+}
+
+func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if len(args) == 0 || args[0] == "list" {
+		projects, err := e.storage.ListProjects(ctx, session.ActiveAgent)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to list projects: %v", err)
+		}
+		if len(projects) == 0 {
+			return fmt.Sprintf("📁 No projects registered for agent **%s**.\nUse `/p new <name> [path]` to register one.", session.ActiveAgent)
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📁 *Projects for Agent [%s]:*\n", session.ActiveAgent))
+		for _, p := range projects {
+			marker := "  "
+			if p.ProjectName == session.ActiveProject {
+				marker = "👉 "
+			}
+			sb.WriteString(fmt.Sprintf("%s• *%s* — `%s`\n", marker, p.ProjectName, p.ProjectPath))
+		}
+		sb.WriteString("\nUse `/p <name>` to enter project mode or `/p exit` to return to Global mode.")
+		return sb.String()
+	}
+
+	subCmd := strings.ToLower(args[0])
+
+	switch subCmd {
+	case "exit", "~":
+		if e.HasActiveTurn(session.SessionKey) {
+			return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before exiting project."
+		}
+		session.ActiveProject = ""
+		if err := e.storage.SaveSession(ctx, session); err != nil {
+			return fmt.Sprintf("⚠️ Failed to exit project: %v", err)
+		}
+		return fmt.Sprintf("🌐 Exited project mode. Returned to **Global Chat Mode** for agent **%s**.", session.ActiveAgent)
+
+	case "info":
+		if session.ActiveProject == "" {
+			return "🌐 You are currently in **Global Chat Mode** (no active project)."
+		}
+		projID := domain.FormatProjectID(session.ActiveAgent, session.ActiveProject)
+		proj, err := e.storage.GetProject(ctx, projID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to get project info: %v", err)
+		}
+		return fmt.Sprintf(`📁 *Active Project Details:*
+• *Agent:* %s
+• *Project Name:* %s
+• *Filesystem Path:* %s
+• *Conversation ID:* %s`,
+			proj.AgentName, proj.ProjectName, proj.ProjectPath, session.ProjectConversationID)
+
+	case "reset":
+		if e.HasActiveTurn(session.SessionKey) {
+			return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting project."
+		}
+		if session.ActiveProject == "" {
+			return "⚠️ No active project to reset. Use `/reset` for global mode."
+		}
+		session.ProjectConversationID = ""
+		_ = e.storage.SaveSession(ctx, session)
+		return fmt.Sprintf("🔄 **Project conversation reset** for project **%s**.\nSource code remains untouched.", session.ActiveProject)
+
+	case "new", "create":
+		if e.HasActiveTurn(session.SessionKey) {
+			return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating project."
+		}
+		if len(args) < 2 {
+			return "⚠️ Usage: `/p new <project_name> [path]`\nExample: `/p new ecommerce /home/ubuntu/projects/ecommerce`"
+		}
+		projName := args[1]
+		projPath := ""
+		if len(args) > 2 {
+			projPath = args[2]
+		} else {
+			projPath = filepath.Join(e.cfg.Storage.AgentsDir, session.ActiveAgent, "projects", projName)
+		}
+
+		projPath, _ = filepath.Abs(projPath)
+		if err := os.MkdirAll(projPath, 0755); err != nil {
+			return fmt.Sprintf("⚠️ Failed to create project directory: %v", err)
+		}
+
+		projID := domain.FormatProjectID(session.ActiveAgent, projName)
+		proj := &domain.Project{
+			ID:          projID,
+			AgentName:   session.ActiveAgent,
+			ProjectName: projName,
+			ProjectPath: projPath,
+			CreatedAt:   time.Now(),
+		}
+
+		if err := e.storage.SaveProject(ctx, proj); err != nil {
+			return fmt.Sprintf("⚠️ Failed to save project: %v", err)
+		}
+
+		session.ActiveProject = projName
+		session.ProjectConversationID = ""
+		_ = e.storage.SaveSession(ctx, session)
+
+		return fmt.Sprintf("🎉 **Project `%s` registered and activated!**\nPath: `%s`\nContext scoped to this codebase.", projName, projPath)
+
+	case "use":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/p use <project_name>`"
+		}
+		return e.switchProject(ctx, session, args[1])
+
+	default:
+		return e.switchProject(ctx, session, args[0])
+	}
+}
+
+func (e *Engine) switchProject(ctx context.Context, session *domain.Session, projectName string) string {
+	if e.HasActiveTurn(session.SessionKey) {
+		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before switching project."
+	}
+
+	projID := domain.FormatProjectID(session.ActiveAgent, projectName)
+	proj, err := e.storage.GetProject(ctx, projID)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Project `%s` not found for agent **%s**.\nUse `/projects` to list or `/p new %s` to create it.", projectName, session.ActiveAgent, projectName)
+	}
+
+	session.ActiveProject = proj.ProjectName
+
+	// Restore latest conversation for the target project
+	latest, _, err := e.storage.ListRecentConversations(ctx, session.SessionKey, session.ActiveAgent, proj.ProjectName, 1, 0)
+	if err == nil && len(latest) > 0 {
+		session.ProjectConversationID = latest[0].ID
+	} else {
+		session.ProjectConversationID = ""
+	}
+
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to switch project: %v", err)
+	}
+
+	return fmt.Sprintf("📁 Switched into project **%s**\nPath: `%s`\nCodebase context loaded.", proj.ProjectName, proj.ProjectPath)
+}
+
+func (e *Engine) handleConversationsDispatcher(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	if len(args) > 0 {
+		subCmd := strings.ToLower(args[0])
+		switch subCmd {
+		case "new", "create":
+			return e.handleNewConversationCommand(ctx, session, args[1:]), nil
+		case "switch", "use":
+			return e.handleSwitchConversationCommand(ctx, session, args[1:]), nil
+		case "pin":
+			return e.handlePinCommand(ctx, session, args[1:], true), nil
+		case "unpin":
+			return e.handlePinCommand(ctx, session, args[1:], false), nil
+		case "rename", "title":
+			return e.handleRenameConversationCommand(ctx, session, args[1:]), nil
+		case "archive", "close":
+			return e.handleArchiveConversationCommand(ctx, session, args[1:]), nil
+		case "clean", "purge":
+			return e.handleCleanConversationsCommand(ctx), nil
+		default:
+			// Check if integer index, e.g. "/c 2"
+			if idx, err := strconv.Atoi(subCmd); err == nil && idx > 0 {
+				return e.handleSwitchConversationCommand(ctx, session, []string{subCmd}), nil
+			}
+			// Check if UUID
+			if len(subCmd) == 36 && uuidRegex.MatchString(subCmd) {
+				return e.handleSwitchConversationCommand(ctx, session, []string{subCmd}), nil
+			}
+		}
+	}
+
+	return e.renderConversationsList(ctx, session, 0)
+}
+
+func (e *Engine) renderConversationsList(ctx context.Context, session *domain.Session, page int) (string, domain.InlineKeyboard) {
+	if page < 0 {
+		page = 0
+	}
+	pageSize := 5
+	offset := page * pageSize
+
+	convs, totalCount, err := e.storage.ListRecentConversations(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, pageSize, offset)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to retrieve conversations list: %v", err), nil
+	}
+
+	scopeLabel := "Global Mode"
+	if session.ActiveProject != "" {
+		scopeLabel = fmt.Sprintf("Project: %s", session.ActiveProject)
+	}
+
+	activeConvID := session.GetActiveConversationID()
+
+	var sb strings.Builder
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	sb.WriteString(fmt.Sprintf("🧵 **Conversations List** `[%s • %s]` _(Page %d/%d)_\n\n", session.ActiveAgent, scopeLabel, page+1, totalPages))
+
+	if len(convs) == 0 {
+		sb.WriteString("No conversations found in this scope.\nSend a message or use `/new` to start a fresh conversation.\n")
+	}
+
+	var keyboard domain.InlineKeyboard
+
+	for _, c := range convs {
+		prefix := "⚪ "
+		activeTag := ""
+		if c.ID == activeConvID {
+			prefix = "👉 "
+			activeTag = " 🟢 [Active]"
+		}
+
+		pinIcon := ""
+		if c.IsPinned {
+			pinIcon = " 📌"
+		}
+
+		timeAgo := formatTimeAgo(c.UpdatedAt)
+		sb.WriteString(fmt.Sprintf("%s**#%d:**%s %s%s\n   _🕒 %s • %d turns_\n", prefix, c.AliasIndex, pinIcon, c.Title, activeTag, timeAgo, c.TurnCount))
+
+		// Row buttons
+		var row domain.InlineKeyboardRow
+		if c.ID == activeConvID {
+			row = append(row, domain.InlineButton{
+				Text:         fmt.Sprintf("👉 #%d (Active)", c.AliasIndex),
+				CallbackData: fmt.Sprintf("c:sw:%s", c.ID),
+			})
+		} else {
+			row = append(row, domain.InlineButton{
+				Text:         fmt.Sprintf("🔄 Switch #%d", c.AliasIndex),
+				CallbackData: fmt.Sprintf("c:sw:%s", c.ID),
+			})
+		}
+
+		if c.IsPinned {
+			row = append(row, domain.InlineButton{
+				Text:         "❌ Unpin",
+				CallbackData: fmt.Sprintf("c:unpin:%s", c.ID),
+			})
+		} else {
+			row = append(row, domain.InlineButton{
+				Text:         "📌 Pin",
+				CallbackData: fmt.Sprintf("c:pin:%s", c.ID),
+			})
+		}
+
+		keyboard = append(keyboard, row)
+	}
+
+	// Action row
+	actionRow := domain.InlineKeyboardRow{
+		domain.InlineButton{
+			Text:         "➕ New Conversation",
+			CallbackData: "c:new",
+		},
+		domain.InlineButton{
+			Text:         "🔄 Refresh",
+			CallbackData: fmt.Sprintf("c:page:%d", page+1),
+		},
+	}
+	keyboard = append(keyboard, actionRow)
+
+	// Pagination row if multiple pages
+	if totalPages > 1 {
+		var navRow domain.InlineKeyboardRow
+		if page > 0 {
+			navRow = append(navRow, domain.InlineButton{
+				Text:         "⬅️ Prev Page",
+				CallbackData: fmt.Sprintf("c:page:%d", page),
+			})
+		}
+		if page+1 < totalPages {
+			navRow = append(navRow, domain.InlineButton{
+				Text:         "Next Page ➡️",
+				CallbackData: fmt.Sprintf("c:page:%d", page+2),
+			})
+		}
+		if len(navRow) > 0 {
+			keyboard = append(keyboard, navRow)
+		}
+	}
+
+	sb.WriteString("\n_Use `/c <#>` to fast switch, `/pin` to pin, or click the buttons below._")
+	return sb.String(), keyboard
+}
+
+func (e *Engine) handleNewConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if e.HasActiveTurn(session.SessionKey) {
+		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation."
+	}
+
+	session.ResetActiveConversationID()
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to initialize new conversation: %v", err)
+	}
+
+	scope := "Global Mode"
+	if session.ActiveProject != "" {
+		scope = fmt.Sprintf("Project: %s", session.ActiveProject)
+	}
+
+	titleNote := ""
+	if len(args) > 0 {
+		titleNote = fmt.Sprintf("\nIntended Topic: _%s_", strings.Join(args, " "))
+	}
+
+	return fmt.Sprintf("🎉 **New conversation created** for [%s • %s].%s\nYour next message will begin in a fresh, clean context.", session.ActiveAgent, scope, titleNote)
+}
+
+func (e *Engine) handleSwitchConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if e.HasActiveTurn(session.SessionKey) {
+		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before switching conversation."
+	}
+
+	if len(args) == 0 {
+		return "⚠️ Usage: `/c <#>` or `/c switch <id|#>`\nExample: `/c 2`"
+	}
+
+	target := strings.TrimSpace(args[0])
+	var targetConv *domain.Conversation
+
+	if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
+		conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
+		}
+		targetConv = conv
+	} else {
+		conv, err := e.storage.GetConversation(ctx, target)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+		}
+		targetConv = conv
+	}
+
+	session.SetActiveConversationID(targetConv.ID)
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Sprintf("⚠️ Failed to switch conversation: %v", err)
+	}
+
+	pinTag := ""
+	if targetConv.IsPinned {
+		pinTag = " 📌"
+	}
+
+	shortID := targetConv.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+
+	aliasPrefix := ""
+	if targetConv.AliasIndex > 0 {
+		aliasPrefix = fmt.Sprintf("**#%d:** ", targetConv.AliasIndex)
+	}
+
+	return fmt.Sprintf("🔄 Switched to conversation %s%s**%s** `[%s]`.\n_Historical context loaded and ready._", aliasPrefix, pinTag, targetConv.Title, shortID)
+}
+
+func (e *Engine) handlePinCommand(ctx context.Context, session *domain.Session, args []string, isPinned bool) string {
+	var targetID string
+	var title string
+
+	if len(args) > 0 {
+		target := strings.TrimSpace(args[0])
+		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
+			conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+			if err != nil {
+				return fmt.Sprintf("⚠️ Conversation #%d not found.", idx)
+			}
+			targetID = conv.ID
+			title = conv.Title
+		} else {
+			conv, err := e.storage.GetConversation(ctx, target)
+			if err != nil {
+				return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+			}
+			targetID = conv.ID
+			title = conv.Title
+		}
+	} else {
+		targetID = session.GetActiveConversationID()
+		if targetID == "" {
+			return "⚠️ No active conversation to pin/unpin. Send a message first."
+		}
+		if conv, err := e.storage.GetConversation(ctx, targetID); err == nil {
+			title = conv.Title
+		}
+	}
+
+	if err := e.storage.SetConversationPinned(ctx, targetID, isPinned); err != nil {
+		return fmt.Sprintf("⚠️ Failed to update pin status: %v", err)
+	}
+
+	if title == "" {
+		title = "current conversation"
+	} else {
+		title = fmt.Sprintf("%q", title)
+	}
+
+	if isPinned {
+		return fmt.Sprintf("📌 **Pinned** conversation %s. This session is permanently protected from automated garbage collection.", title)
+	}
+	return fmt.Sprintf("📍 **Unpinned** conversation %s.", title)
+}
+
+func (e *Engine) handleRenameConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if len(args) == 0 {
+		return "⚠️ Usage: `/c rename <new_title>`\nExample: `/c rename SQLite Database Design`"
+	}
+
+	newTitle := strings.TrimSpace(strings.Join(args, " "))
+	targetID := session.GetActiveConversationID()
+	if targetID == "" {
+		return "⚠️ No active conversation to rename."
+	}
+
+	if err := e.storage.SetConversationTitle(ctx, targetID, newTitle); err != nil {
+		return fmt.Sprintf("⚠️ Failed to rename conversation: %v", err)
+	}
+
+	return fmt.Sprintf("✏️ Renamed conversation to: **%s**.", newTitle)
+}
+
+func (e *Engine) handleArchiveConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	targetID := session.GetActiveConversationID()
+	if len(args) > 0 {
+		target := strings.TrimSpace(args[0])
+		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
+			if conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx); err == nil {
+				targetID = conv.ID
+			}
+		} else {
+			targetID = target
+		}
+	}
+
+	if targetID == "" {
+		return "⚠️ No active conversation to archive."
+	}
+
+	if err := e.storage.SetConversationArchived(ctx, targetID, true); err != nil {
+		return fmt.Sprintf("⚠️ Failed to archive conversation: %v", err)
+	}
+
+	if targetID == session.GetActiveConversationID() {
+		session.ResetActiveConversationID()
+		_ = e.storage.SaveSession(ctx, session)
+	}
+
+	return "📦 Conversation **archived** (hidden from main list).\nNext message will create a fresh conversation."
+}
+
+func (e *Engine) handleCleanConversationsCommand(ctx context.Context) string {
+	purged, err := e.RunConversationGC(ctx, 30)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Garbage collection error: %v", err)
+	}
+	return fmt.Sprintf("🧹 **Garbage collection complete!** Purged %d old archived sessions (> 30 days) and reclaimed disk space.", purged)
+}
+
+func formatTimeAgo(t time.Time) string {
+	diff := time.Since(t)
+	if diff < time.Minute {
+		return "just now"
+	}
+	if diff < time.Hour {
+		return fmt.Sprintf("%d mins ago", int(diff.Minutes()))
+	}
+	if diff < 24*time.Hour {
+		return fmt.Sprintf("%d hours ago", int(diff.Hours()))
+	}
+	days := int(diff.Hours() / 24)
+	if days == 1 {
+		return "yesterday"
+	}
+	return fmt.Sprintf("%d days ago", days)
+}
+

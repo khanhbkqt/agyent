@@ -1,0 +1,8 @@
+{
+  "name": "browser-camoufox",
+  "version": "1.0.0",
+  "description": "Stealth Anti-Detect Web Browsing Plugin powered by Camoufox & Playwright",
+  "author": "agyent team",
+  "enabled": true,
+  "tags": ["browser", "stealth", "scraping", "camoufox"]
+}

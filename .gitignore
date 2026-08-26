@@ -1,0 +1,43 @@
+# Binaries and executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/agyent
+/bin/
+/dist/
+
+# SQLite databases & runtime storage
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Test files, coverage & benchmark artifacts
+*.out
+*.log
+/tmp/
+/coverage
+chart.png
+dataset.csv
+benchmark_results.json
+*.prof
+*.test
+/scratch/
+
+# Local configurations & secrets
+config.yaml
+*.env
+.env*
+
+# Runtime agent memory & system logs
+memory/
+.system_generated/
+.agents/skills/dummy-skill/
+
+# IDE / OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

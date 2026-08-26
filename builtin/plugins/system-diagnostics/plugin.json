@@ -1,0 +1,8 @@
+{
+  "name": "system-diagnostics",
+  "version": "1.0.0",
+  "description": "System health, CPU, memory, disk, and process telemetry plugin",
+  "author": "agyent team",
+  "enabled": true,
+  "tags": ["system", "telemetry", "diagnostics", "ops"]
+}

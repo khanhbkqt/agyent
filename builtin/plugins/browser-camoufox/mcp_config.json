@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "camoufox-browser": {
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}

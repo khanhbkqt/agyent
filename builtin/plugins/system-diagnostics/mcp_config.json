@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "system-diagnostics": {
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}
