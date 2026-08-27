@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2] - 2026-08-27
+
+### Added
+- **Milestone Activity Timeout Watchdog:** Added sliding activity-based execution timeout to the AGY process harness. Receiving meaningful milestone activity (`USER_INPUT`, `PLANNER_RESPONSE`, and tool calls) automatically resets the watchdog timer, allowing long-running agent workflows to continue uninterrupted while terminating unresponsive processes.
+- **Synchronous Stream Error & Interruption Notice:** Integrated `EventStreamError` propagation across the AGY harness and delivery throttler to deliver explicit, real-time `⚠️ [Execution interrupted: ...]` notifications to the chat channel upon execution timeouts or cancellations.
+- **Monotonic Security Upgrades (Milestone 14):** Added SQLite migration `000008_agent_security_preset` to persist and strictly enforce monotonic security posture levels (`unrestricted`, `developer`, `balanced`, `strict`, `read_only`) per agent profile.
+- **Session Debugger Skill & Diagnostic CLI:** Added `agyent-session-debugger` diagnostic skill and standalone `scripts/debug_session.go` triage inspector for automated SQLite session health checks, turn token accumulation alerts, and transcript analysis.
+
+### Fixed
+- **Subagent Shared Directory Validation:** Added directory existence check before appending `--add-dir` in subagent `share` workspace mode.
+- **Telegram Throttler Fallback Race Condition:** Resolved concurrency race condition when falling back to plaintext on Telegram 400 Bad Request markdown parse errors.
+
+---
+
+## [1.0.1] - 2026-08-27
+
+### Fixed
+- **Multi-Bot Session Key Parsing:** Enhanced `ParseSessionKey` and `ExtractChatIDFromSessionKey` to accurately parse 4-part namespaced keys (`telegram:botID:chatID:threadID`) and negative group IDs (`-100...`).
+- **Bot ID & Thread ID Routing:** Fixed outbound message routing for slash commands, turns, error notifications, and subagent callbacks to ensure responses are delivered via the originating bot token instance and target forum topic.
+- **Throttler Multi-Bot Mapping:** Ensured Telegram delivery throttler maps rate limits and message chunks per bot instance.
+
+---
+
 ## [1.0.0] - 2026-08-26
 
 ### Added

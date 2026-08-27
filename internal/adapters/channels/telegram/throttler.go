@@ -300,6 +300,14 @@ func (dt *DeliveryThrottler) OnStreamError(ctx context.Context, evt domain.Event
 
 	val, exists := dt.sessions.Load(p.SessionKey)
 	if !exists {
+		parsed, err := domain.ParseSessionKey(p.SessionKey)
+		if err == nil && parsed.Channel == "telegram" {
+			chatID, _ := strconv.ParseInt(parsed.ChatID, 10, 64)
+			bot := dt.getBot(parsed.BotID)
+			if bot != nil && chatID != 0 {
+				dt.sendMessageWithFallback(bot, chatID, parsed.ThreadID, fmt.Sprintf("⚠️ [Execution interrupted: %s]", p.Error))
+			}
+		}
 		return nil
 	}
 	sess := val.(*StreamSession)

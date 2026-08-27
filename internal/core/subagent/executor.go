@@ -69,7 +69,9 @@ func (e *taskExecutor) executeTurn(
 
 	workspaceDir := ""
 	if task.WorkspaceMode == "share" && task.ProjectName != "" {
-		workspaceDir = task.ProjectName // If ProjectName is a path
+		if fi, err := os.Stat(task.ProjectName); err == nil && fi.IsDir() {
+			workspaceDir = task.ProjectName
+		}
 	}
 	if workspaceDir != "" {
 		args = append(args, "--add-dir", workspaceDir)

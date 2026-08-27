@@ -324,12 +324,22 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	waitErr := cmd.Wait()
 
 	if execCtx.Err() != nil {
+		var timeoutErr error
 		if timedOut.Load() {
 			slog.ErrorContext(ctx, "AGY stream execution timed out (no milestone activity)", slog.Duration("timeout", timeout), slog.String("session_key", sessionKey))
-			return nil, fmt.Errorf("agy stream execution timed out after %v without milestone activity: %w", timeout, context.DeadlineExceeded)
+			timeoutErr = fmt.Errorf("agy stream execution timed out after %v without milestone activity: %w", timeout, context.DeadlineExceeded)
+		} else {
+			slog.WarnContext(ctx, "AGY stream execution cancelled", slog.String("session_key", sessionKey))
+			timeoutErr = fmt.Errorf("agy stream execution cancelled: %w", execCtx.Err())
 		}
-		slog.WarnContext(ctx, "AGY stream execution cancelled", slog.String("session_key", sessionKey))
-		return nil, fmt.Errorf("agy stream execution cancelled: %w", execCtx.Err())
+		if h.eventBus != nil {
+			_ = h.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+				SessionKey:     sessionKey,
+				ConversationID: req.ConversationID,
+				Error:          timeoutErr.Error(),
+			}))
+		}
+		return nil, timeoutErr
 	}
 
 	if parseErr != nil {
@@ -338,6 +348,13 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			slog.String("error", parseErr.Error()),
 			slog.String("stderr", stderrBuf.String()),
 		)
+		if h.eventBus != nil && !errors.Is(parseErr, ports.ErrConversationNotFound) {
+			_ = h.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+				SessionKey:     sessionKey,
+				ConversationID: req.ConversationID,
+				Error:          parseErr.Error(),
+			}))
+		}
 		if errors.Is(parseErr, ports.ErrConversationNotFound) {
 			return nil, parseErr
 		}
