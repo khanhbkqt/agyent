@@ -551,7 +551,7 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 		},
 		{
 			name:      "Security Preset Switch",
-			command:   "/security preset developer",
+			command:   "/security preset strict",
 			expectSub: "Security preset successfully switched",
 		},
 		{
@@ -765,4 +765,147 @@ func TestEngine_DedicatedAgentBinding(t *testing.T) {
 
 	require.NotEmpty(t, runner.executeCalls)
 }
+
+func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
+	eng, _, channel, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	adminUser := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+	sessionKey := "telegram:123456"
+
+	// Register admin in storage
+	require.NoError(t, store.SaveUser(ctx, &domain.User{
+		ID:        "123456",
+		Username:  "admin",
+		FullName:  "Admin User",
+		Role:      "admin",
+		CreatedAt: time.Now(),
+	}))
+
+	// Create test agent with baseline balanced
+	agent := &domain.Agent{
+		Name:           "sec_agent",
+		Description:    "Security Test Agent",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  t.TempDir(),
+		SecurityPreset: domain.PresetBalanced,
+		OwnerID:        "123456",
+		IsPublic:       true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	// Bind session to sec_agent
+	sess, err := store.GetOrCreateSession(ctx, sessionKey, "sec_agent")
+	require.NoError(t, err)
+	sess.ActiveAgent = "sec_agent"
+	require.NoError(t, store.SaveSession(ctx, sess))
+
+	// 1. Send /security dashboard command
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security",
+	})
+	require.NoError(t, err)
+
+	sent := channel.GetSentMessages()
+	lastSent := sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Active Agent")
+	assert.Contains(t, lastSent.Text, "sec_agent")
+	assert.NotNil(t, lastSent.InlineKeyboard)
+
+	// Verify inline keyboard only contains valid presets (balanced, strict, read_only)
+	var callbackDataList []string
+	for _, row := range lastSent.InlineKeyboard {
+		for _, btn := range row {
+			callbackDataList = append(callbackDataList, btn.CallbackData)
+		}
+	}
+	assert.Contains(t, callbackDataList, "sec:preset:balanced")
+	assert.Contains(t, callbackDataList, "sec:preset:strict")
+	assert.Contains(t, callbackDataList, "sec:preset:read_only")
+	assert.NotContains(t, callbackDataList, "sec:preset:unrestricted")
+	assert.NotContains(t, callbackDataList, "sec:preset:developer")
+
+	// 2. Try illegal downgrade: /security preset developer
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security preset developer",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
+
+	// 3. Valid upgrade: /security preset strict
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-3",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security preset strict",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Security preset successfully switched to")
+	assert.Contains(t, lastSent.Text, "strict")
+
+	// Verify agent updated in database
+	dbAgent, err := store.GetAgent(ctx, "sec_agent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.PresetStrict, dbAgent.SecurityPreset)
+
+	// 4. Send /security again, keyboard now only has strict and read_only
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-4",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+
+	var callbackDataListStrict []string
+	for _, row := range lastSent.InlineKeyboard {
+		for _, btn := range row {
+			callbackDataListStrict = append(callbackDataListStrict, btn.CallbackData)
+		}
+	}
+	assert.NotContains(t, callbackDataListStrict, "sec:preset:balanced")
+	assert.Contains(t, callbackDataListStrict, "sec:preset:strict")
+	assert.Contains(t, callbackDataListStrict, "sec:preset:read_only")
+
+	// 5. Try illegal downgrade: /security preset balanced
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-5",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security preset balanced",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
+}
+
 

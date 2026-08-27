@@ -17,6 +17,7 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		SELECT name, description, status, workspace_path,
 		       COALESCE(default_model, '') AS default_model,
 		       COALESCE(default_effort, '') AS default_effort,
+		       COALESCE(security_preset, 'balanced') AS security_preset,
 		       COALESCE(owner_id, '') AS owner_id,
 		       COALESCE(is_public, 0) AS is_public,
 		       created_at, updated_at
@@ -24,20 +25,21 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		WHERE name = ?
 	`
 	var (
-		agentName     string
-		desc          string
-		status        string
-		wsPath        string
-		defaultModel  string
-		defaultEffort string
-		ownerID       string
-		isPublic      int
-		createdAt     FlexTime
-		updatedAt     FlexTime
+		agentName      string
+		desc           string
+		status         string
+		wsPath         string
+		defaultModel   string
+		defaultEffort  string
+		securityPreset string
+		ownerID        string
+		isPublic       int
+		createdAt      FlexTime
+		updatedAt      FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, name).Scan(
-		&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &ownerID, &isPublic, &createdAt, &updatedAt,
+		&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -46,17 +48,22 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		return nil, fmt.Errorf("failed to query agent %s: %w", name, err)
 	}
 
+	if securityPreset == "" {
+		securityPreset = string(domain.PresetBalanced)
+	}
+
 	return &domain.Agent{
-		Name:          agentName,
-		Description:   desc,
-		Status:        domain.AgentStatus(status),
-		WorkspacePath: wsPath,
-		DefaultModel:  defaultModel,
-		DefaultEffort: defaultEffort,
-		OwnerID:       ownerID,
-		IsPublic:      isPublic == 1,
-		CreatedAt:     createdAt.Time,
-		UpdatedAt:     updatedAt.Time,
+		Name:           agentName,
+		Description:    desc,
+		Status:         domain.AgentStatus(status),
+		WorkspacePath:  wsPath,
+		DefaultModel:   defaultModel,
+		DefaultEffort:  defaultEffort,
+		SecurityPreset: domain.SecurityPreset(securityPreset),
+		OwnerID:        ownerID,
+		IsPublic:       isPublic == 1,
+		CreatedAt:      createdAt.Time,
+		UpdatedAt:      updatedAt.Time,
 	}, nil
 }
 
@@ -66,6 +73,7 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 		SELECT name, description, status, workspace_path,
 		       COALESCE(default_model, '') AS default_model,
 		       COALESCE(default_effort, '') AS default_effort,
+		       COALESCE(security_preset, 'balanced') AS security_preset,
 		       COALESCE(owner_id, '') AS owner_id,
 		       COALESCE(is_public, 0) AS is_public,
 		       created_at, updated_at
@@ -81,31 +89,36 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 	var agents = make([]domain.Agent, 0)
 	for rows.Next() {
 		var (
-			agentName     string
-			desc          string
-			status        string
-			wsPath        string
-			defaultModel  string
-			defaultEffort string
-			ownerID       string
-			isPublic      int
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			agentName      string
+			desc           string
+			status         string
+			wsPath         string
+			defaultModel   string
+			defaultEffort  string
+			securityPreset string
+			ownerID        string
+			isPublic       int
+			createdAt      FlexTime
+			updatedAt      FlexTime
 		)
-		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan agent row: %w", err)
 		}
+		if securityPreset == "" {
+			securityPreset = string(domain.PresetBalanced)
+		}
 		agents = append(agents, domain.Agent{
-			Name:          agentName,
-			Description:   desc,
-			Status:        domain.AgentStatus(status),
-			WorkspacePath: wsPath,
-			DefaultModel:  defaultModel,
-			DefaultEffort: defaultEffort,
-			OwnerID:       ownerID,
-			IsPublic:      isPublic == 1,
-			CreatedAt:     createdAt.Time,
-			UpdatedAt:     updatedAt.Time,
+			Name:           agentName,
+			Description:    desc,
+			Status:         domain.AgentStatus(status),
+			WorkspacePath:  wsPath,
+			DefaultModel:   defaultModel,
+			DefaultEffort:  defaultEffort,
+			SecurityPreset: domain.SecurityPreset(securityPreset),
+			OwnerID:        ownerID,
+			IsPublic:       isPublic == 1,
+			CreatedAt:      createdAt.Time,
+			UpdatedAt:      updatedAt.Time,
 		})
 	}
 
@@ -122,6 +135,7 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 		SELECT DISTINCT a.name, a.description, a.status, a.workspace_path,
 		       COALESCE(a.default_model, '') AS default_model,
 		       COALESCE(a.default_effort, '') AS default_effort,
+		       COALESCE(a.security_preset, 'balanced') AS security_preset,
 		       COALESCE(a.owner_id, '') AS owner_id,
 		       COALESCE(a.is_public, 0) AS is_public,
 		       a.created_at, a.updated_at
@@ -139,31 +153,36 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 	var agents = make([]domain.Agent, 0)
 	for rows.Next() {
 		var (
-			agentName     string
-			desc          string
-			status        string
-			wsPath        string
-			defaultModel  string
-			defaultEffort string
-			ownerID       string
-			isPublic      int
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			agentName      string
+			desc           string
+			status         string
+			wsPath         string
+			defaultModel   string
+			defaultEffort  string
+			securityPreset string
+			ownerID        string
+			isPublic       int
+			createdAt      FlexTime
+			updatedAt      FlexTime
 		)
-		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan agent row for user: %w", err)
 		}
+		if securityPreset == "" {
+			securityPreset = string(domain.PresetBalanced)
+		}
 		agents = append(agents, domain.Agent{
-			Name:          agentName,
-			Description:   desc,
-			Status:        domain.AgentStatus(status),
-			WorkspacePath: wsPath,
-			DefaultModel:  defaultModel,
-			DefaultEffort: defaultEffort,
-			OwnerID:       ownerID,
-			IsPublic:      isPublic == 1,
-			CreatedAt:     createdAt.Time,
-			UpdatedAt:     updatedAt.Time,
+			Name:           agentName,
+			Description:    desc,
+			Status:         domain.AgentStatus(status),
+			WorkspacePath:  wsPath,
+			DefaultModel:   defaultModel,
+			DefaultEffort:  defaultEffort,
+			SecurityPreset: domain.SecurityPreset(securityPreset),
+			OwnerID:        ownerID,
+			IsPublic:       isPublic == 1,
+			CreatedAt:      createdAt.Time,
+			UpdatedAt:      updatedAt.Time,
 		})
 	}
 
@@ -181,14 +200,15 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 	}
 
 	query := `
-		INSERT INTO agents (name, description, status, workspace_path, default_model, default_effort, owner_id, is_public, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agents (name, description, status, workspace_path, default_model, default_effort, security_preset, owner_id, is_public, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			description = excluded.description,
 			status = excluded.status,
 			workspace_path = excluded.workspace_path,
 			default_model = excluded.default_model,
 			default_effort = excluded.default_effort,
+			security_preset = excluded.security_preset,
 			owner_id = excluded.owner_id,
 			is_public = excluded.is_public,
 			updated_at = excluded.updated_at
@@ -208,6 +228,11 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 		isPublicInt = 1
 	}
 
+	secPreset := string(agent.SecurityPreset)
+	if secPreset == "" {
+		secPreset = string(domain.PresetBalanced)
+	}
+
 	_, err := s.writer().ExecContext(ctx, query,
 		agent.Name,
 		agent.Description,
@@ -215,6 +240,7 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 		agent.WorkspacePath,
 		agent.DefaultModel,
 		agent.DefaultEffort,
+		secPreset,
 		agent.OwnerID,
 		isPublicInt,
 		timeToMilli(createdAt),

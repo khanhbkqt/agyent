@@ -16,8 +16,9 @@ type Agent struct {
 	Description   string      `json:"description"`
 	Status        AgentStatus `json:"status"`
 	WorkspacePath string      `json:"workspace_path"`
-	DefaultModel  string      `json:"default_model,omitempty"`  // Preferred model for this agent persona
-	DefaultEffort string      `json:"default_effort,omitempty"` // Preferred reasoning effort for this agent persona
+	DefaultModel   string         `json:"default_model,omitempty"`   // Preferred model for this agent persona
+	DefaultEffort  string         `json:"default_effort,omitempty"`  // Preferred reasoning effort for this agent persona
+	SecurityPreset SecurityPreset `json:"security_preset,omitempty"` // Baseline / active security preset (e.g. balanced, strict)
 
 	// Ownership & Access Control
 	OwnerID  string `json:"owner_id"`  // Telegram User ID of the creator

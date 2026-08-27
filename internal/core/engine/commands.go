@@ -1645,6 +1645,23 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 		return "⚠️ <b>Security Gateway is not active.</b>", nil
 	}
 
+	// Resolve active agent and baseline security preset for current session
+	activeAgentName := "agyent"
+	var agent *domain.Agent
+	if e.storage != nil && sessionKey != "" {
+		if session, err := e.storage.GetSession(context.Background(), sessionKey); err == nil && session != nil && session.ActiveAgent != "" {
+			activeAgentName = session.ActiveAgent
+		}
+		if a, err := e.storage.GetAgent(context.Background(), activeAgentName); err == nil && a != nil {
+			agent = a
+		}
+	}
+
+	baselinePreset := domain.PresetBalanced
+	if agent != nil && agent.SecurityPreset != "" {
+		baselinePreset = agent.SecurityPreset
+	}
+
 	if len(args) > 0 {
 		if !e.isSenderAdmin(sender) {
 			return "⛔ <b>Unauthorized: Only administrators can modify security gateway settings.</b>", nil
@@ -1657,8 +1674,31 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 				return "⚠️ Usage: <code>/security preset &lt;unrestricted|developer|balanced|strict|read_only&gt;</code>", nil
 			}
 			preset := domain.SecurityPreset(strings.ToLower(args[1]))
+			switch preset {
+			case domain.PresetUnrestricted, domain.PresetDeveloper, domain.PresetBalanced, domain.PresetStrict, domain.PresetReadOnly:
+				// Valid preset name
+			default:
+				return fmt.Sprintf("⚠️ Invalid security preset: <code>%s</code>. Valid options: <code>unrestricted, developer, balanced, strict, read_only</code>", args[1]), nil
+			}
+
+			// Validate monotonic upgrade rule: cannot switch to less secure level than baseline
+			if !domain.CanSwitchPreset(baselinePreset, preset) {
+				allowedPresets := domain.GetAllowedPresets(baselinePreset)
+				var allowedStrs []string
+				for _, p := range allowedPresets {
+					allowedStrs = append(allowedStrs, fmt.Sprintf("<code>%s</code>", p))
+				}
+				return fmt.Sprintf("⛔ <b>Cannot downgrade security preset:</b> Agent <code>%s</code> current baseline security level is <code>%s</code>. You can only switch to equal or more secure presets (allowed: %s).",
+					activeAgentName, baselinePreset, strings.Join(allowedStrs, ", ")), nil
+			}
+
 			e.securityManager.SetPreset(preset)
-			return fmt.Sprintf("🛡️ <b>Security preset successfully switched to:</b> <code>%s</code>", preset), nil
+			if agent != nil && e.storage != nil {
+				agent.SecurityPreset = preset
+				agent.UpdatedAt = time.Now()
+				_ = e.storage.SaveAgent(context.Background(), agent)
+			}
+			return fmt.Sprintf("🛡️ <b>Security preset successfully switched to:</b> <code>%s</code> for agent <code>%s</code>", preset, activeAgentName), nil
 
 		case "grant":
 			if len(args) < 2 {
@@ -1678,12 +1718,13 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 		}
 	}
 
-	// Default: Show Dashboard with Interactive Preset Switcher Buttons
+	// Default: Show Dashboard with Interactive Preset Switcher Buttons (filtered to >= baseline)
 	summary := e.securityManager.GetDashboardSummary(sessionKey)
 
 	var sb strings.Builder
 	sb.WriteString("🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("🤖 <b>Active Agent</b>      : <code>%s</code>\n", activeAgentName))
 	sb.WriteString(fmt.Sprintf("📍 <b>Active Preset</b>     : <code>%s</code>\n", summary.Preset))
 	sb.WriteString(fmt.Sprintf("📂 <b>Workspace Jail</b>    : <code>%s</code>\n", summary.ActiveJail))
 	sb.WriteString(fmt.Sprintf("🎭 <b>Redaction Mode</b>    : <code>%s</code>\n", summary.RedactionMode))
@@ -1694,44 +1735,58 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	sb.WriteString("💡 <i>Use buttons below to switch profiles or toggle redaction.</i>")
 
-	keyboard := domain.InlineKeyboard{
-		{
-			{
-				Text:         "🔓 Unrestricted (Full)",
-				CallbackData: "sec:preset:unrestricted",
-			},
-			{
-				Text:         "🛠️ Developer",
-				CallbackData: "sec:preset:developer",
-			},
+	presetButtons := map[domain.SecurityPreset]domain.InlineButton{
+		domain.PresetUnrestricted: {
+			Text:         "🔓 Unrestricted (Full)",
+			CallbackData: "sec:preset:unrestricted",
 		},
-		{
-			{
-				Text:         "🛡️ Balanced (Default)",
-				CallbackData: "sec:preset:balanced",
-			},
-			{
-				Text:         "🔒 Strict",
-				CallbackData: "sec:preset:strict",
-			},
+		domain.PresetDeveloper: {
+			Text:         "🛠️ Developer",
+			CallbackData: "sec:preset:developer",
 		},
-		{
-			{
-				Text:         "📖 Read Only",
-				CallbackData: "sec:preset:read_only",
-			},
+		domain.PresetBalanced: {
+			Text:         "🛡️ Balanced",
+			CallbackData: "sec:preset:balanced",
 		},
-		{
-			{
-				Text:         "🎭 Redact: Strict",
-				CallbackData: "sec:redact:strict",
-			},
-			{
-				Text:         "🎭 Redact: Permissive",
-				CallbackData: "sec:redact:permissive",
-			},
+		domain.PresetStrict: {
+			Text:         "🔒 Strict",
+			CallbackData: "sec:preset:strict",
+		},
+		domain.PresetReadOnly: {
+			Text:         "📖 Read Only",
+			CallbackData: "sec:preset:read_only",
 		},
 	}
+
+	var keyboard domain.InlineKeyboard
+	var currentRow []domain.InlineButton
+
+	for _, p := range domain.AllSecurityPresets {
+		if domain.CanSwitchPreset(baselinePreset, p) {
+			if btn, ok := presetButtons[p]; ok {
+				currentRow = append(currentRow, btn)
+				if len(currentRow) == 2 {
+					keyboard = append(keyboard, currentRow)
+					currentRow = nil
+				}
+			}
+		}
+	}
+	if len(currentRow) > 0 {
+		keyboard = append(keyboard, currentRow)
+	}
+
+	// Redaction mode options
+	keyboard = append(keyboard, []domain.InlineButton{
+		{
+			Text:         "🎭 Redact: Strict",
+			CallbackData: "sec:redact:strict",
+		},
+		{
+			Text:         "🎭 Redact: Permissive",
+			CallbackData: "sec:redact:permissive",
+		},
+	})
 
 	return sb.String(), keyboard
 }

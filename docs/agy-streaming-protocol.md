@@ -359,3 +359,13 @@ If the `agy` process terminates unexpectedly (OOM, panic, context timeout):
 2. Delivery Throttler flushes all buffered text received so far with an execution alert:
    `⚠️ [Warning]: Execution was interrupted before completion.`
 3. Harness returns `ports.ErrProcessExecution` so the Engine can record audit logs and release session locks safely.
+
+### D. Milestone-Based Sliding Inactivity Watchdog
+Rather than applying a fixed static deadline from turn initiation (which would prematurely kill complex, productive multi-step turns), `agyent` enforces an **Inactivity Watchdog Timer**:
+1. **Sliding Timeout Window:** Measures idle duration since the most recent milestone event (`timeout = req.Timeout || defaultTimeout`).
+2. **Milestone Events:** The watchdog timer resets exclusively on:
+   - Environment initialization (`event: "init"`)
+   - Tool execution start/completion (`step_type: "tool"` or `state: "DONE"`)
+   - Final turn result (`event: "result"`)
+3. **Loop & Stall Protection:** Minor `agent_response` text deltas do not reset the watchdog. If an agent process stalls or hangs on a single step without reaching a milestone for `timeout` duration, the watchdog fires, terminates the OS process tree, and returns `context.DeadlineExceeded`.
+

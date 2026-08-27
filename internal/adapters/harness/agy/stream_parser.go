@@ -62,6 +62,7 @@ type ResultPayload struct {
 type StreamParser struct {
 	eventBus         ports.EventBusPort
 	artifactDetector func() []domain.Attachment
+	onMilestone      func()
 }
 
 // NewStreamParser creates a new StreamParser instance.
@@ -74,6 +75,11 @@ func NewStreamParser(bus ports.EventBusPort) *StreamParser {
 // SetArtifactDetector sets an optional callback function to detect created or modified artifacts before emitting EventStreamResult.
 func (p *StreamParser) SetArtifactDetector(fn func() []domain.Attachment) {
 	p.artifactDetector = fn
+}
+
+// SetOnMilestone registers an optional callback that gets called on major milestone stream events (init, tool calls, step completions, and result).
+func (p *StreamParser) SetOnMilestone(fn func()) {
+	p.onMilestone = fn
 }
 
 // ParseAndEmitStream processes NDJSON lines from reader and dispatches domain events until EOF.
@@ -120,6 +126,9 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 
 		switch rawEvt.Event {
 		case "init":
+			if p.onMilestone != nil {
+				p.onMilestone()
+			}
 			cwd := ""
 			var tools []string
 			if rawEvt.Init != nil {
@@ -142,6 +151,11 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				step := rawEvt.StepUpdate
 				if step.ConversationID != "" {
 					conversationID = step.ConversationID
+				}
+
+				// Reset watchdog on tool executions or step completion milestones
+				if p.onMilestone != nil && (step.StepType == "tool" || step.State == "DONE") {
+					p.onMilestone()
 				}
 
 				if step.StepType == "agent_response" && step.TextDelta != "" {
@@ -183,6 +197,9 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 
 		case "result":
 			hasResult = true
+			if p.onMilestone != nil {
+				p.onMilestone()
+			}
 			if rawEvt.Result != nil {
 				res := rawEvt.Result
 				if res.ConversationID != "" {

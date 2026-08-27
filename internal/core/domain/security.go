@@ -15,6 +15,52 @@ const (
 	PresetReadOnly     SecurityPreset = "read_only"
 )
 
+// AllSecurityPresets lists all supported security presets ordered from least secure to most secure.
+var AllSecurityPresets = []SecurityPreset{
+	PresetUnrestricted,
+	PresetDeveloper,
+	PresetBalanced,
+	PresetStrict,
+	PresetReadOnly,
+}
+
+// PresetLevel returns the numeric security level (higher = more secure/restrictive).
+func PresetLevel(preset SecurityPreset) int {
+	switch preset {
+	case PresetUnrestricted:
+		return 0
+	case PresetDeveloper:
+		return 1
+	case PresetBalanced, "":
+		return 2
+	case PresetStrict:
+		return 3
+	case PresetReadOnly:
+		return 4
+	default:
+		return 2
+	}
+}
+
+// CanSwitchPreset evaluates whether switching from fromPreset to toPreset is permitted (monotonic upgrade).
+// An agent cannot transition to a more permissive/lower security level than its baseline.
+func CanSwitchPreset(fromPreset, toPreset SecurityPreset) bool {
+	return PresetLevel(toPreset) >= PresetLevel(fromPreset)
+}
+
+// GetAllowedPresets returns all security presets that are at or above the given baseline level.
+func GetAllowedPresets(baseline SecurityPreset) []SecurityPreset {
+	minLevel := PresetLevel(baseline)
+	var allowed []SecurityPreset
+	for _, p := range AllSecurityPresets {
+		if PresetLevel(p) >= minLevel {
+			allowed = append(allowed, p)
+		}
+	}
+	return allowed
+}
+
+
 // SecurityDecisionType represents the policy evaluator outcome.
 type SecurityDecisionType string
 

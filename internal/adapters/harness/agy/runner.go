@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"agyent/internal/config"
@@ -192,8 +194,34 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		timeout = h.defaultTimeout
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	var (
+		timedOut   atomic.Bool
+		idleTimer  *time.Timer
+		timerMutex sync.Mutex
+	)
+
+	idleTimer = time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer func() {
+		timerMutex.Lock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		timerMutex.Unlock()
+	}()
+
+	resetWatchdog := func() {
+		timerMutex.Lock()
+		defer timerMutex.Unlock()
+		if idleTimer != nil && !timedOut.Load() {
+			idleTimer.Reset(timeout)
+		}
+	}
 
 	// Build CLI arguments for streaming
 	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", "outside-of-project"}
@@ -278,6 +306,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	parser := NewStreamParser(h.eventBus)
+	parser.SetOnMilestone(resetWatchdog)
 	if req.WorkspaceDir != "" {
 		parser.SetArtifactDetector(func() []domain.Attachment {
 			artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
@@ -295,9 +324,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	waitErr := cmd.Wait()
 
 	if execCtx.Err() != nil {
-		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			slog.ErrorContext(ctx, "AGY stream execution timed out", slog.Duration("timeout", timeout), slog.String("session_key", sessionKey))
-			return nil, fmt.Errorf("agy stream execution timed out after %v: %w", timeout, execCtx.Err())
+		if timedOut.Load() {
+			slog.ErrorContext(ctx, "AGY stream execution timed out (no milestone activity)", slog.Duration("timeout", timeout), slog.String("session_key", sessionKey))
+			return nil, fmt.Errorf("agy stream execution timed out after %v without milestone activity: %w", timeout, context.DeadlineExceeded)
 		}
 		slog.WarnContext(ctx, "AGY stream execution cancelled", slog.String("session_key", sessionKey))
 		return nil, fmt.Errorf("agy stream execution cancelled: %w", execCtx.Err())

@@ -232,14 +232,21 @@ When a sensitive tool execution is intercepted, the Gateway sends a formatted ca
 +-------------------+---------------------------------------------------------+----------------------+
 ```
 
+### Monotonic Security Profile Upgrade Rule (Per-Agent Guardrail)
+Each agent is provisioned with a baseline `security_preset` stored in SQLite (`agents.security_preset`), defaulting to `balanced`. To prevent privilege escalation:
+- **Monotonic Progression:** An agent can only be transitioned to equal or higher security levels ($\text{Level}(Target) \ge \text{Level}(Baseline)$):
+  $$\text{unrestricted (0)} \rightarrow \text{developer (1)} \rightarrow \text{balanced (2)} \rightarrow \text{strict (3)} \rightarrow \text{read\_only (4)}$$
+- **Downgrade Rejection:** Any attempt to switch an agent to a less secure level than its baseline via `/security preset <mode>` is rejected with a descriptive error.
+- **Dynamic Keyboard Filtering:** The interactive `/security` dashboard dynamically filters its Inline Keyboard to only render buttons for valid presets ($\ge \text{baseline}$), preventing accidental misconfiguration.
+
 ---
 
 ## 6.3. Security Slash Commands Reference
 
 | Slash Command | Description | Permission | Example Usage |
 | :--- | :--- | :--- | :--- |
-| `/security` (or `/sec`) | View current security dashboard, preset, active jail, and audit counts. | Admin Only | `/security` |
-| `/security preset <mode>` | Switch active security preset dynamically. | Admin Only | `/security preset balanced` |
+| `/security` (or `/sec`) | View current security dashboard, active agent, preset, jail, and metrics with dynamic preset buttons. | Admin Only | `/security` |
+| `/security preset <mode>` | Switch active agent's security preset (enforces monotonic upgrade $\ge$ baseline). | Admin Only | `/security preset strict` |
 | `/security grant <scope> [ttl]` | Temporarily grant Agent permission to edit configs or run setup tools (e.g. 15m). | Admin Only | `/security grant config 15m` |
 | `/security redact <mode>` | Switch redaction mode (`strict`, `permissive`, `audit_only`). | Admin Only | `/security redact permissive` |
 | `/whitelist add <cmd\|path>` | Add a temporary or persistent whitelist entry directly from chat. | Admin Only | `/whitelist add "npm run build"` |

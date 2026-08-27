@@ -137,4 +137,43 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		require.NotNil(t, res)
 		assert.Equal(t, "SUCCESS", res.Status)
 	})
+
+	t.Run("TC-BRG-05_MilestoneWatchdogTriggering", func(t *testing.T) {
+		milestoneCount := 0
+		var mu sync.Mutex
+
+		p := agy.NewStreamParser(bus)
+		p.SetOnMilestone(func() {
+			mu.Lock()
+			milestoneCount++
+			mu.Unlock()
+		})
+
+		ndjson := `
+{"event":"init","conversation_id":"c-watchdog"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"delta 1"}}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"delta 2"}}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"delta 3"}}
+{"event":"step_update","step_update":{"step_type":"tool","state":"ACTIVE","tool_name":"run_command"}}
+{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"run_command"}}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"delta 4"}}
+{"event":"result","result":{"status":"SUCCESS","response":"all done"}}
+`
+		res, err := p.ParseAndEmitStream(context.Background(), "telegram:watchdog", strings.NewReader(ndjson))
+		require.NoError(t, err)
+		require.NotNil(t, res)
+
+		mu.Lock()
+		count := milestoneCount
+		mu.Unlock()
+
+		// Milestones:
+		// 1. "init" (1)
+		// 2. "tool" ACTIVE (1)
+		// 3. "tool" DONE (1)
+		// 4. "result" (1)
+		// Notice 4 deltas were ignored and did NOT trigger milestone!
+		assert.Equal(t, 4, count, "should only trigger milestone on init, tools, and result (ignoring text deltas)")
+	})
 }
+

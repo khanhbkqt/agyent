@@ -310,7 +310,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	defer unlock()
 
 	// 2. Setup Turn Context with Cancellation Map for /force_unlock
-	turnCtx, turnCancel := context.WithTimeout(ctx, timeout)
+	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 
 	e.registerActiveTurn(sessionKey, turnCancel)
@@ -359,17 +359,30 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		if !isPublic {
 			ownerID = msg.Sender.ID
 		}
+		defaultPreset := domain.SecurityPreset(e.cfg.Security.Preset)
+		if defaultPreset == "" {
+			defaultPreset = domain.PresetBalanced
+		}
 		agent = &domain.Agent{
-			Name:          session.ActiveAgent,
-			Description:   "Agyent - Trợ lý AI cá nhân đa năng",
-			Status:        domain.StatusUninitialized,
-			WorkspacePath: agentPath,
-			OwnerID:       ownerID,
-			IsPublic:      isPublic,
-			CreatedAt:     time.Now(),
-			UpdatedAt:     time.Now(),
+			Name:           session.ActiveAgent,
+			Description:    "Agyent - Trợ lý AI cá nhân đa năng",
+			Status:         domain.StatusUninitialized,
+			WorkspacePath:  agentPath,
+			SecurityPreset: defaultPreset,
+			OwnerID:        ownerID,
+			IsPublic:       isPublic,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		_ = e.storage.SaveAgent(turnCtx, agent)
+	}
+
+	if agent.SecurityPreset == "" {
+		agent.SecurityPreset = domain.PresetBalanced
+	}
+
+	if e.securityManager != nil {
+		e.securityManager.SetPreset(agent.SecurityPreset)
 	}
 
 	if agent.WorkspacePath == "" {

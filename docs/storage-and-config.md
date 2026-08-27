@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS agents (
     description TEXT,
     status TEXT DEFAULT 'uninitialized',-- 'uninitialized' | 'initialized'
     workspace_path TEXT NOT NULL,
+    default_model TEXT DEFAULT '',      -- Preferred model override
+    default_effort TEXT DEFAULT '',     -- Preferred effort override
+    security_preset TEXT DEFAULT 'balanced', -- Baseline / active security preset ('balanced', 'strict', etc.)
+    owner_id TEXT DEFAULT '',           -- Telegram User ID of owner
+    is_public INTEGER DEFAULT 0,        -- 1: Public; 0: Owner + Collaborators
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
