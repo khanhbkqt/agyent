@@ -12,10 +12,10 @@ const (
 
 // Agent represents an autonomous AGY persona profile, workspace, and ownership boundary.
 type Agent struct {
-	Name          string      `json:"name"`
-	Description   string      `json:"description"`
-	Status        AgentStatus `json:"status"`
-	WorkspacePath string      `json:"workspace_path"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description"`
+	Status         AgentStatus    `json:"status"`
+	WorkspacePath  string         `json:"workspace_path"`
 	DefaultModel   string         `json:"default_model,omitempty"`   // Preferred model for this agent persona
 	DefaultEffort  string         `json:"default_effort,omitempty"`  // Preferred reasoning effort for this agent persona
 	SecurityPreset SecurityPreset `json:"security_preset,omitempty"` // Baseline / active security preset (e.g. balanced, strict)
@@ -41,4 +41,3 @@ type AgentPermission struct {
 func (a *Agent) IsInitialized() bool {
 	return a.Status == StatusInitialized
 }
-

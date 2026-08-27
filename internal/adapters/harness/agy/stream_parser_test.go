@@ -176,4 +176,3 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Equal(t, 4, count, "should only trigger milestone on init, tools, and result (ignoring text deltas)")
 	})
 }
-

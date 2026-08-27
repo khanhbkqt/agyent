@@ -12,17 +12,17 @@ import (
 
 var (
 	// Known high-risk secret patterns
-	openAIRegex       = regexp.MustCompile(`(?i)\b(sk-[a-zA-Z0-9_\-]{20,})\b`)
-	anthropicRegex    = regexp.MustCompile(`(?i)\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b`)
-	githubPATRegex    = regexp.MustCompile(`\b(gh[pousr]_[a-zA-Z0-9]{20,})\b`)
-	githubFineRegex   = regexp.MustCompile(`\b(github_pat_[a-zA-Z0-9_]{82})\b`)
-	geminiAIRegex     = regexp.MustCompile(`\b(AIzaSy[a-zA-Z0-9_\-]{33})\b`)
-	awsAKIRegex       = regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`)
-	awsSTSRegex       = regexp.MustCompile(`\b(ASIA[0-9A-Z]{16})\b`)
-	bearerAuthRegex   = regexp.MustCompile(`(?i)\b(Bearer\s+[a-zA-Z0-9_\-\.]{20,})\b`)
-	privateKeyRegex   = regexp.MustCompile(`-----BEGIN [A-Z0-9_-]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_-]+ PRIVATE KEY-----`)
-	genericKVRegex    = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_\-]*(?:password|secret|api_key|token|access_key)[a-zA-Z0-9_\-]*)\s*([:=])\s*(["']?)([^\s"'\r\n]{6,})(["']?)`)
-	promptInjRegex    = regexp.MustCompile(`(?i)(ignore\s+all\s+previous\s+instructions|system\s+override|you\s+are\s+now\s+an\s+unrestricted)`)
+	openAIRegex     = regexp.MustCompile(`(?i)\b(sk-[a-zA-Z0-9_\-]{20,})\b`)
+	anthropicRegex  = regexp.MustCompile(`(?i)\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b`)
+	githubPATRegex  = regexp.MustCompile(`\b(gh[pousr]_[a-zA-Z0-9]{20,})\b`)
+	githubFineRegex = regexp.MustCompile(`\b(github_pat_[a-zA-Z0-9_]{82})\b`)
+	geminiAIRegex   = regexp.MustCompile(`\b(AIzaSy[a-zA-Z0-9_\-]{33})\b`)
+	awsAKIRegex     = regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`)
+	awsSTSRegex     = regexp.MustCompile(`\b(ASIA[0-9A-Z]{16})\b`)
+	bearerAuthRegex = regexp.MustCompile(`(?i)\b(Bearer\s+[a-zA-Z0-9_\-\.]{20,})\b`)
+	privateKeyRegex = regexp.MustCompile(`-----BEGIN [A-Z0-9_-]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_-]+ PRIVATE KEY-----`)
+	genericKVRegex  = regexp.MustCompile(`(?i)\b([a-zA-Z0-9_\-]*(?:password|secret|api_key|token|access_key)[a-zA-Z0-9_\-]*)\s*([:=])\s*(["']?)([^\s"'\r\n]{6,})(["']?)`)
+	promptInjRegex  = regexp.MustCompile(`(?i)(ignore\s+all\s+previous\s+instructions|system\s+override|you\s+are\s+now\s+an\s+unrestricted)`)
 )
 
 // Evaluator provides secret masking and indirect prompt injection defense.

@@ -21,16 +21,16 @@ import (
 // Engine is the central orchestrator connecting Storage, EventBus, Debouncer,
 // Subprocess Runner, LockManager, ContextResolver, MCPRegistry, PluginManager, and Channel adapters.
 type Engine struct {
-	cfg             *config.Config
-	storage         ports.StoragePort
-	runner          ports.RunnerPort
-	channel         ports.ChannelPort
-	eventBus        ports.EventBusPort
-	debouncer       ports.DebouncerPort
-	lockManager     ports.LockManager
-	contextResolver ports.ContextResolverPort
-	mcpRegistry     ports.MCPRegistryPort
-	pluginManager   ports.PluginManagerPort
+	cfg                *config.Config
+	storage            ports.StoragePort
+	runner             ports.RunnerPort
+	channel            ports.ChannelPort
+	eventBus           ports.EventBusPort
+	debouncer          ports.DebouncerPort
+	lockManager        ports.LockManager
+	contextResolver    ports.ContextResolverPort
+	mcpRegistry        ports.MCPRegistryPort
+	pluginManager      ports.PluginManagerPort
 	temporal           ports.TemporalContextPort
 	evolution          ports.EvolutionOrchestratorPort
 	subagentDispatcher ports.SubagentDispatcherPort
@@ -885,9 +885,9 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				BotID:     parsedKey.BotID,
-				ChatID:    chatID,
-				ThreadID:  parsedKey.ThreadID,
+				BotID:    parsedKey.BotID,
+				ChatID:   chatID,
+				ThreadID: parsedKey.ThreadID,
 				Text: fmt.Sprintf("⏸️ **Sub-Agent @%s requires clarification:**\n📌 **Task:** %s (`%s`)\n\n❓ **Question:** %s\n\n_Use_ `/task reply %s <your response>` _to continue._",
 					task.AgentName, task.Title, task.ID, task.PendingQuestion, task.ID),
 				ParseMode: "Markdown",
@@ -928,9 +928,9 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				BotID:     parsedKey.BotID,
-				ChatID:    chatID,
-				ThreadID:  parsedKey.ThreadID,
+				BotID:    parsedKey.BotID,
+				ChatID:   chatID,
+				ThreadID: parsedKey.ThreadID,
 				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
 				ParseMode: "HTML",

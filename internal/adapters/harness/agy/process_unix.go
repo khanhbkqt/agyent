@@ -37,4 +37,3 @@ func ConfigureCmd(cmd *exec.Cmd) {
 func KillProcessTree(cmd *exec.Cmd) error {
 	return killProcessTree(cmd)
 }
-

@@ -1807,5 +1807,3 @@ func (e *Engine) handleWhitelistCommand(sender domain.SenderUser, sessionKey str
 
 	return "⚠️ Usage: <code>/whitelist add &lt;command_or_path&gt;</code>\nExample: <code>/whitelist add \"npm run build\"</code>"
 }
-
-

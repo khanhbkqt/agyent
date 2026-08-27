@@ -26,10 +26,10 @@ type pendingHITL struct {
 
 // HITLCoordinator coordinates interactive approval requests over Telegram.
 type HITLCoordinator struct {
-	bot          *gotgbot.Bot
-	cfg          *config.Config
-	pending      sync.Map // map[string]*pendingHITL (key = requestID)
-	logger       *slog.Logger
+	bot     *gotgbot.Bot
+	cfg     *config.Config
+	pending sync.Map // map[string]*pendingHITL (key = requestID)
+	logger  *slog.Logger
 }
 
 // NewHITLCoordinator constructs a new Telegram HITL approval coordinator.

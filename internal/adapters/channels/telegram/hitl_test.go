@@ -23,13 +23,13 @@ func TestHITLCoordinator_ApprovalFlow(t *testing.T) {
 	ctx := context.Background()
 
 	req := domain.ApprovalRequest{
-		RequestID:    "hitl-test-1",
-		SessionKey:   "telegram:123456789",
-		ToolName:     "run_command",
-		CommandLine:  "curl https://example.com",
-		DiffPreview:  "Sensitive shell execution",
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(500 * time.Millisecond),
+		RequestID:   "hitl-test-1",
+		SessionKey:  "telegram:123456789",
+		ToolName:    "run_command",
+		CommandLine: "curl https://example.com",
+		DiffPreview: "Sensitive shell execution",
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(500 * time.Millisecond),
 	}
 
 	// 1. Simulate background approval by admin
@@ -57,12 +57,12 @@ func TestHITLCoordinator_NonAdminDenied(t *testing.T) {
 	ctx := context.Background()
 
 	req := domain.ApprovalRequest{
-		RequestID:    "hitl-test-2",
-		SessionKey:   "telegram:123456789",
-		ToolName:     "run_command",
-		CommandLine:  "chmod 777 /var/data",
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(100 * time.Millisecond),
+		RequestID:   "hitl-test-2",
+		SessionKey:  "telegram:123456789",
+		ToolName:    "run_command",
+		CommandLine: "chmod 777 /var/data",
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(100 * time.Millisecond),
 	}
 
 	// Non-admin user tries to approve

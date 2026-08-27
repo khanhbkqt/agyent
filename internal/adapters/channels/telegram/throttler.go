@@ -423,7 +423,7 @@ func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *Strea
 		sess.Mu.Lock()
 		sess.CurrentMsgID = msg.MessageId
 		sess.LastSentText = text
-		sess.Dirty = false
+		sess.Dirty = (sess.Buffer.String() != text)
 		sess.LastEditTime = time.Now()
 		sess.Mu.Unlock()
 	}
@@ -462,7 +462,7 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 
 	sess.Mu.Lock()
 	sess.LastSentText = text
-	sess.Dirty = false
+	sess.Dirty = (sess.Buffer.String() != text)
 	sess.LastEditTime = time.Now()
 	sess.Mu.Unlock()
 }

@@ -907,5 +907,3 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
 }
-
-

@@ -385,10 +385,8 @@ func TestHarness_TC_CONC_02_WatcherRaceStress(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func findRealAGYBinary() string {
-	// 1. Check direct standard paths
-	candidates := []string{
-		`C:\Users\stevan.nguyen\AppData\Local\agy\bin\agy.exe`,
-	}
+	// 1. Check direct standard paths in user home directory
+	var candidates []string
 
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -419,6 +417,10 @@ func findRealAGYBinary() string {
 func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real AGY CLI integration test in short mode")
+	}
+
+	if os.Getenv("AGY_REAL_TEST") != "1" {
+		t.Skip("skipping real AGY CLI integration test (set AGY_REAL_TEST=1 to enable)")
 	}
 
 	realAGYPath := findRealAGYBinary()

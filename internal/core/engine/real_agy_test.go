@@ -32,11 +32,12 @@ func skipIfNoRealAGY(t *testing.T) string {
 		t.Skip("skipping live AGY CLI test in short mode")
 	}
 
+	if os.Getenv("AGY_E2E") != "1" && os.Getenv("AGY_REAL_TEST") != "1" {
+		t.Skip("skipping live AGY CLI test (set AGY_E2E=1 or AGY_REAL_TEST=1 to enable)")
+	}
+
 	agyPath, err := exec.LookPath("agy")
 	if err != nil {
-		if os.Getenv("AGY_E2E") == "" {
-			t.Skip("skipping live AGY CLI test: 'agy' binary not found in PATH")
-		}
 		agyPath = "agy"
 	}
 	return agyPath

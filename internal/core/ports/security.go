@@ -81,4 +81,3 @@ type HITLApprovalPort interface {
 	// CancelPendingRequest terminates a pending approval request when the turn is aborted.
 	CancelPendingRequest(requestID string)
 }
-

@@ -60,7 +60,6 @@ func GetAllowedPresets(baseline SecurityPreset) []SecurityPreset {
 	return allowed
 }
 
-
 // SecurityDecisionType represents the policy evaluator outcome.
 type SecurityDecisionType string
 
@@ -110,20 +109,20 @@ type ToolEvaluationResponse struct {
 
 // ApprovalRequest represents an interactive Human-In-The-Loop (HITL) approval card.
 type ApprovalRequest struct {
-	RequestID      string                 `json:"request_id"`
-	SessionKey     string                 `json:"session_key"`
-	ToolName       string                 `json:"tool_name"`
-	CommandLine    string                 `json:"command_line,omitempty"`
-	TargetFile     string                 `json:"target_file,omitempty"`
-	Directory      string                 `json:"directory,omitempty"`
-	AgentName      string                 `json:"agent_name,omitempty"`
-	TaskID         string                 `json:"task_id,omitempty"`
-	RiskLevel      string                 `json:"risk_level,omitempty"` // "Low", "Medium", "High", "Critical"
-	DiffPreview    string                 `json:"diff_preview,omitempty"`
-	IsConfigEdit   bool                   `json:"is_config_edit,omitempty"`
-	CreatedAt      time.Time              `json:"created_at"`
-	ExpiresAt      time.Time              `json:"expires_at"`
-	ResponseChan   chan ApprovalDecision  `json:"-"`
+	RequestID    string                `json:"request_id"`
+	SessionKey   string                `json:"session_key"`
+	ToolName     string                `json:"tool_name"`
+	CommandLine  string                `json:"command_line,omitempty"`
+	TargetFile   string                `json:"target_file,omitempty"`
+	Directory    string                `json:"directory,omitempty"`
+	AgentName    string                `json:"agent_name,omitempty"`
+	TaskID       string                `json:"task_id,omitempty"`
+	RiskLevel    string                `json:"risk_level,omitempty"` // "Low", "Medium", "High", "Critical"
+	DiffPreview  string                `json:"diff_preview,omitempty"`
+	IsConfigEdit bool                  `json:"is_config_edit,omitempty"`
+	CreatedAt    time.Time             `json:"created_at"`
+	ExpiresAt    time.Time             `json:"expires_at"`
+	ResponseChan chan ApprovalDecision `json:"-"`
 }
 
 // ApprovalDecision represents the user's action on an interactive HITL approval card.
@@ -167,13 +166,13 @@ type AuditSecurityEvent struct {
 
 // HookRequest is the wire format passed between agyent-hook and the IPC server.
 type HookRequest struct {
-	HookType       string                 `json:"hook_type"` // "pre", "post"
-	ToolCall       HookToolCall           `json:"toolCall"`
-	StepIdx        int                    `json:"stepIdx,omitempty"`
-	ConversationID string                 `json:"conversationId,omitempty"`
-	WorkspacePaths []string               `json:"workspacePaths,omitempty"`
-	TranscriptPath string                 `json:"transcriptPath,omitempty"`
-	Error          string                 `json:"error,omitempty"`
+	HookType       string       `json:"hook_type"` // "pre", "post"
+	ToolCall       HookToolCall `json:"toolCall"`
+	StepIdx        int          `json:"stepIdx,omitempty"`
+	ConversationID string       `json:"conversationId,omitempty"`
+	WorkspacePaths []string     `json:"workspacePaths,omitempty"`
+	TranscriptPath string       `json:"transcriptPath,omitempty"`
+	Error          string       `json:"error,omitempty"`
 }
 
 // HookToolCall represents the tool execution descriptor from Antigravity.

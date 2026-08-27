@@ -60,6 +60,7 @@ type ParsedSessionKey struct {
 // - 3-part:
 //   - "channel:botID:chatID" (e.g. "telegram:8718145628:8544450322", "telegram:8718145628:-100123456")
 //   - "channel:chatID:threadID" (e.g. "telegram:-100123456:10042", "telegram:123456:0")
+//
 // - 4-part: "channel:botID:chatID:threadID" (e.g. "telegram:8718145628:-100123456:10042")
 func ParseSessionKey(sessionKey string) (ParsedSessionKey, error) {
 	parts := strings.Split(sessionKey, ":")

@@ -493,4 +493,3 @@ func TestSecurityPresetHierarchy(t *testing.T) {
 		domain.PresetReadOnly,
 	}, strictAllowed)
 }
-
