@@ -175,7 +175,7 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 		}
 		streamingOn = a.cfg.AGY.StreamingEnabled
 	}
-	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn)
+	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn, a.getBot)
 	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
 	a.router.SetBotBindings(a.bindAgents)
 

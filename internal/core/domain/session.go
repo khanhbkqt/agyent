@@ -46,29 +46,97 @@ func FormatSessionKey(channel, chatID string, threadID int64, botIDOpt ...int64)
 	return fmt.Sprintf("%s:%s", channel, chatID)
 }
 
-// ExtractChatIDFromSessionKey accurately extracts chatID across legacy and namespaced formats.
-func ExtractChatIDFromSessionKey(sessionKey string) string {
+// ParsedSessionKey contains decoded components of a session key.
+type ParsedSessionKey struct {
+	Channel  string
+	BotID    int64
+	ChatID   string
+	ThreadID int64
+}
+
+// ParseSessionKey decomposes a session key into its constituent parts across 2-part, 3-part, and 4-part formats.
+// Supported formats:
+// - 2-part: "channel:chatID" (e.g. "telegram:8544450322", "telegram:-100123456")
+// - 3-part:
+//   - "channel:botID:chatID" (e.g. "telegram:8718145628:8544450322", "telegram:8718145628:-100123456")
+//   - "channel:chatID:threadID" (e.g. "telegram:-100123456:10042", "telegram:123456:0")
+// - 4-part: "channel:botID:chatID:threadID" (e.g. "telegram:8718145628:-100123456:10042")
+func ParseSessionKey(sessionKey string) (ParsedSessionKey, error) {
 	parts := strings.Split(sessionKey, ":")
+	if len(parts) < 2 {
+		return ParsedSessionKey{}, fmt.Errorf("invalid session key format %q", sessionKey)
+	}
+
+	channel := parts[0]
+
 	switch len(parts) {
 	case 2:
-		// Legacy format: telegram:chatID
-		return parts[1]
+		return ParsedSessionKey{
+			Channel: channel,
+			ChatID:  parts[1],
+		}, nil
+
 	case 3:
-		// Namespaced format: telegram:botID:chatID (if parts[1] is positive botID)
-		if _, err := strconv.ParseInt(parts[1], 10, 64); err == nil && !strings.HasPrefix(parts[1], "-") {
-			return parts[2]
+		// If parts[1] is a negative number, it's a legacy group chatID, and parts[2] is threadID
+		if strings.HasPrefix(parts[1], "-") {
+			threadID, _ := strconv.ParseInt(parts[2], 10, 64)
+			return ParsedSessionKey{
+				Channel:  channel,
+				ChatID:   parts[1],
+				ThreadID: threadID,
+			}, nil
 		}
-		// Legacy format with group: telegram:-100123:threadID
-		return parts[1]
+
+		// If parts[2] is "0", it's a legacy key with explicit 0 threadID
+		if parts[2] == "0" {
+			return ParsedSessionKey{
+				Channel: channel,
+				ChatID:  parts[1],
+			}, nil
+		}
+
+		// Try parsing parts[1] as botID
+		if botID, err := strconv.ParseInt(parts[1], 10, 64); err == nil && botID > 0 {
+			return ParsedSessionKey{
+				Channel: channel,
+				BotID:   botID,
+				ChatID:  parts[2],
+			}, nil
+		}
+
+		// Fallback: parts[1] is chatID, parts[2] is threadID
+		threadID, _ := strconv.ParseInt(parts[2], 10, 64)
+		return ParsedSessionKey{
+			Channel:  channel,
+			ChatID:   parts[1],
+			ThreadID: threadID,
+		}, nil
+
 	case 4:
-		// Full namespaced format: telegram:botID:chatID:threadID
-		return parts[2]
+		botID, _ := strconv.ParseInt(parts[1], 10, 64)
+		threadID, _ := strconv.ParseInt(parts[3], 10, 64)
+		return ParsedSessionKey{
+			Channel:  channel,
+			BotID:    botID,
+			ChatID:   parts[2],
+			ThreadID: threadID,
+		}, nil
+
 	default:
-		if len(parts) > 2 {
-			return parts[1]
-		}
+		return ParsedSessionKey{
+			Channel: channel,
+			ChatID:  parts[1],
+		}, nil
+	}
+}
+
+// ExtractChatIDFromSessionKey accurately extracts chatID across legacy and namespaced formats.
+func ExtractChatIDFromSessionKey(sessionKey string) string {
+	parsed, err := ParseSessionKey(sessionKey)
+	if err != nil {
 		return sessionKey
 	}
+	return parsed.ChatID
 }
 
 // GetActiveConversationID returns the conversation ID corresponding to the current mode (Project vs Global).

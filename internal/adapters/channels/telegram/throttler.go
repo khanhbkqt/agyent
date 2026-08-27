@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ const (
 type StreamSession struct {
 	SessionKey      string
 	ConversationID  string
+	BotID           int64
 	ChatID          int64
 	ThreadID        int64
 	CurrentMsgID    int64
@@ -53,6 +55,7 @@ type StreamSession struct {
 // DeliveryThrottler handles real-time token buffering and periodic Telegram edits.
 type DeliveryThrottler struct {
 	bot             *gotgbot.Bot
+	botGetter       func(botID int64) *gotgbot.Bot
 	mediaMgr        *MediaManager
 	throttleSeconds float64
 	streamingOn     bool
@@ -61,16 +64,30 @@ type DeliveryThrottler struct {
 }
 
 // NewDeliveryThrottler creates a new DeliveryThrottler.
-func NewDeliveryThrottler(bot *gotgbot.Bot, mediaMgr *MediaManager, throttleIntervalSec float64, streamingOn bool) *DeliveryThrottler {
+func NewDeliveryThrottler(bot *gotgbot.Bot, mediaMgr *MediaManager, throttleIntervalSec float64, streamingOn bool, botGetter ...func(botID int64) *gotgbot.Bot) *DeliveryThrottler {
 	if throttleIntervalSec <= 0 {
 		throttleIntervalSec = 1.5
 	}
+	var bg func(botID int64) *gotgbot.Bot
+	if len(botGetter) > 0 {
+		bg = botGetter[0]
+	}
 	return &DeliveryThrottler{
 		bot:             bot,
+		botGetter:       bg,
 		mediaMgr:        mediaMgr,
 		throttleSeconds: throttleIntervalSec,
 		streamingOn:     streamingOn,
 	}
+}
+
+func (dt *DeliveryThrottler) getBot(botID int64) *gotgbot.Bot {
+	if dt.botGetter != nil && botID > 0 {
+		if b := dt.botGetter(botID); b != nil {
+			return b
+		}
+	}
+	return dt.bot
 }
 
 // ActiveSessionsCount returns the number of currently active streaming sessions.
@@ -83,21 +100,17 @@ func (dt *DeliveryThrottler) ActiveSessionsCount() int {
 	return count
 }
 
-// ParseSessionKey extracts chatID and threadID from a sessionKey (e.g. "telegram:12345" or "telegram:12345:42").
+// ParseSessionKey extracts chatID and threadID from a sessionKey (e.g. "telegram:12345", "telegram:botID:12345", or "telegram:botID:12345:42").
 func ParseSessionKey(key string) (channel string, chatID int64, threadID int64, err error) {
-	parts := strings.Split(key, ":")
-	if len(parts) < 2 {
-		return "", 0, 0, fmt.Errorf("invalid session key format %q", key)
+	parsed, err := domain.ParseSessionKey(key)
+	if err != nil {
+		return "", 0, 0, err
 	}
-	channel = parts[0]
-	chatID, err = strconv.ParseInt(parts[1], 10, 64)
+	cID, err := strconv.ParseInt(parsed.ChatID, 10, 64)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("invalid chatID in session key %q: %w", key, err)
 	}
-	if len(parts) >= 3 {
-		threadID, _ = strconv.ParseInt(parts[2], 10, 64)
-	}
-	return channel, chatID, threadID, nil
+	return parsed.Channel, cID, parsed.ThreadID, nil
 }
 
 // OnStreamInit initializes a streaming session and starts background worker.
@@ -107,8 +120,14 @@ func (dt *DeliveryThrottler) OnStreamInit(ctx context.Context, evt domain.Event)
 		return nil
 	}
 
-	channel, chatID, threadID, err := ParseSessionKey(p.SessionKey)
-	if err != nil || channel != "telegram" {
+	parsed, err := domain.ParseSessionKey(p.SessionKey)
+	if err != nil || parsed.Channel != "telegram" {
+		return nil
+	}
+
+	chatID, err := strconv.ParseInt(parsed.ChatID, 10, 64)
+	if err != nil {
+		slog.WarnContext(ctx, "Failed to parse chatID from session key", "session_key", p.SessionKey, "error", err)
 		return nil
 	}
 
@@ -124,8 +143,9 @@ func (dt *DeliveryThrottler) OnStreamInit(ctx context.Context, evt domain.Event)
 	sess := &StreamSession{
 		SessionKey:     p.SessionKey,
 		ConversationID: p.ConversationID,
+		BotID:          parsed.BotID,
 		ChatID:         chatID,
-		ThreadID:       threadID,
+		ThreadID:       parsed.ThreadID,
 		State:          StateInit,
 		WakeupChan:     make(chan struct{}, 100),
 		DoneChan:       make(chan struct{}),
@@ -136,7 +156,8 @@ func (dt *DeliveryThrottler) OnStreamInit(ctx context.Context, evt domain.Event)
 	sess.Buffer.Grow(1024)
 
 	// Start heartbeat typing while thinking
-	sess.CancelHeartbeat = StartHeartbeatTyping(workerCtx, dt.bot, chatID, threadID, 4*time.Second)
+	bot := dt.getBot(sess.BotID)
+	sess.CancelHeartbeat = StartHeartbeatTyping(workerCtx, bot, chatID, parsed.ThreadID, 4*time.Second)
 
 	dt.sessions.Store(p.SessionKey, sess)
 
@@ -195,14 +216,15 @@ func (dt *DeliveryThrottler) OnStreamTool(ctx context.Context, evt domain.Event)
 		sess.LastActivity = time.Now()
 		sess.Mu.Unlock()
 
-		if dt.bot != nil {
-			go func(chatID, threadID int64, act string) {
+		bot := dt.getBot(sess.BotID)
+		if bot != nil {
+			go func(b *gotgbot.Bot, chatID, threadID int64, act string) {
 				opts := &gotgbot.SendChatActionOpts{}
 				if threadID != 0 {
 					opts.MessageThreadId = threadID
 				}
-				_, _ = dt.bot.SendChatAction(chatID, act, opts)
-			}(sess.ChatID, sess.ThreadID, action)
+				_, _ = b.SendChatAction(chatID, act, opts)
+			}(bot, sess.ChatID, sess.ThreadID, action)
 		}
 	} else if p.State == "DONE" {
 		sess.Mu.Lock()
@@ -382,7 +404,8 @@ func (dt *DeliveryThrottler) runSessionWorker(ctx context.Context, sess *StreamS
 }
 
 func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *StreamSession) {
-	if dt.bot == nil {
+	bot := dt.getBot(sess.BotID)
+	if bot == nil {
 		return
 	}
 
@@ -395,7 +418,7 @@ func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *Strea
 		return
 	}
 
-	msg := dt.sendMessageWithFallback(sess.ChatID, sess.ThreadID, text)
+	msg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, text)
 	if msg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = msg.MessageId
@@ -407,7 +430,8 @@ func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *Strea
 }
 
 func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *StreamSession) {
-	if dt.bot == nil {
+	bot := dt.getBot(sess.BotID)
+	if bot == nil {
 		return
 	}
 
@@ -434,7 +458,7 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 		return
 	}
 
-	dt.editMessageWithFallback(chatID, msgID, text)
+	dt.editMessageWithFallback(bot, chatID, msgID, text)
 
 	sess.Mu.Lock()
 	sess.LastSentText = text
@@ -444,16 +468,20 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 }
 
 func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, fullText string) {
+	bot := dt.getBot(sess.BotID)
+	if bot == nil {
+		return
+	}
 	chunks := SplitMarkdownPreservingCodeBlocks(fullText, 4000)
 	if len(chunks) < 2 {
 		return
 	}
 
 	// 1. Finalize Chunk 0 on current message
-	dt.editMessageWithFallback(sess.ChatID, sess.CurrentMsgID, chunks[0])
+	dt.editMessageWithFallback(bot, sess.ChatID, sess.CurrentMsgID, chunks[0])
 
 	// 2. Spawn Chunk 1 on new message
-	newMsg := dt.sendMessageWithFallback(sess.ChatID, sess.ThreadID, chunks[1])
+	newMsg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, chunks[1])
 	if newMsg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = newMsg.MessageId
@@ -467,7 +495,8 @@ func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, ful
 }
 
 func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
-	if dt.bot == nil {
+	bot := dt.getBot(sess.BotID)
+	if bot == nil {
 		return
 	}
 
@@ -491,22 +520,22 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	// Case 1: Initial message was never sent yet
 	if msgID == 0 {
 		for _, chunk := range chunks {
-			dt.sendMessageWithFallback(chatID, threadID, chunk)
+			dt.sendMessageWithFallback(bot, chatID, threadID, chunk)
 		}
 		return
 	}
 
 	// Case 2: Edit first chunk into existing message
-	dt.editMessageWithFallback(chatID, msgID, chunks[0])
+	dt.editMessageWithFallback(bot, chatID, msgID, chunks[0])
 
 	// Case 3: Send any subsequent overflow chunks (>4000 chars total) as new messages
 	for i := 1; i < len(chunks); i++ {
-		dt.sendMessageWithFallback(chatID, threadID, chunks[i])
+		dt.sendMessageWithFallback(bot, chatID, threadID, chunks[i])
 	}
 }
 
-func (dt *DeliveryThrottler) editMessageWithFallback(chatID, msgID int64, text string) {
-	if dt.bot == nil || strings.TrimSpace(text) == "" {
+func (dt *DeliveryThrottler) editMessageWithFallback(bot *gotgbot.Bot, chatID, msgID int64, text string) {
+	if bot == nil || strings.TrimSpace(text) == "" {
 		return
 	}
 	formatted := FormatMarkdownToTelegramHTML(text)
@@ -516,27 +545,35 @@ func (dt *DeliveryThrottler) editMessageWithFallback(chatID, msgID int64, text s
 		Text:      formatted,
 		ParseMode: "HTML",
 	}
-	if _, _, err := dt.bot.EditMessageText(opts); err != nil {
+	if _, _, err := bot.EditMessageText(opts); err != nil {
 		var tgErr *gotgbot.TelegramError
 		if errors.As(err, &tgErr) {
 			if tgErr.Code == 400 {
 				opts.ParseMode = ""
 				opts.Text = StripHTMLTags(formatted)
-				_, _, _ = dt.bot.EditMessageText(opts)
+				if _, _, retryErr := bot.EditMessageText(opts); retryErr != nil {
+					slog.Warn("Telegram editMessageText plain text fallback failed", "chat_id", chatID, "msg_id", msgID, "error", retryErr)
+				}
 			} else if tgErr.Code == 429 {
 				retrySec := 1
 				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
 					retrySec = int(tgErr.ResponseParams.RetryAfter)
 				}
 				time.Sleep(time.Duration(retrySec) * time.Second)
-				_, _, _ = dt.bot.EditMessageText(opts)
+				if _, _, retryErr := bot.EditMessageText(opts); retryErr != nil {
+					slog.Warn("Telegram editMessageText rate limit retry failed", "chat_id", chatID, "msg_id", msgID, "error", retryErr)
+				}
+			} else {
+				slog.Warn("Telegram editMessageText failed", "chat_id", chatID, "msg_id", msgID, "error", err)
 			}
+		} else {
+			slog.Warn("Telegram editMessageText network error", "chat_id", chatID, "msg_id", msgID, "error", err)
 		}
 	}
 }
 
-func (dt *DeliveryThrottler) sendMessageWithFallback(chatID, threadID int64, text string) *gotgbot.Message {
-	if dt.bot == nil || strings.TrimSpace(text) == "" {
+func (dt *DeliveryThrottler) sendMessageWithFallback(bot *gotgbot.Bot, chatID, threadID int64, text string) *gotgbot.Message {
+	if bot == nil || strings.TrimSpace(text) == "" {
 		return nil
 	}
 	formatted := FormatMarkdownToTelegramHTML(text)
@@ -546,21 +583,33 @@ func (dt *DeliveryThrottler) sendMessageWithFallback(chatID, threadID int64, tex
 	if threadID != 0 {
 		opts.MessageThreadId = threadID
 	}
-	msg, err := dt.bot.SendMessage(chatID, formatted, opts)
+	msg, err := bot.SendMessage(chatID, formatted, opts)
 	if err != nil {
 		var tgErr *gotgbot.TelegramError
 		if errors.As(err, &tgErr) {
 			if tgErr.Code == 400 {
 				opts.ParseMode = ""
-				msg, _ = dt.bot.SendMessage(chatID, StripHTMLTags(formatted), opts)
+				var retryErr error
+				msg, retryErr = bot.SendMessage(chatID, StripHTMLTags(formatted), opts)
+				if retryErr != nil {
+					slog.Error("Telegram SendMessage plain text fallback failed", "chat_id", chatID, "thread_id", threadID, "error", retryErr)
+				}
 			} else if tgErr.Code == 429 {
 				retrySec := 1
 				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
 					retrySec = int(tgErr.ResponseParams.RetryAfter)
 				}
 				time.Sleep(time.Duration(retrySec) * time.Second)
-				msg, _ = dt.bot.SendMessage(chatID, formatted, opts)
+				var retryErr error
+				msg, retryErr = bot.SendMessage(chatID, formatted, opts)
+				if retryErr != nil {
+					slog.Error("Telegram SendMessage rate limit retry failed", "chat_id", chatID, "thread_id", threadID, "error", retryErr)
+				}
+			} else {
+				slog.Error("Telegram SendMessage failed", "chat_id", chatID, "thread_id", threadID, "error", err)
 			}
+		} else {
+			slog.Error("Telegram SendMessage network error", "chat_id", chatID, "thread_id", threadID, "error", err)
 		}
 	}
 	return msg

@@ -199,6 +199,7 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 			if len(args) == 0 {
 				if e.channel != nil {
 					_ = e.channel.Send(ctx, domain.OutboundMessage{
+						BotID:            msg.BotID,
 						ChatID:           msg.Chat.ID,
 						ThreadID:         msg.Chat.ThreadID,
 						Text:             "⚠️ **Usage:** `/ask <prompt>`\n*Example:* `/ask Write regex to validate IPv6 in Go`\n\n_Questions are answered independently without polluting the main conversation history._",
@@ -634,6 +635,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			}
 
 			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
 				Text:             responseText,
@@ -717,6 +719,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	if execErr != nil {
 		if !isStream {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
 				Text:             fmt.Sprintf("⚠️ Execution failed: %v", execErr),
@@ -843,13 +846,21 @@ func (e *Engine) subscribeSubagentEvents() {
 		}
 		task := payload.Task
 
+		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
+		chatID := parsedKey.ChatID
+		if chatID == "" {
+			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
+		}
+
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
 				Channel:   "telegram",
+				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
-					ID: extractChatIDFromSessionKey(task.ParentSessionKey),
+					ID:       chatID,
+					ThreadID: parsedKey.ThreadID,
 				},
 				Text: fmt.Sprintf("[SYSTEM NOTIFICATION: Subagent Task #%s (@%s) is WAITING FOR INPUT]\nTask: %s\nQuestion: %q\n\nPlease evaluate the question. If you know the answer from your rules/memory, call send_subagent_input(task_id: %q, input: \"...\") immediately. Otherwise, ask the user for clarification.",
 					task.ID, task.AgentName, task.Title, task.PendingQuestion, task.ID),
@@ -860,9 +871,10 @@ func (e *Engine) subscribeSubagentEvents() {
 				slog.Warn("inbound queue full for subagent synthetic message", "task_id", task.ID)
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
-			chatID := extractChatIDFromSessionKey(task.ParentSessionKey)
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				ChatID: chatID,
+				BotID:     parsedKey.BotID,
+				ChatID:    chatID,
+				ThreadID:  parsedKey.ThreadID,
 				Text: fmt.Sprintf("⏸️ **Sub-Agent @%s requires clarification:**\n📌 **Task:** %s (`%s`)\n\n❓ **Question:** %s\n\n_Use_ `/task reply %s <your response>` _to continue._",
 					task.AgentName, task.Title, task.ID, task.PendingQuestion, task.ID),
 				ParseMode: "Markdown",
@@ -877,13 +889,21 @@ func (e *Engine) subscribeSubagentEvents() {
 		}
 		task := payload.Task
 
+		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
+		chatID := parsedKey.ChatID
+		if chatID == "" {
+			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
+		}
+
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
 				Channel:   "telegram",
+				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
-					ID: extractChatIDFromSessionKey(task.ParentSessionKey),
+					ID:       chatID,
+					ThreadID: parsedKey.ThreadID,
 				},
 				Text: fmt.Sprintf("[SYSTEM NOTIFICATION: Subagent Task #%s (@%s) COMPLETED]\nTask Title: %s\nDuration: %.2fs | Total Tokens: %d\n\nResult Summary:\n%s\n\nPlease synthesize or report these findings to the user.",
 					task.ID, task.AgentName, task.Title, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
@@ -894,9 +914,10 @@ func (e *Engine) subscribeSubagentEvents() {
 				slog.Warn("inbound queue full for subagent completion message", "task_id", task.ID)
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
-			chatID := extractChatIDFromSessionKey(task.ParentSessionKey)
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				ChatID: chatID,
+				BotID:     parsedKey.BotID,
+				ChatID:    chatID,
+				ThreadID:  parsedKey.ThreadID,
 				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
 				ParseMode: "HTML",

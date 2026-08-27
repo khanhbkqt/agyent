@@ -23,6 +23,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
 	if err != nil {
 		return &domain.OutboundMessage{
+			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
 			Text:             fmt.Sprintf("⚠️ Failed to load session: %v", err),

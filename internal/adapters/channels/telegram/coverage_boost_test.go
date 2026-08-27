@@ -115,24 +115,34 @@ func TestBoost_FilterAndRouterEdgeCases(t *testing.T) {
 // Boost coverage for ParseSessionKey
 func TestBoost_ParseSessionKey(t *testing.T) {
 	tests := []struct {
+		name      string
 		key       string
 		shouldErr bool
+		expectCh  string
+		expectCid int64
+		expectTid int64
 	}{
-		{"telegram:123:456", false},
-		{"telegram:invalid:0", true},
-		{"short", true},
+		{"2-part DM", "telegram:8544450322", false, "telegram", 8544450322, 0},
+		{"3-part Namespaced DM", "telegram:8718145628:8544450322", false, "telegram", 8544450322, 0},
+		{"3-part Legacy Topic", "telegram:-100123:456", false, "telegram", -100123, 456},
+		{"3-part Legacy Zero Thread", "telegram:123:0", false, "telegram", 123, 0},
+		{"4-part Topic", "telegram:8718145628:-100123:456", false, "telegram", -100123, 456},
+		{"Invalid chatID", "telegram:invalid:0", true, "", 0, 0},
+		{"Short key", "short", true, "", 0, 0},
 	}
 
 	for _, tt := range tests {
-		ch, cid, tid, err := ParseSessionKey(tt.key)
-		if tt.shouldErr {
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-			assert.Equal(t, "telegram", ch)
-			assert.Equal(t, int64(123), cid)
-			assert.Equal(t, int64(456), tid)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			ch, cid, tid, err := ParseSessionKey(tt.key)
+			if tt.shouldErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectCh, ch)
+				assert.Equal(t, tt.expectCid, cid)
+				assert.Equal(t, tt.expectTid, tid)
+			}
+		})
 	}
 }
 

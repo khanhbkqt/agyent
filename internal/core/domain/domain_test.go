@@ -127,6 +127,103 @@ func TestExtractChatIDFromSessionKey(t *testing.T) {
 	}
 }
 
+func TestParseSessionKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionKey string
+		expected   domain.ParsedSessionKey
+		wantErr    bool
+	}{
+		{
+			name:       "Legacy 2-part key private chat",
+			sessionKey: "telegram:8544450322",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    0,
+				ChatID:   "8544450322",
+				ThreadID: 0,
+			},
+		},
+		{
+			name:       "Legacy 2-part key group chat",
+			sessionKey: "telegram:-100123456",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    0,
+				ChatID:   "-100123456",
+				ThreadID: 0,
+			},
+		},
+		{
+			name:       "Namespaced 3-part key private chat (User Bug Case)",
+			sessionKey: "telegram:8718145628:8544450322",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    8718145628,
+				ChatID:   "8544450322",
+				ThreadID: 0,
+			},
+		},
+		{
+			name:       "Namespaced 3-part key group chat",
+			sessionKey: "telegram:8718145628:-100123456",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    8718145628,
+				ChatID:   "-100123456",
+				ThreadID: 0,
+			},
+		},
+		{
+			name:       "Legacy 3-part key group topic",
+			sessionKey: "telegram:-100123456:10042",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    0,
+				ChatID:   "-100123456",
+				ThreadID: 10042,
+			},
+		},
+		{
+			name:       "Legacy 3-part key with explicit 0 threadID",
+			sessionKey: "telegram:123456:0",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    0,
+				ChatID:   "123456",
+				ThreadID: 0,
+			},
+		},
+		{
+			name:       "Namespaced 4-part key group topic",
+			sessionKey: "telegram:8718145628:-100123456:10042",
+			expected: domain.ParsedSessionKey{
+				Channel:  "telegram",
+				BotID:    8718145628,
+				ChatID:   "-100123456",
+				ThreadID: 10042,
+			},
+		},
+		{
+			name:       "Invalid single string key",
+			sessionKey: "invalidkey",
+			wantErr:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := domain.ParseSessionKey(tc.sessionKey)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expected, parsed)
+			}
+		})
+	}
+}
+
 func TestAgent_OwnershipAndPermissions(t *testing.T) {
 	agent := domain.Agent{
 		Name:          "dev_architect",
