@@ -30,6 +30,8 @@ benchmark_results.json
 config.yaml
 *.env
 .env*
+scripts/push.*
+scripts/release.*
 
 # Runtime agent memory & system logs
 memory/

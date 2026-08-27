@@ -9,7 +9,7 @@
 
 **High-Performance Personal AI Assistant Gateway & Multi-Agent Harness in Go, powered by Antigravity CLI (`agy`) as the Autonomous Brain.**
 
-[Features](#-key-features) • [Architecture](#-architecture) • [Quickstart](#-quickstart) • [Slash Commands](#-slash-commands) • [Documentation](#-documentation) • [Contributing](#-contributing) • [License](#-license)
+[Features](#-key-features) • [Architecture](#-architecture) • [Quickstart](#-quickstart) • [Configuration](#-configuration-reference) • [Slash Commands](#-slash-commands) • [Documentation](#-documentation) • [Contributing](#-contributing) • [License](#-license)
 
 </div>
 
@@ -33,7 +33,9 @@ flowchart LR
         Debounce["Message Debouncer (2.0s Channel Buffer)"]
         Engine["Core Orchestration Engine"]
         ContextMgr["5-Tier Context & Memory Resolver"]
+        SubDisp["Sub-Agent Dispatcher & Pool"]
         EvolEngine["Self-Learning & Evolution Engine"]
+        SecMgr["Universal Security Gateway"]
         Storage["Pure-Go SQLite (WAL Dual-Pool)"]
     end
 
@@ -48,7 +50,9 @@ flowchart LR
     Router --> Debounce
     Debounce --> Engine
     Engine <--> ContextMgr
+    Engine <--> SubDisp
     Engine <--> EvolEngine
+    Engine <--> SecMgr
     Engine <--> Storage
     Engine <--> Harness
     Harness <--> AGY
@@ -57,10 +61,14 @@ flowchart LR
 
 ---
 
-- **⚡ Lightweight Go Static Binary:** Ultra-fast startup (<10ms), minimal CPU/RAM footprint on low-spec VPS environments, zero CGO dependencies (utilizing Pure-Go SQLite via `modernc.org/sqlite`).
+## ⚡ Key Features
+
+- **⚡ Lightweight Go Static Binary:** Ultra-fast startup (<10ms), minimal CPU/RAM footprint on low-spec VPS environments (<10MB RAM idle), zero CGO dependencies (utilizing Pure-Go SQLite via `modernc.org/sqlite`).
 - **🤖 Multi-Bot Lifecycle Pools & Dedicated Persona Binding:** Run multiple independent Telegram bots simultaneously within a single daemon process with fault isolation. Bind dedicated bot tokens directly to specialized agent personas (e.g. `@dev_architect`, `@security_auditor`).
 - **👥 Granular Agent Ownership & RBAC:** Verified agent creator ownership (`OwnerID`) and permission control (`agent_permissions`), isolating workspaces (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`) with secure collaboration sharing (`admin`, `operator`, `viewer`).
 - **🧠 Full Autonomous Power of `agy`:** Native shell execution, recursive code search, intelligent file patch editing, multi-agent dispatching, and MCP tools via structured subprocess JSON streaming.
+- **⚡ Dynamic AI Model & Reasoning Effort Selection:** Seamlessly inspect or switch AI models (`pro`, `flash`, `flash-lite`) and reasoning effort levels (`low`, `medium`, `high`, `none`) on the fly via `/model` and `/effort` with 5-tier resolution hierarchy.
+- **🐝 Sub-Agent Background Dispatching & Task Pool:** Spawn async background subagent tasks with real-time step tracking, timeout guarantees, interactive Q&A replies (`/task reply`), and task management (`/tasks`, `/task cancel`).
 - **⚡ Prefix KV-Cache Preservation:** Fixed Level 0–3 system foundation prompt hierarchy ensuring ~85–95% cache hit rates on large context windows, reducing Turn-to-First-Token (TTFT) latency by up to 80% and slashing token costs (~75% savings on Gemini 0.25x Cache Read pricing).
 - **🎭 Workspace-First Multi-Agent Architecture:** Each agent profile maintains an independent workspace containing its Identity (`IDENTITY.md`), Soul (`SOUL.md`), Owner Profile (`USER.md`), and Long-Term Memory (`MEMORY.md`).
 - **📁 Multi-Project & Dual-Scope Context:** Seamlessly switch between Global Chat mode and In-Project codebase mode; supports Telegram Groups and Forum Topics with secure `@mention` access filtering.
@@ -68,13 +76,13 @@ flowchart LR
 - **🔄 Bidirectional Media & File Sync:**
   - Inbound: User sends photos, documents, or archives $\rightarrow$ automatically downloaded and passed to `agy`.
   - Outbound: `agy` generates new artifacts (charts, images, PDFs, reports) $\rightarrow$ automatically detected and delivered back to the chat channel.
-- **📨 Robust OpenClaw Message Handling:**
+- **📨 Robust Message Pipeline:**
   - Canonical message formatting (`CanonicalMessage`).
   - 2.0s sliding-window debouncing via Go channels to merge rapid bursts of user messages.
   - Namespaced session keys (`channel:bot_id:chat_id[:thread_id]`) and FIFO session locking per user/topic to eliminate race conditions.
   - Heartbeat typing indicators (4.0s) and smart Markdown chunking.
 - **🛡️ Universal AI Security Gateway & Dual-Plane Guardrails:**
-  - Synchronous native Antigravity lifecycle hook interception (`PreToolUse` & `PostToolUse`) with sub-5ms local IPC socket and fail-safe **Default-Deny** fallback.
+  - Synchronous native Antigravity lifecycle hook interception (`PreToolUse` & `PostToolUse`) via `agyent hook-bridge` over sub-5ms local IPC socket with fail-safe **Default-Deny** fallback.
   - 4 zero-config security postures (`developer`, `balanced`, `strict`, `read_only`) switchable dynamically or via 1-click Telegram buttons.
   - Interactive **Human-in-the-Loop (HITL)** approval cards with Diff preview, session permission grants, and strict Admin RBAC.
   - Workspace filesystem jailing with symlink ancestor canonicalization, Windows ADS/UNC block, SSRF & Cloud Metadata protection, and DLP secret redaction (OpenAI, Anthropic, GitHub PAT, Gemini, AWS).
@@ -84,28 +92,30 @@ flowchart LR
 
 ## 🏗️ Architecture
 
-`agyent` is designed around clean, testable Ports and Adapters:
+`agyent` is designed around clean, testable Ports and Adapters (Hexagonal Architecture):
 
 ```
 agyent/
-├── cmd/agyent/               # CLI Entrypoints (init, run, version, register-commands)
+├── cmd/agyent/               # CLI Entrypoints (init, run, register-commands, hook-bridge, version)
 ├── internal/
 │   ├── core/
-│   │   ├── domain/           # Core Domain Models (Agent, Session, Conversation, Audit)
-│   │   ├── ports/            # Port Interfaces (Storage, Channel, Runner, EventBus)
+│   │   ├── domain/           # Core Domain Models (Agent, Session, Conversation, Audit, Security)
+│   │   ├── ports/            # Port Interfaces (Storage, Channel, Runner, EventBus, Security)
 │   │   ├── engine/           # Central Orchestrator, Commands Dispatcher, Lifecycle GC
 │   │   ├── debouncer/        # Go Channel Message Debouncer & Coalescer
+│   │   ├── subagent/         # Sub-Agent Dispatcher, Background Worker Pool & Task Manager
 │   │   └── concurrency/      # Cross-platform FIFO Session Locks & OS FileLocks
 │   ├── adapters/
-│   │   ├── channels/telegram # Telegram Adapter (Polling, Router, Throttler, Formatter)
+│   │   ├── channels/telegram # Telegram Adapter (Polling, Router, Throttler, HITL Coordinator)
 │   │   ├── harness/agy/      # AGY Subprocess JSON Harness, Snapshot Watcher, Job Objects
 │   │   ├── storage/sqlite/   # Pure-Go SQLite WAL Dual-Pool Engine & Migrations
 │   │   ├── context/          # 5-Tier Context Hierarchy & Temporal Grounding
 │   │   ├── evolution/        # Reflection Engine, 4D Conflict Resolver, Compactor
+│   │   ├── security/         # Universal AI Security Gateway, Guardrails & IPC Host
 │   │   ├── mcp/              # Global MCP Config Syncer & Process Cleanup
 │   │   └── plugin/           # Plugin Manifest & Builtin Plugin Management
-│   └── wizard/               # Interactive CLI Configuration Wizard
-└── docs/                     # Comprehensive Architecture & Engineering Docs
+│   └── wizard/               # Interactive Terminal Configuration Wizard
+└── docs/                     # Comprehensive Architecture & Engineering Documentation
 ```
 
 ---
@@ -113,9 +123,10 @@ agyent/
 ## 🚀 Quickstart
 
 ### 1. Prerequisites
-- **Go 1.22+**
-- **Antigravity CLI (`agy`)** installed and available in `$PATH`
-- **Telegram Bot Token** (from [@BotFather](https://t.me/BotFather))
+- **Go 1.22+** (only if building from source)
+- **Antigravity CLI (`agy`)** installed and available in your `$PATH`
+- **Telegram Bot Token** (obtain from [@BotFather](https://t.me/BotFather))
+- Your **Telegram User ID** (obtain from [@userinfobot](https://t.me/userinfobot))
 
 ### 2. Installation
 
@@ -145,66 +156,249 @@ cd agyent
 go build -o bin/agyent ./cmd/agyent
 ```
 
-### 3. Initialize Configuration & Agent Profile
+---
+
+### 3. CLI Usage & Commands
+
+The `agyent` binary provides several dedicated subcommands:
+
+#### 🧙 `agyent init` — Initialize Configuration & Workspace
 
 Run the interactive setup wizard:
-
 ```bash
-./bin/agyent init
+agyent init
 ```
 
 The wizard will guide you through:
 1. Entering your Telegram Bot Token.
-2. Specifying your Telegram numeric Admin User ID.
-3. Setting the agent workspaces path (default: `~/.agyent/agents/`).
+2. Specifying your Telegram numeric Admin User ID(s).
+3. Setting the agent workspaces directory (default: `~/.agyent/agents/`).
 4. Verifying the `agy` CLI binary in `$PATH`.
 5. Generating the starter agent (`agyent`) with default identity files.
 
-### 4. Register Bot Slash Commands with Telegram
-
+**Non-Interactive Setup (for CI/CD & automated deployment):**
 ```bash
-./bin/agyent register-commands
+agyent init \
+  --non-interactive \
+  --token "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ" \
+  --admin "123456789" \
+  --agents-dir "~/.agyent/agents" \
+  --agy-path "agy" \
+  --debounce 2.0
 ```
 
-### 5. Launch the Daemon
+#### 📡 `agyent register-commands` — Sync Slash Commands with Telegram
+
+Registers all slash commands and autocomplete descriptions with Telegram Bot API across Default, Private, and Group scopes:
+```bash
+# Register/Update commands
+agyent register-commands
+
+# Delete all registered bot commands
+agyent register-commands --delete
+```
+
+#### 🚀 `agyent run` — Launch Gateway Daemon
+
+Starts the daemon listening for inbound messages and dispatching tasks to AGY CLI:
+```bash
+# Run with default configuration (~/.agyent/config.yaml)
+agyent run
+
+# Run with custom config and verbose/debug logging
+agyent run -c /path/to/config.yaml -v
+```
+
+#### 🛡️ `agyent hook-bridge` — Native Antigravity Hook Bridge
+
+Interception bridge for Antigravity CLI lifecycle hooks (`PreToolUse`, `PostToolUse`), routing tool call evaluations to the Security Gateway IPC server with fail-safe Default-Deny fallback:
+```bash
+agyent hook-bridge pre
+agyent hook-bridge post
+```
+
+#### ℹ️ `agyent version` — Version & Build Metadata
+```bash
+agyent version
+```
+
+---
+
+### 4. Background Service Deployment (Linux systemd)
+
+To keep `agyent` running continuously in the background on your VPS or workstation:
 
 ```bash
-./bin/agyent run
+# 1. Copy the systemd service file
+sudo cp scripts/deploy/agyent.service /etc/systemd/system/
+
+# 2. Reload systemd daemon
+sudo systemctl daemon-reload
+
+# 3. Enable and start agyent service
+sudo systemctl enable --now agyent
+
+# 4. Check service status and logs
+sudo systemctl status agyent
+journalctl -u agyent -f
+```
+
+---
+
+## ⚙️ Configuration Reference
+
+Configuration is stored in `~/.agyent/config.yaml`. Below is a complete annotated example:
+
+```yaml
+# HTTP Server (Optional webhook/health checks)
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+# Telegram Bot & Multi-Bot Configuration
+telegram:
+  bot_token: "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"  # Single-bot token fallback
+  mode: "polling"                                     # "polling" or "webhook"
+  webhook_url: ""
+  admin_user_ids:
+    - 123456789                                       # Telegram numeric User IDs with Admin RBAC
+  allowed_group_ids: []                               # Allowed Telegram Group/Supergroup IDs
+
+  # Multi-Bot Lifecycle Pools (Optional: Run multiple dedicated bot personas)
+  bots:
+    - name: "architect"
+      bot_token: "123456789:AAA..."
+      bind_agent: "dev_architect"
+    - name: "security"
+      bot_token: "987654321:BBB..."
+      bind_agent: "security_auditor"
+
+# Antigravity CLI (AGY) Brain Configuration
+agy:
+  binary_path: "agy"                                  # Command or absolute path to agy CLI
+  default_timeout_seconds: 300
+  default_model: "pro"                                # "pro", "flash", "flash-lite", or model alias
+  default_effort: "high"                              # "low", "medium", "high", "none"
+  default_mode: "accept-edits"
+  streaming_enabled: true                             # Enable real-time streaming output
+  streaming_throttle_interval_seconds: 1.5
+
+# Storage & SQLite Engine
+storage:
+  db_path: "~/.agyent/agyent.db"                      # Pure-Go SQLite WAL Database
+  agents_dir: "~/.agyent/agents"                      # Base directory for agent workspaces
+  debounce_seconds: 2.0                               # Message burst debouncing window
+  heartbeat_interval_seconds: 4.0                     # Telegram typing indicator interval
+
+# Sub-Agent Background Dispatcher & Worker Pool
+subagent:
+  max_concurrent_workers: 3                           # Parallel background sub-agent workers
+  default_timeout_seconds: 300
+  default_model: "flash"
+  default_effort: "low"
+
+# Self-Learning & Continuous Evolution Engine
+evolution:
+  enabled: true
+  idle_timeout_minutes: 15                            # Idle time before triggering background reflection
+  scan_interval_minutes: 5
+  confidence_threshold: 0.85
+  reflection_timeout_seconds: 30
+  compaction_line_limit: 200
+
+# Universal AI Security Gateway & Guardrails
+security:
+  enabled: true
+  preset: "balanced"                                  # "unrestricted", "developer", "balanced", "strict", "read_only"
+  mode: "interactive"                                 # "interactive" (HITL) or "strict"
+  approval_timeout_seconds: 60                        # HITL card expiration timeout
+  dlp:
+    enabled: true
+    redaction_mode: "strict"                          # "strict", "permissive", "audit_only"
+    sliding_window_bytes: 64
+    sanitize_tool_outputs: true
+
+# Logging Configuration
+logging:
+  level: "info"                                       # "debug", "info", "warn", "error"
+  format: "text"                                      # "text" or "json"
 ```
 
 ---
 
 ## 🤖 Slash Commands
 
-`agyent` includes a full suite of in-chat slash commands:
+`agyent` provides an extensive set of in-chat slash commands accessible via direct message, groups, or forum topics:
 
-| Command | Description |
-| :--- | :--- |
-| `/help` | Display interactive command guide and shortcuts. |
-| `/status` | View system uptime, active agent, scope, streaming mode, and resource stats. |
-| `/tokens` | Inspect turn-level and cumulative token metrics, KV-cache reads, and cost savings. |
-| `/context` | Inspect active directives, token budget, and mounted MCP servers. |
-| `/skills` | List discovered Progressive Disclosure skills across workspace overlays. |
-| `/plugins` | Manage capability plugins (`/plugins`, `/plugin enable <name>`, `/plugin disable <name>`). |
-| `/stream [on\|off]` | Query or toggle between Real-Time Streaming (`stream-json`) and Batch mode (`json`). |
-| `/reset` | Clear short-term conversation context for the active scope. |
-| `/force_unlock` | Force release session mutex locks and terminate hanging background processes. |
-| `/c` or `/conversations` | Open interactive conversation manager with 1-touch inline buttons. |
-| `/c <#>` | Quickly switch to a conversation by index number (e.g. `/c 2`). |
-| `/new` | Start a fresh, clean conversation context. |
-| `/pin` / `/unpin` | Pin or unpin the active conversation to protect from automated GC. |
-| `/agents` / `/a list` | List all agent profiles accessible to your user. |
-| `/use <name>` | Switch active agent profile (evaluates granular RBAC permissions). |
-| `/a new <name> [desc]` | Register and initialize a new private agent persona with verified ownership. |
-| `/a share <agent> <user_id> [role]` | Grant collaborator access (`admin`, `operator`, `viewer`) to another user. |
-| `/a revoke <agent> <user_id>` | Revoke collaborator access from a user. |
-| `/a info [agent]` | Inspect agent metadata, visibility, owner ID, and active collaborators. |
-| `/projects` / `/p <name>` | List attached project codebases or switch into project context. |
-| `/p exit` | Exit project mode and return to Global Chat mode. |
-| `/security` or `/sec` | View Security Gateway dashboard and switch active preset (`developer`, `balanced`, `strict`, `read_only`). |
-| `/security preset <mode>` | Dynamically switch active security preset. |
-| `/security grant <pattern>` | Grant temporary session permission for a command or tool pattern. |
-| `/whitelist add <rule>` | Add custom allowed command pattern to active whitelist. |
+### 🌐 General & System
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/help` | — | Display interactive command guide and shortcuts. |
+| `/status` | — | View system uptime, active agent, active model/effort, scope, and resource stats. |
+| `/tokens` | `/metrics`, `/token` | Inspect turn-level & cumulative token metrics, KV-cache reads, and cost savings. |
+| `/context` | — | Inspect active context directives, token budget, and mounted MCP servers. |
+| `/skills` | `/skill` | List discovered Progressive Disclosure skills across workspace overlays. |
+| `/plugins` | `/plugin` | Manage capability plugins (`/plugins`, `/plugin enable <name>`, `/plugin disable <name>`). |
+| `/stream [on\|off]` | — | Query or toggle between Real-Time Streaming (`stream-json`) and Batch mode (`json`). |
+| `/reset` | — | Clear short-term conversation context for the active scope. |
+| `/force_unlock` | — | Emergency unlock session mutex locks and terminate hanging background processes. |
+
+### ⚡ AI Model & Reasoning Effort
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/model [name]` | `/m`, `/models` | Inspect or dynamically switch active AI model (`pro`, `flash`, `flash-lite`, `reset`). |
+| `/effort [level]` | `/eff` | Inspect or switch reasoning effort level (`low`, `medium`, `high`, `none`, `reset`). |
+
+### 🧵 Multi-Conversation & Context
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/ask <prompt>` | — | Ask an isolated ephemeral question without polluting active conversation context. |
+| `/c` | `/conversations` | Open interactive conversation manager with 1-touch inline buttons. |
+| `/c <#>` | — | Quickly switch to a conversation by index number (e.g. `/c 2`). |
+| `/new` | — | Start a fresh, clean conversation context. |
+| `/pin` / `/unpin` | — | Pin or unpin the active conversation to protect it from automated GC cleanup. |
+| `/c rename <title>`| — | Rename the current active conversation title. |
+| `/c archive` | — | Archive the current conversation. |
+| `/c clean` | — | Trigger garbage collection to purge expired/archived sessions. |
+
+### 🤖 Agent Personas & Granular RBAC
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/agents` | `/a`, `/a list` | List all agent profiles accessible to your user. |
+| `/use <name>` | `/a <name>` | Switch active agent profile (validates granular RBAC permissions). |
+| `/a new <name> [desc]` | `/a create` | Register and initialize a new private agent persona with verified ownership. |
+| `/a share <agent> <user_id> [role]` | — | Grant collaborator access (`admin`, `operator`, `viewer`) to another user. |
+| `/a revoke <agent> <user_id>` | — | Revoke collaborator access from a user. |
+| `/a info [agent]` | — | Inspect agent metadata, visibility, owner ID, and active collaborators. |
+| `/bootstrap [name]`| `/a bootstrap`| Force re-trigger Genesis Bootstrap interview protocol to synthesize persona identity. |
+
+### 📁 Multi-Project Management
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/projects` | `/p`, `/p list` | List attached project codebases or view project status. |
+| `/p <name>` | `/project use` | Switch into an attached project workspace. |
+| `/p new <name> [path]`| `/p create` | Register and attach a new project codebase path. |
+| `/p exit` | `/p ~` | Exit project mode and return to Global Chat mode. |
+| `/p info` | — | View detailed metadata and directory path of the active project. |
+| `/p reset` | — | Reset short-term conversation context for the active project. |
+
+### 🐝 Sub-Agent Background Tasks
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/tasks` | `/subagents` | List active, completed, and recent background sub-agent tasks. |
+| `/task <id>` | — | Inspect task status, elapsed duration, output logs, and step progress. |
+| `/task reply <id> <text>`| — | Send input/clarification to a sub-agent waiting for Human-in-the-Loop input. |
+| `/task cancel <id>`| — | Force terminate a running background sub-agent task. |
+| `/task clean` | — | Purge finished, errored, and cancelled sub-agent task records. |
+
+### 🛡️ Security Gateway & Whitelist
+| Command | Aliases | Description |
+| :--- | :--- | :--- |
+| `/security` | `/sec` | View Security Gateway dashboard and switch security postures. |
+| `/security preset <mode>`| — | Switch active preset (`unrestricted`, `developer`, `balanced`, `strict`, `read_only`). |
+| `/security grant <pattern>`| — | Grant temporary session permission (15m) for a tool or command pattern. |
+| `/security redact <mode>` | — | Switch DLP secret redaction mode (`strict`, `permissive`, `audit_only`). |
+| `/whitelist add "<rule>"` | — | Add permanent custom whitelist command rule. |
 
 ---
 
@@ -241,8 +435,12 @@ Detailed architecture specifications and engineering decisions are available in 
 - 📡 [**AGY Streaming Protocol**](docs/agy-streaming-protocol.md): Real-time delta streaming and progressive token editing.
 - 🧠 [**Context Management Architecture**](docs/context-management-architecture.md): 5-tier context resolution and progressive skills index.
 - ⚡ [**Model & Reasoning Effort Selection**](docs/model-and-effort-selection-architecture.md): 5-tier resolution hierarchy, dynamic discovery from `agy models`, and subset effort clamping.
+- 🐝 [**Sub-Agent Dispatch & Orchestration**](docs/subagent-architecture.md): Sub-agent worker pool, cascade depth guardrails, and HITL interactive replies.
+- 🧩 [**Plugin System Architecture**](docs/plugin-system-architecture.md): Modular plugin manifests, dynamic tool loading, and MCP synchronization.
+- 📜 [**System Meta-Instructions Architecture**](docs/system-meta-instruction-architecture.md): Prefix KV-cache prompt assembly and Foundation meta-instructions.
 - 🧬 [**Agent Self-Learning & Evolution**](docs/agent-self-learning-and-evolution-architecture.md): Autonomous reflection, 4D memory synthesis, and conflict resolution.
 - 🛡️ [**Security & Guardrails Architecture**](docs/security-and-guardrails-architecture.md): Universal Gateway security, non-blocking HITL state machine, and sub-agent jailing.
+- 👥 [**Multi-Account Virtualization**](docs/multi-account-architecture.md): Multi-account failover and rate-limit cooldown management.
 - 🗺️ [**Master Roadmap & Milestone Plans**](docs/plans/master_roadmap.md): Milestone 1 through Milestone 14 architecture execution records.
 
 ---
