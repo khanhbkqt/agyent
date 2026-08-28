@@ -907,3 +907,117 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
 }
+
+func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
+	eng, runner, channel, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	sender := domain.SenderUser{ID: "user-123", Username: "stevan"}
+	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
+
+	// Case 1: Initialized Agent sends /new (proactive greeting without topic)
+	msgNew := domain.CanonicalMessage{
+		ID:        "msg-new-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    sender,
+		Chat:      chat,
+		Text:      "/new",
+	}
+	sessionKey := msgNew.SessionKey()
+
+	err := eng.HandleDebouncedMessage(ctx, msgNew)
+	require.NoError(t, err)
+
+	// Verify runner executed a turn
+	require.NotEmpty(t, runner.executeCalls)
+	lastCall := runner.executeCalls[len(runner.executeCalls)-1]
+	assert.Empty(t, lastCall.ConversationID, "New conversation turn must start with empty ConversationID")
+	assert.Contains(t, lastCall.Prompt, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]")
+	assert.Contains(t, lastCall.Prompt, "The user has initiated a fresh conversation session.")
+
+	// Verify session now has the new conversation ID
+	session, err := store.GetSession(ctx, sessionKey)
+	require.NoError(t, err)
+	assert.Equal(t, "conv-123", session.GetActiveConversationID())
+
+	// Verify greeting message sent to channel
+	sent := channel.GetSentMessages()
+	require.NotEmpty(t, sent)
+	lastSent := sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Mock response for:")
+
+	// Case 2: Send /new with topic: /new Xây dựng API authentication
+	msgNewWithTopic := domain.CanonicalMessage{
+		ID:        "msg-new-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    sender,
+		Chat:      chat,
+		Text:      "/new Xây dựng API authentication",
+	}
+
+	err = eng.HandleDebouncedMessage(ctx, msgNewWithTopic)
+	require.NoError(t, err)
+
+	lastCall = runner.executeCalls[len(runner.executeCalls)-1]
+	assert.Empty(t, lastCall.ConversationID)
+	assert.Contains(t, lastCall.Prompt, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]")
+	assert.Contains(t, lastCall.Prompt, "Xây dựng API authentication")
+
+	// Case 3: Send /c new with topic
+	msgCNew := domain.CanonicalMessage{
+		ID:        "msg-new-3",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    sender,
+		Chat:      chat,
+		Text:      "/c new Refactor Database Layer",
+	}
+
+	err = eng.HandleDebouncedMessage(ctx, msgCNew)
+	require.NoError(t, err)
+
+	lastCall = runner.executeCalls[len(runner.executeCalls)-1]
+	assert.Contains(t, lastCall.Prompt, "Refactor Database Layer")
+
+	// Case 4: Uninitialized agent Genesis bootstrap on /new
+	uninitAgent := &domain.Agent{
+		Name:          "newbie_agent",
+		Description:   "Newbie Assistant",
+		Status:        domain.StatusUninitialized,
+		WorkspacePath: t.TempDir(),
+		OwnerID:       sender.ID,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, uninitAgent))
+
+	session.ActiveAgent = "newbie_agent"
+	session.ResetActiveConversationID()
+	require.NoError(t, store.SaveSession(ctx, session))
+
+	msgGenesisNew := domain.CanonicalMessage{
+		ID:        "msg-genesis-new",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    sender,
+		Chat:      chat,
+		Text:      "/new Khởi tạo trợ lý mới",
+	}
+
+	err = eng.HandleDebouncedMessage(ctx, msgGenesisNew)
+	require.NoError(t, err)
+
+	lastCall = runner.executeCalls[len(runner.executeCalls)-1]
+	assert.Contains(t, lastCall.Prompt, "[SYSTEM BOOTSTRAP PROTOCOL - MANDATORY INITIALIZATION]")
+
+	// Agent should now be initialized in database
+	dbAgent, err := store.GetAgent(ctx, "newbie_agent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.StatusInitialized, dbAgent.Status)
+}
+

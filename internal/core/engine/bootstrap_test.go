@@ -223,3 +223,18 @@ func TestComposeContinuationPrompt(t *testing.T) {
 	assert.Contains(t, p3, "User Prompt: Xem file này giúp anh")
 	assert.NotContains(t, p3, "[SYSTEM RUNTIME FOUNDATION]")
 }
+
+func TestBuildNewSessionGreetingPrompt(t *testing.T) {
+	// Without topic
+	promptWithoutTopic := engine.BuildNewSessionGreetingPrompt("")
+	assert.Contains(t, promptWithoutTopic, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]")
+	assert.Contains(t, promptWithoutTopic, "The user has initiated a fresh conversation session.")
+	assert.Contains(t, promptWithoutTopic, "Proactively greet the user warmly")
+
+	// With topic
+	promptWithTopic := engine.BuildNewSessionGreetingPrompt("Thiết kế Database mới")
+	assert.Contains(t, promptWithTopic, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]")
+	assert.Contains(t, promptWithTopic, "Thiết kế Database mới")
+	assert.Contains(t, promptWithTopic, "Acknowledge the topic")
+}
+

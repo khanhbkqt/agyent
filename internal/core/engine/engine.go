@@ -195,7 +195,9 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 
 	if msg.IsCommand() {
 		cmd, args := msg.CommandArgs()
-		if strings.ToLower(cmd) == "/ask" {
+		cmdLower := strings.ToLower(cmd)
+
+		if cmdLower == "/ask" {
 			if len(args) == 0 {
 				if e.channel != nil {
 					_ = e.channel.Send(ctx, domain.OutboundMessage{
@@ -213,6 +215,14 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 			return e.executeTurn(ctx, msg, true)
 		}
 
+		if cmdLower == "/new" {
+			return e.handleNewSessionTurn(ctx, msg, args)
+		}
+
+		if (cmdLower == "/c" || cmdLower == "/conversations") && len(args) > 0 && strings.ToLower(args[0]) == "new" {
+			return e.handleNewSessionTurn(ctx, msg, args[1:])
+		}
+
 		outbound, err := e.HandleCommand(ctx, msg)
 		if err != nil {
 			return err
@@ -223,6 +233,42 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 		return nil
 	}
 
+	return e.executeTurn(ctx, msg, false)
+}
+
+func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalMessage, args []string) error {
+	sessionKey := msg.SessionKey()
+
+	if e.HasActiveTurn(sessionKey) {
+		if e.channel != nil {
+			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				BotID:            msg.BotID,
+				ChatID:           msg.Chat.ID,
+				ThreadID:         msg.Chat.ThreadID,
+				Text:             "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation.",
+				ParseMode:        "HTML",
+				ReplyToMessageID: msg.ID,
+			})
+		}
+		return nil
+	}
+
+	// 1. Reset active conversation in session
+	defaultAgent := "agyent"
+	if msg.BindAgent != "" {
+		defaultAgent = msg.BindAgent
+	}
+	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
+	if err == nil {
+		session.ResetActiveConversationID()
+		_ = e.storage.SaveSession(ctx, session)
+	}
+
+	// 2. Prepare proactive greeting prompt with optional topic
+	topic := strings.TrimSpace(strings.Join(args, " "))
+	msg.Text = BuildNewSessionGreetingPrompt(topic)
+
+	// 3. Execute Turn to proactively greet user and establish the new conversation
 	return e.executeTurn(ctx, msg, false)
 }
 

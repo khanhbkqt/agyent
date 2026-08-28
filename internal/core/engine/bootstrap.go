@@ -104,6 +104,22 @@ func BuildBootstrapPrompt(agent *domain.Agent, sender domain.SenderUser, userMsg
 	return fmt.Sprintf(genesisOnboardingPromptTemplate, agent.WorkspacePath, userInfo, userMsg, agent.Name, agentDesc, agent.WorkspacePath)
 }
 
+// BuildNewSessionGreetingPrompt creates the directive prompt when a new conversation session is initialized via /new.
+func BuildNewSessionGreetingPrompt(topic string) string {
+	topic = strings.TrimSpace(topic)
+	if topic != "" {
+		return fmt.Sprintf("[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]\n"+
+			"The user has initiated a fresh conversation session with the specific topic/goal: %q.\n"+
+			"Proactively greet the user warmly and in character according to your core identity and soul directives. "+
+			"Acknowledge the topic, confirm your readiness, and ask how you can help get started or propose the first steps.", topic)
+	}
+	return "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]\n" +
+		"The user has initiated a fresh conversation session.\n" +
+		"Proactively greet the user warmly, naturally, and in character according to your core identity and soul directives. " +
+		"Briefly introduce your readiness in the current workspace/scope, and ask how you can assist them today."
+}
+
+
 // LoadAgentKnowledgeDirectives reads IDENTITY.md, SOUL.md, USER.md, MEMORY.md, memory/YYYY-MM-DD.md, and AGENTS.md from the agent's workspace directory
 // and formats them into a system directives block to inject directly into the prompt context.
 func LoadAgentKnowledgeDirectives(workspaceDir string) string {

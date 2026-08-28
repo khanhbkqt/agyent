@@ -432,6 +432,22 @@ func generateAutoTitle(snippet string) string {
 		return "Cuộc trò chuyện mới"
 	}
 
+	// Check for system initialization directives
+	if strings.Contains(clean, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]") {
+		if idx := strings.Index(clean, "topic/goal: \""); idx != -1 {
+			sub := clean[idx+len("topic/goal: \""):]
+			if endIdx := strings.Index(sub, "\""); endIdx != -1 {
+				clean = strings.TrimSpace(sub[:endIdx])
+			} else {
+				clean = "Cuộc trò chuyện mới"
+			}
+		} else {
+			clean = "Cuộc trò chuyện mới"
+		}
+	} else if strings.Contains(clean, "[SYSTEM BOOTSTRAP PROTOCOL") {
+		clean = "Genesis Bootstrap"
+	}
+
 	// Take first line only
 	if idx := strings.IndexAny(clean, "\r\n"); idx != -1 {
 		clean = strings.TrimSpace(clean[:idx])
