@@ -11,6 +11,15 @@ type TokenUsage struct {
 	TotalTokens     int `json:"total_tokens"`
 }
 
+// GrossInputTokens returns the total cumulative input tokens evaluated by the model across all tool-call iterations in the turn(s).
+func (t TokenUsage) GrossInputTokens() int {
+	if t.CacheReadTokens > t.InputTokens {
+		// Multi-step tool calls accumulated cache reads across iterations while InputTokens is snapshot context
+		return t.CacheReadTokens + t.InputTokens
+	}
+	return t.InputTokens
+}
+
 // UncachedInputTokens returns the amount of input tokens that were processed fresh (not read from cache).
 func (t TokenUsage) UncachedInputTokens() int {
 	if t.InputTokens >= t.CacheReadTokens {
@@ -21,19 +30,34 @@ func (t TokenUsage) UncachedInputTokens() int {
 
 // CacheHitRatio returns the percentage of input tokens served from KV-cache (0.0% to 100.0%).
 func (t TokenUsage) CacheHitRatio() float64 {
-	if t.InputTokens <= 0 {
+	grossInput := t.GrossInputTokens()
+	if grossInput <= 0 {
 		return 0.0
 	}
-	return (float64(t.CacheReadTokens) / float64(t.InputTokens)) * 100.0
+	ratio := (float64(t.CacheReadTokens) / float64(grossInput)) * 100.0
+	if ratio > 100.0 {
+		return 100.0
+	}
+	return ratio
 }
 
 // EffectiveCostSavingsRatio computes estimated monetary/resource savings ratio based on Gemini caching discount (cache read = 25% cost of standard input).
 func (t TokenUsage) EffectiveCostSavingsRatio() float64 {
-	if t.InputTokens <= 0 {
+	grossInput := t.GrossInputTokens()
+	if grossInput <= 0 {
 		return 0.0
 	}
 	savedEquivalentTokens := float64(t.CacheReadTokens) * 0.75
-	return (savedEquivalentTokens / float64(t.InputTokens)) * 100.0
+	ratio := (savedEquivalentTokens / float64(grossInput)) * 100.0
+	if ratio > 75.0 {
+		return 75.0 // Maximum possible discount on 100% cache hit with 0.25x price is 75%
+	}
+	return ratio
+}
+
+// EffectiveTotalTokens returns total gross billed tokens taking into account gross evaluated input.
+func (t TokenUsage) EffectiveTotalTokens() int {
+	return t.GrossInputTokens() + t.OutputTokens
 }
 
 // AuditLog tracks execution history, latency, token metrics, and operational status.

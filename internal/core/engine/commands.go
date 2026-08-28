@@ -377,24 +377,28 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 	if convStats != nil && convStats.TotalTokens > 0 {
 		hitRatio := convStats.CacheHitRatio()
 		costSaved := convStats.EffectiveCostSavingsRatio()
+		grossInput := convStats.GrossInputTokens()
+		grossTotal := convStats.EffectiveTotalTokens()
 
 		sb.WriteString("🧵 **Conversation Cumulative Billed:**\n")
-		sb.WriteString(fmt.Sprintf("• **Total Input Billed:** %s\n", formatNumber(convStats.InputTokens)))
-		sb.WriteString(fmt.Sprintf("• **⚡ Total Cache Read:** %s (%.1f%%)\n", formatNumber(convStats.CacheReadTokens), hitRatio))
-		sb.WriteString(fmt.Sprintf("• **Total Fresh Input:** %s\n", formatNumber(convStats.UncachedInputTokens())))
+		sb.WriteString(fmt.Sprintf("• **Total Input Evaluated:** %s tokens\n", formatNumber(grossInput)))
+		sb.WriteString(fmt.Sprintf("• **⚡ Total Cache Read:** %s (%.1f%% Cache Hit)\n", formatNumber(convStats.CacheReadTokens), hitRatio))
+		sb.WriteString(fmt.Sprintf("• **Total Fresh Input:** %s tokens\n", formatNumber(convStats.UncachedInputTokens())))
 		sb.WriteString(fmt.Sprintf("• **Total Output Billed:** %s (Thinking: %s)\n", formatNumber(convStats.OutputTokens), formatNumber(convStats.ThinkingTokens)))
-		sb.WriteString(fmt.Sprintf("• **Total Billed Tokens:** %s\n", formatNumber(convStats.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **Total Billed Tokens:** %s\n", formatNumber(grossTotal)))
 		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Savings:** ~%.1f%% (Gemini 0.25x Cache)\n\n", costSaved))
 	}
 
 	if sessionStats != nil && sessionStats.TotalTokens > 0 {
 		sessionHitRatio := sessionStats.CacheHitRatio()
 		sessionCostSaved := sessionStats.EffectiveCostSavingsRatio()
+		grossSessionInput := sessionStats.GrossInputTokens()
+		grossSessionTotal := sessionStats.EffectiveTotalTokens()
 
 		sb.WriteString("🌐 **Session Lifetime:**\n")
-		sb.WriteString(fmt.Sprintf("• **Lifetime Input:** %s | **Cached:** %s (%.1f%%)\n", formatNumber(sessionStats.InputTokens), formatNumber(sessionStats.CacheReadTokens), sessionHitRatio))
+		sb.WriteString(fmt.Sprintf("• **Lifetime Input:** %s | **Cached:** %s (%.1f%%)\n", formatNumber(grossSessionInput), formatNumber(sessionStats.CacheReadTokens), sessionHitRatio))
 		sb.WriteString(fmt.Sprintf("• **Lifetime Output:** %s | **Thinking:** %s\n", formatNumber(sessionStats.OutputTokens), formatNumber(sessionStats.ThinkingTokens)))
-		sb.WriteString(fmt.Sprintf("• **Lifetime Total:** %s (Net Savings: ~%.1f%%)\n", formatNumber(sessionStats.TotalTokens), sessionCostSaved))
+		sb.WriteString(fmt.Sprintf("• **Lifetime Total:** %s (Net Savings: ~%.1f%%)\n", formatNumber(grossSessionTotal), sessionCostSaved))
 	}
 
 	sb.WriteString("\n💡 _Tip: Type `/tokens stats` or `/stats [agent_name]` for full temporal analytics & compaction efficiency report._")
@@ -421,7 +425,7 @@ func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session
 	if report.TodayTurns > 0 {
 		todayHit := report.TodayUsage.CacheHitRatio()
 		todaySaved := report.TodayUsage.EffectiveCostSavingsRatio()
-		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.TodayTurns, formatNumber(report.TodayUsage.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.TodayTurns, formatNumber(report.TodayUsage.EffectiveTotalTokens())))
 		sb.WriteString(fmt.Sprintf("• **⚡ Cache Read:** %s (%.1f%% Hit Rate)\n", formatNumber(report.TodayUsage.CacheReadTokens), todayHit))
 		sb.WriteString(fmt.Sprintf("• **Fresh Input:** %s | **Output:** %s\n", formatNumber(report.TodayUsage.UncachedInputTokens()), formatNumber(report.TodayUsage.OutputTokens)))
 		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Saved:** ~%.1f%%\n\n", todaySaved))
@@ -434,7 +438,7 @@ func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session
 	if report.Past7DaysTurns > 0 {
 		p7Hit := report.Past7DaysUsage.CacheHitRatio()
 		p7Saved := report.Past7DaysUsage.EffectiveCostSavingsRatio()
-		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.Past7DaysTurns, formatNumber(report.Past7DaysUsage.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.Past7DaysTurns, formatNumber(report.Past7DaysUsage.EffectiveTotalTokens())))
 		sb.WriteString(fmt.Sprintf("• **⚡ Cache Read:** %s (%.1f%% Hit Rate)\n", formatNumber(report.Past7DaysUsage.CacheReadTokens), p7Hit))
 		sb.WriteString(fmt.Sprintf("• **Fresh Input:** %s | **Output:** %s\n", formatNumber(report.Past7DaysUsage.UncachedInputTokens()), formatNumber(report.Past7DaysUsage.OutputTokens)))
 		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Saved:** ~%.1f%%\n\n", p7Saved))
@@ -446,7 +450,7 @@ func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session
 	sb.WriteString("🌐 **All-Time Lifetime Totals:**\n")
 	if report.AllTimeTurns > 0 {
 		sb.WriteString(fmt.Sprintf("• **Total Executed Turns:** %d\n", report.AllTimeTurns))
-		sb.WriteString(fmt.Sprintf("• **Total Input Processed:** %s tokens\n", formatNumber(report.AllTimeUsage.InputTokens)))
+		sb.WriteString(fmt.Sprintf("• **Total Input Evaluated:** %s tokens\n", formatNumber(report.AllTimeUsage.GrossInputTokens())))
 		sb.WriteString(fmt.Sprintf("• **⚡ Total Cached Input:** %s (%.1f%% Lifetime Cache Hit)\n", formatNumber(report.AllTimeUsage.CacheReadTokens), report.AvgCacheHitRatio))
 		sb.WriteString(fmt.Sprintf("• **Total Output Produced:** %s (Thinking: %s)\n", formatNumber(report.AllTimeUsage.OutputTokens), formatNumber(report.AllTimeUsage.ThinkingTokens)))
 		sb.WriteString(fmt.Sprintf("• **💎 Net Resource Savings:** ~%.1f%% (Prefix KV-Cache Discount)\n\n", report.TotalCostSavedPct))
