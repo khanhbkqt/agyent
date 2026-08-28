@@ -8,7 +8,7 @@ $githubUrl = "https://github.com/$repo"
 $binaryName = "agyent.exe"
 
 Write-Host "=========================================================" -ForegroundColor Cyan
-Write-Host "   🚀 Installing agyent (Autonomous AI Assistant Gateway)" -ForegroundColor Cyan
+Write-Host "   ðŸš€ Installing agyent (Autonomous AI Assistant Gateway)" -ForegroundColor Cyan
 Write-Host "=========================================================" -ForegroundColor Cyan
 
 # 1. Detect Architecture
@@ -45,7 +45,7 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
 } catch {
-    Write-Host "❌ Failed to download release from $downloadUrl" -ForegroundColor Red
+    Write-Host "âŒ Failed to download release from $downloadUrl" -ForegroundColor Red
     Write-Host "Please check available releases at: $githubUrl/releases" -ForegroundColor Red
     exit 1
 }
@@ -69,7 +69,20 @@ if (-not (Test-Path $extractedBinary)) {
     }
 }
 
-Copy-Item -Path $extractedBinary -Destination (Join-Path $installDir $binaryName) -Force
+# Stop running instance if currently active
+Get-Process -Name "agyent" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 300
+
+$destFile = Join-Path $installDir $binaryName
+if (Test-Path $destFile) {
+    try {
+        Remove-Item -Path $destFile -Force -ErrorAction Stop
+    } catch {
+        $oldFile = "$destFile.old.$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+        Move-Item -Path $destFile -Destination $oldFile -Force -ErrorAction SilentlyContinue
+    }
+}
+Copy-Item -Path $extractedBinary -Destination $destFile -Force
 
 # Cleanup temp files
 Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
@@ -93,7 +106,7 @@ if (Test-Path $installedExe) {
 
 Write-Host ""
 Write-Host "=========================================================" -ForegroundColor Green
-Write-Host "   🎉 agyent has been successfully installed!" -ForegroundColor Green
+Write-Host "   ðŸŽ‰ agyent has been successfully installed!" -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor White

@@ -6,7 +6,7 @@ GITHUB_URL="https://github.com/${REPO}"
 BINARY_NAME="agyent"
 
 echo "========================================================="
-echo "   🚀 Installing agyent (Autonomous AI Assistant Gateway)"
+echo "   ðŸš€ Installing agyent (Autonomous AI Assistant Gateway)"
 echo "========================================================="
 
 # 1. Detect OS
@@ -14,7 +14,7 @@ OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "${OS}" in
     linux*)     TARGET_OS="linux" ;;
     darwin*)    TARGET_OS="darwin" ;;
-    *)          echo "❌ Unsupported operating system: ${OS}"; exit 1 ;;
+    *)          echo "âŒ Unsupported operating system: ${OS}"; exit 1 ;;
 esac
 
 # 2. Detect Architecture
@@ -22,7 +22,7 @@ ARCH="$(uname -m)"
 case "${ARCH}" in
     x86_64|amd64)   TARGET_ARCH="amd64" ;;
     arm64|aarch64)  TARGET_ARCH="arm64" ;;
-    *)              echo "❌ Unsupported architecture: ${ARCH}"; exit 1 ;;
+    *)              echo "âŒ Unsupported architecture: ${ARCH}"; exit 1 ;;
 esac
 
 echo "Detected platform: ${TARGET_OS}-${TARGET_ARCH}"
@@ -53,7 +53,7 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 
 echo "Downloading ${ARCHIVE_NAME}..."
 if ! curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ARCHIVE_NAME}"; then
-    echo "❌ Failed to download release from ${DOWNLOAD_URL}"
+    echo "âŒ Failed to download release from ${DOWNLOAD_URL}"
     echo "Please check if the release exists on GitHub: ${GITHUB_URL}/releases"
     exit 1
 fi
@@ -90,7 +90,7 @@ if command -v agyent >/dev/null 2>&1; then
 elif [ -x "${INSTALL_DIR}/${BINARY_NAME}" ]; then
     "${INSTALL_DIR}/${BINARY_NAME}" version
     echo ""
-    echo "⚠️ Note: ${INSTALL_DIR} is not in your PATH."
+    echo "âš ï¸ Note: ${INSTALL_DIR} is not in your PATH."
     echo "Add it by running:"
     echo "  export PATH=\"\$PATH:${INSTALL_DIR}\""
     echo "  echo 'export PATH=\"\$PATH:${INSTALL_DIR}\"' >> ~/.bashrc (or ~/.zshrc)"
@@ -98,7 +98,7 @@ fi
 
 echo ""
 echo "========================================================="
-echo "   🎉 agyent has been successfully installed!"
+echo "   ðŸŽ‰ agyent has been successfully installed!"
 echo "========================================================="
 echo ""
 echo "Next steps:"
