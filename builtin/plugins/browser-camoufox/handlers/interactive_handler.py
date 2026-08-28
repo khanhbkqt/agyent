@@ -121,26 +121,41 @@ def handle_act(
             dismiss_cookie_banners(page)
 
         elif action_clean == "click":
-            # Resolve target element
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-
-            if locator and locator.count() > 0:
-                box = locator.first.bounding_box()
-                if box:
-                    cx = box["x"] + box["width"] / 2
-                    cy = box["y"] + box["height"] / 2
+            # Resolve target element or explicit (x, y) coordinate
+            if target_id is not None and "," in str(target_id):
+                try:
+                    parts = str(target_id).split(",")
+                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
                     human_click(page, cx, cy)
-                else:
-                    locator.first.click()
+                except Exception:
+                    human_click(page, 400, 300)
+            elif value is not None and "," in str(value):
+                try:
+                    parts = str(value).split(",")
+                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
+                    human_click(page, cx, cy)
+                except Exception:
+                    human_click(page, 400, 300)
             else:
-                # Fallback center click
-                human_click(page, 400, 300)
+                locator = None
+                if target_id is not None:
+                    tid = str(target_id).strip()
+                    if tid.isdigit():
+                        locator = page.locator(f'[data-agy-id="{tid}"]')
+                    else:
+                        locator = page.locator(tid)
+
+                if locator and locator.count() > 0:
+                    box = locator.first.bounding_box()
+                    if box:
+                        cx = box["x"] + box["width"] / 2
+                        cy = box["y"] + box["height"] / 2
+                        human_click(page, cx, cy)
+                    else:
+                        locator.first.click()
+                else:
+                    # Fallback center click
+                    human_click(page, 400, 300)
 
             # Wait a short moment for possible page transition
             time.sleep(0.5)

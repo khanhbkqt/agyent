@@ -346,6 +346,24 @@ func TestResolveAgentWorkspace(t *testing.T) {
 	assert.Equal(t, filepath.Join(baseDir, "workspace-researcher"), config.ResolveAgentWorkspace(baseDir, "researcher"))
 }
 
+func TestMigrateLegacyWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, "agents", "workspace")
+	targetDir := filepath.Join(tmpDir, "workspace")
+
+	require.NoError(t, os.MkdirAll(legacyDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "IDENTITY.md"), []byte("# Identity"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "SOUL.md"), []byte("# Soul"), 0644))
+
+	// Migrate
+	err := config.MigrateLegacyWorkspace(tmpDir)
+	require.NoError(t, err)
+
+	// Check migrated files exist in targetDir
+	assert.FileExists(t, filepath.Join(targetDir, "IDENTITY.md"))
+	assert.FileExists(t, filepath.Join(targetDir, "SOUL.md"))
+}
+
 func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 	t.Run("Legacy Single Bot Fallback", func(t *testing.T) {
 		tg := config.TelegramConfig{

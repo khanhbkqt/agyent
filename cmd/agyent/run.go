@@ -108,6 +108,7 @@ var runCmd = &cobra.Command{
 		secMgr := securityAdapter.NewManager(cfg.Security, channel.HITLCoordinator(), mainLogger)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
 
+		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)
 		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")
 		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(starterWS, "", mainLogger); err != nil {
 			mainLogger.Debug("Provisioned starter workspace hooks", "workspace", starterWS, "error", err)

@@ -452,6 +452,40 @@ func ResolveAgentWorkspace(agentsDir, agentName string) string {
 	return filepath.Join(agentsDir, fmt.Sprintf("workspace-%s", agentName))
 }
 
+// MigrateLegacyWorkspace checks if persona files exist in a legacy workspace directory
+// (e.g. ~/.agyent/agents/workspace) and seamlessly copies them to the active workspace
+// (~/.agyent/workspace) if the target workspace lacks core directive files.
+func MigrateLegacyWorkspace(agentsDir string) error {
+	if agentsDir == "" {
+		return nil
+	}
+	targetWorkspace := ResolveAgentWorkspace(agentsDir, "agyent")
+	legacyWorkspace := filepath.Join(agentsDir, "agents", "workspace")
+
+	// If legacy workspace exists and target workspace is missing IDENTITY.md
+	if info, err := os.Stat(legacyWorkspace); err == nil && info.IsDir() {
+		targetIdentity := filepath.Join(targetWorkspace, "IDENTITY.md")
+		if _, err := os.Stat(targetIdentity); os.IsNotExist(err) {
+			_ = os.MkdirAll(targetWorkspace, 0755)
+			entries, err := os.ReadDir(legacyWorkspace)
+			if err == nil {
+				for _, entry := range entries {
+					src := filepath.Join(legacyWorkspace, entry.Name())
+					dst := filepath.Join(targetWorkspace, entry.Name())
+					if !entry.IsDir() {
+						if _, err := os.Stat(dst); os.IsNotExist(err) {
+							if data, err := os.ReadFile(src); err == nil {
+								_ = os.WriteFile(dst, data, 0644)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // ExpandPath expands leading ~ with the user's home directory.
 func ExpandPath(path string) (string, error) {
 	if path == "" {

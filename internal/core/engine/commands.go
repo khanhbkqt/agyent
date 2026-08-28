@@ -894,7 +894,11 @@ func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Sess
 		if len(args) > 2 {
 			projPath = args[2]
 		} else {
-			projPath = filepath.Join(e.cfg.Storage.AgentsDir, session.ActiveAgent, "projects", projName)
+			agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+			if agent, err := e.storage.GetAgent(ctx, session.ActiveAgent); err == nil && agent != nil && agent.WorkspacePath != "" {
+				agentPath = agent.WorkspacePath
+			}
+			projPath = filepath.Join(agentPath, "projects", projName)
 		}
 
 		projPath, _ = filepath.Abs(projPath)
