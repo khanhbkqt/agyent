@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.3] - 2026-08-28
+
+### Added
+- **Proactive Agent Genesis Greeting on `/new` & `/reset`:** When starting or resetting a conversation via `/new` or `/reset`, the engine now automatically bootstraps the session and triggers a proactive greeting turn (`ComposeBootstrapTurnPrompt`), introducing the active agent persona, presenting quick capabilities, and greeting the user immediately without waiting for an initial prompt.
+- **Auto-Migration for Legacy Directives:** Added automatic migration of legacy directive files (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`) into standardized agent workspace directories upon engine initialization.
+
+### Fixed
+- **Agent Workspace & Project Path Resolution:** Fixed workspace path resolution for custom project directories and default workspace fallback paths in agent domain models and configuration loaders.
+- **Browser Camoufox Interactive Element Targeting:** Enhanced interactive handler element targeting and XPath robustness in `builtin/plugins/browser-camoufox`.
+
+---
+
 ## [1.0.2] - 2026-08-27
 
 ### Added
