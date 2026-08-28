@@ -27,6 +27,9 @@ type HookOutput struct {
 }
 
 func TestBinary_LiveRealWorldScenarios(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live binary e2e tests in short mode")
+	}
 	exePath := filepath.Join("..", "..", "bin", "agyent.exe")
 	if _, err := os.Stat(exePath); err != nil {
 		exePath = filepath.Join("bin", "agyent.exe")

@@ -119,7 +119,6 @@ func BuildNewSessionGreetingPrompt(topic string) string {
 		"Briefly introduce your readiness in the current workspace/scope, and ask how you can assist them today."
 }
 
-
 // LoadAgentKnowledgeDirectives reads IDENTITY.md, SOUL.md, USER.md, MEMORY.md, memory/YYYY-MM-DD.md, and AGENTS.md from the agent's workspace directory
 // and formats them into a system directives block to inject directly into the prompt context.
 func LoadAgentKnowledgeDirectives(workspaceDir string) string {

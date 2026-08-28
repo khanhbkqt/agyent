@@ -1020,4 +1020,3 @@ func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusInitialized, dbAgent.Status)
 }
-

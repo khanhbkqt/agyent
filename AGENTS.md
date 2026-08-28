@@ -58,6 +58,8 @@ agyent/
 │   ├── root.go               # Cobra root command setup & global flags
 │   ├── init.go               # 'agyent init' interactive setup wizard
 │   ├── run.go                # 'agyent run' gateway daemon runner
+│   ├── doctor.go             # 'agyent doctor' / 'docter' diagnostic & quota triage
+│   ├── update.go             # 'agyent update' / 'upgrade' self-updater & notices
 │   ├── hook.go               # 'agyent hook-bridge' native hook bridge
 │   ├── register_commands.go  # 'agyent register-commands' Telegram command sync
 │   └── version.go            # 'agyent version' build metadata
@@ -66,6 +68,8 @@ agyent/
 │   ├── config/               # Configuration structs, validation & YAML persistence
 │   ├── logger/               # Structured logging setup via Go 'log/slog'
 │   ├── wizard/               # Interactive terminal wizard (charmbracelet/huh)
+│   ├── doctor/               # Modular diagnostic engine, health checks & auto-fix
+│   ├── updater/              # Self-updater, GitHub releases & version notices
 │   │
 │   ├── core/                 # Core Domain & Pure Business Logic (No External Drivers)
 │   │   ├── domain/           # Canonical models (Agent, User, Session, Conversation, Audit, Security)

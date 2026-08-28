@@ -237,4 +237,3 @@ func TestBuildNewSessionGreetingPrompt(t *testing.T) {
 	assert.Contains(t, promptWithTopic, "Thiết kế Database mới")
 	assert.Contains(t, promptWithTopic, "Acknowledge the topic")
 }
-
