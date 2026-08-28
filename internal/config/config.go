@@ -62,6 +62,8 @@ type AGYConfig struct {
 	DangerouslySkipPermissions       bool              `yaml:"dangerously_skip_permissions" json:"dangerously_skip_permissions"`
 	StreamingEnabled                 bool              `yaml:"streaming_enabled" json:"streaming_enabled"`
 	StreamingThrottleIntervalSeconds float64           `yaml:"streaming_throttle_interval_seconds" json:"streaming_throttle_interval_seconds"`
+	AutoCompact                      bool              `yaml:"auto_compact" json:"auto_compact"`
+	CompactThresholdRatio            float64           `yaml:"compact_threshold_ratio" json:"compact_threshold_ratio"`
 }
 
 // StorageConfig contains SQLite and filesystem workspace storage configuration.
@@ -208,6 +210,8 @@ func DefaultConfig() *Config {
 			DangerouslySkipPermissions:       true,
 			StreamingEnabled:                 true,
 			StreamingThrottleIntervalSeconds: 1.5,
+			AutoCompact:                      true,
+			CompactThresholdRatio:            0.70,
 		},
 		Storage: StorageConfig{
 			DBPath:                   "~/.agyent/agyent.db",
@@ -777,6 +781,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("AGYENT_AGY_STREAMING_THROTTLE_INTERVAL_SECONDS"); v != "" {
 		if d, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.AGY.StreamingThrottleIntervalSeconds = d
+		}
+	}
+	if v := os.Getenv("AGYENT_AGY_AUTO_COMPACT"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.AGY.AutoCompact = b
+		}
+	}
+	if v := os.Getenv("AGYENT_AGY_COMPACT_THRESHOLD_RATIO"); v != "" {
+		if d, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.AGY.CompactThresholdRatio = d
 		}
 	}
 

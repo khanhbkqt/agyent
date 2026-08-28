@@ -42,6 +42,9 @@ type Engine struct {
 	turnsMu     sync.Mutex
 	activeTurns map[string]context.CancelFunc
 
+	compactionMu            sync.RWMutex
+	pendingCompactedDigests map[string]string
+
 	inboundChan chan domain.CanonicalMessage
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -65,21 +68,22 @@ func NewEngine(
 	ctx, cancel := context.WithCancel(context.Background())
 
 	e := &Engine{
-		cfg:             cfg,
-		storage:         storage,
-		runner:          runner,
-		channel:         channel,
-		eventBus:        eventBus,
-		debouncer:       debouncer,
-		lockManager:     lockManager,
-		contextResolver: contextResolver,
-		mcpRegistry:     mcpRegistry,
-		pluginManager:   pluginManager,
-		activeTurns:     make(map[string]context.CancelFunc),
-		inboundChan:     make(chan domain.CanonicalMessage, 200),
-		ctx:             ctx,
-		cancel:          cancel,
-		startTime:       time.Now(),
+		cfg:                     cfg,
+		storage:                 storage,
+		runner:                  runner,
+		channel:                 channel,
+		eventBus:                eventBus,
+		debouncer:               debouncer,
+		lockManager:             lockManager,
+		contextResolver:         contextResolver,
+		mcpRegistry:             mcpRegistry,
+		pluginManager:           pluginManager,
+		activeTurns:             make(map[string]context.CancelFunc),
+		pendingCompactedDigests: make(map[string]string),
+		inboundChan:             make(chan domain.CanonicalMessage, 200),
+		ctx:                     ctx,
+		cancel:                  cancel,
+		startTime:               time.Now(),
 	}
 
 	if cfg != nil {
@@ -129,6 +133,28 @@ func (e *Engine) SetSecurityManager(sec ports.SecurityManagerPort) {
 // GetSecurityManager returns the active security manager instance.
 func (e *Engine) GetSecurityManager() ports.SecurityManagerPort {
 	return e.securityManager
+}
+
+// SetPendingCompactionDigest records a continuity digest for a session to be injected on the next turn.
+func (e *Engine) SetPendingCompactionDigest(sessionKey, digest string) {
+	e.compactionMu.Lock()
+	defer e.compactionMu.Unlock()
+	if e.pendingCompactedDigests == nil {
+		e.pendingCompactedDigests = make(map[string]string)
+	}
+	e.pendingCompactedDigests[sessionKey] = digest
+}
+
+// GetAndClearPendingCompactionDigest retrieves and clears any staged continuity digest for a session.
+func (e *Engine) GetAndClearPendingCompactionDigest(sessionKey string) string {
+	e.compactionMu.Lock()
+	defer e.compactionMu.Unlock()
+	if e.pendingCompactedDigests == nil {
+		return ""
+	}
+	digest := e.pendingCompactedDigests[sessionKey]
+	delete(e.pendingCompactedDigests, sessionKey)
+	return digest
 }
 
 // Start initializes inbound channel consumption and begins background turn processing.
@@ -526,11 +552,15 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			promptText = ComposeContinuationPrompt(msg, temporalTag)
 		} else {
 			// Fresh Turn (ConversationID is empty or Ephemeral mode): inject full Level 0-4 foundation and directives.
+			pendingDigest := e.GetAndClearPendingCompactionDigest(sessionKey)
 			if resolved != nil {
-				promptText = ComposeResolvedTurnPrompt(resolved, msg, temporalTag)
+				promptText = ComposeResolvedTurnPrompt(resolved, msg, temporalTag, pendingDigest)
 			} else {
 				knowledgeDirectives := LoadAgentKnowledgeDirectives(agent.WorkspacePath)
 				promptText = ComposeTurnPrompt(knowledgeDirectives, msg)
+				if pendingDigest != "" {
+					promptText = pendingDigest + "\n\n" + promptText
+				}
 			}
 		}
 	}
@@ -768,6 +798,36 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		agent.Status = domain.StatusInitialized
 		agent.UpdatedAt = time.Now()
 		_ = e.storage.SaveAgent(turnCtx, agent)
+	}
+
+	// Auto-Compact Watchdog Trigger: Check if input_tokens reached threshold
+	if auditStatus == "SUCCESS" && !isEphemeral && e.cfg != nil && e.cfg.AGY.AutoCompact && audit.Usage.InputTokens > 0 {
+		customAliases := make(map[string]string)
+		if e.cfg != nil {
+			customAliases = e.cfg.AGY.ModelAliases
+		}
+		capability, _, _ := domain.LookupModelCapability(resolvedModel, customAliases)
+		threshold := capability.EffectiveCompactThreshold()
+		if threshold > 0 && audit.Usage.InputTokens >= threshold {
+			slog.WarnContext(turnCtx, "Session context exceeded compact threshold, triggering auto-compaction",
+				slog.String("session_key", sessionKey),
+				slog.Int("input_tokens", audit.Usage.InputTokens),
+				slog.Int("threshold", threshold),
+				slog.String("model", resolvedModel),
+			)
+			if compRes, compErr := e.CompactSessionContext(turnCtx, session, agent, "auto-threshold"); compErr == nil && compRes != nil {
+				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					BotID:    msg.BotID,
+					ChatID:   msg.Chat.ID,
+					ThreadID: msg.Chat.ThreadID,
+					Text: fmt.Sprintf("🧹 **Auto-Compact Triggered:** Context utilization reached %.1f%% (%s / %s tokens).\nConversation has been archived and continuity digest preserved for subsequent turns.",
+						float64(audit.Usage.InputTokens)/float64(capability.EffectiveMaxContext())*100.0,
+						formatNumber(audit.Usage.InputTokens),
+						formatNumber(capability.EffectiveMaxContext()),
+					),
+				})
+			}
+		}
 	}
 
 	if e.eventBus != nil {

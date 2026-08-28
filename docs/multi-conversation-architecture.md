@@ -189,9 +189,10 @@ WHERE spc.conversation_id != '';
 | :--- | :--- | :--- |
 | **`/ask <prompt>`** | — | Isolated single-turn question (zero-pollution, no history saved, no `MEMORY.md` update). |
 | **`/c`** | `/conversations` | Open conversations menu with 1-touch buttons `[ 🔄 Switch ]`, `[ 📌 Pin ]`, `[ ➕ New ]`. |
+| **`/new`** | `/c new` | Initialize a fresh, clean conversation context. |
+| **`/compact [note]`** | `/compress` | **Compress active conversation** into a structured Level 4 continuity digest, archive old context, and reduce tokens by ~99%. |
 | **`/pin`** | `/c pin` | **Pin the active conversation immediately** (no parameters or IDs required). |
 | **`/unpin`** | `/c unpin` | **Unpin the active conversation**. |
-| **`/new`** | `/c new` | Initialize a fresh, clean conversation context. |
 | **`/c <1\|2\|3>`** | `/c switch <#>` | Fast-switch to conversation by sequential index (e.g. `/c 2`). |
 | **`/c rename <title>`**| `/c title` | Rename the title of the active conversation. |
 | **`/c archive`** | `/c close` | Archive the active conversation to hide it from the active menu. |

@@ -46,17 +46,17 @@ $$\text{Resolved}(Model, Effort) = \text{FirstNonEmpty}(T_1, T_2, T_3, T_4, T_5)
 
 ## 3. Model Capability Taxonomy
 
-Each model is characterized by a `ModelCapability` profile:
+Each model is characterized by a `ModelCapability` profile with explicit context window limits and compaction thresholds:
 
-| Model Canonical ID | Aliases | Display Name | Supported Efforts | Default Effort | Capability Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `gemini-3.7-flash` | `flash`, `fast`, `3.7-flash` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | Fast frontier multimodal & reasoning |
-| `gemini-3.1-pro` | `pro`, `smart`, `3.1-pro` | Gemini 3.1 Pro | `["low", "high"]` | `high` | Deep reasoning. **No medium effort** in agy. |
-| `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | High efficiency flash model |
-| `gemini-3.5-flash` | `3.5-flash`, `gemini-3.5` | Gemini 3.5 Flash | `["low", "medium", "high"]` | `high` | Stable flash model |
-| `claude-sonnet-4-6` | `claude`, `sonnet` | Claude Sonnet 4.6 | `[]` (None) | `""` (Omit flag) | **No effort**: Harness strips `--effort` entirely |
-| `claude-opus-4-6-thinking` | `opus`, `claude-opus` | Claude Opus 4.6 (Thinking) | `[]` (None) | `""` (Omit flag) | Built-in thinking; `--effort` flag rejected |
-| `gpt-oss-120b-medium` | `gpt-oss`, `oss-120b` | GPT-OSS 120B (Medium) | `[]` (None) | `""` (Omit flag) | Fixed medium model; `--effort` flag rejected |
+| Model Canonical ID | Aliases | Display Name | Supported Efforts | Default Effort | Max Context | Max Output | Auto-Compact Limit (70%) | Capability Notes |
+| :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
+| `gemini-3.7-flash` | `flash`, `fast`, `3.7-flash` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Fast frontier multimodal & reasoning |
+| `gemini-3.1-pro` | `pro`, `smart`, `3.1-pro` | Gemini 3.1 Pro | `["low", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Deep reasoning. **No medium effort** in agy. |
+| `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | High efficiency flash model |
+| `gemini-3.5-flash` | `3.5-flash`, `gemini-3.5` | Gemini 3.5 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Stable flash model |
+| `claude-sonnet-4-6` | `claude`, `sonnet` | Claude Sonnet 4.6 | `[]` (None) | `""` (Omit flag) | **200,000** | 8,192 | 140,000 | **No effort**: Harness strips `--effort` entirely |
+| `claude-opus-4-6-thinking` | `opus`, `claude-opus` | Claude Opus 4.6 (Thinking) | `[]` (None) | `""` (Omit flag) | **200,000** | 8,192 | 140,000 | Built-in thinking; `--effort` flag rejected |
+| `gpt-oss-120b-medium` | `gpt-oss`, `oss-120b` | GPT-OSS 120B (Medium) | `[]` (None) | `""` (Omit flag) | **128,000** | 16,384 | 89,600 | Fixed medium model; `--effort` flag rejected |
 
 ---
 

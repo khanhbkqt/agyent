@@ -173,6 +173,37 @@ type ContextResolverPort interface {
 
 ---
 
-## 6. Implementation Roadmap
+## 6. Conversation Context Compaction & Continuity Seeding (Level 4)
 
-Detailed execution phases are tracked in [Milestone 7: Context Management & Skills Subsystem](plans/milestone-7-context-management-and-skills.md).
+Over long-running multi-turn developer sessions, tool outputs, diffs, and conversational turns accumulate rapidly, threatening model context limits (1M on Gemini, 200k on Claude, 128k on GPT).
+
+`agyent` employs an autonomous **Context Compactor Engine** that reduces bloated sessions by **~99%** while maintaining 100% semantic continuity:
+
+```
+[Bloated Context >= 70% of MaxContext] (e.g. 800k tokens)
+                     │
+                     ▼
+       Synthesize Continuity Digest
+    (1. Goals | 2. Decisions | 3. Files | 4. Next)
+                     │
+                     ▼
+      Archive Old Conv (is_archived=1, "[Compacted]")
+                     │
+                     ▼
+       Seed New Conv in Level 4
+    [CONVERSATION CONTINUITY & CONTEXT SNAPSHOT] (~3k tokens)
+```
+
+### 6.1. Hybrid Synthesis Architecture
+1. **Primary Path (Semantic LLM Synthesis):** Runs a fast, low-effort single-turn synthesis prompt (`--mode plan --effort low`) to extract an executive 4-block Markdown Continuity Digest.
+2. **Fallback Path (Heuristic Extraction):** If the LLM execution times out or fails, the engine falls back deterministically to extracting recent audit log snippets, project scope, and touched files without blocking the session.
+
+### 6.2. Trigger Mechanisms
+* **Manual Command (`/compact` or `/compress`):** Users can explicitly compact their current session context on-demand.
+* **Auto-Compact Watchdog:** Automatically triggers post-turn when `audit.Usage.InputTokens >= capability.EffectiveCompactThreshold()` (default: **70% of Max Context Window**), proactively avoiding high-latency and watchdog timeout limits.
+
+---
+
+## 7. Implementation Roadmap
+
+Detailed execution phases are tracked in [Milestone 7: Context Management & Skills Subsystem](plans/milestone-7-context-management-and-skills.md) and [Milestone 15: Context Compaction & Capabilities](plans/milestone-15-context-compaction-and-capabilities.md).

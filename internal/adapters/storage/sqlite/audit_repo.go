@@ -196,3 +196,158 @@ func (s *SQLiteStore) GetTokenStats(ctx context.Context, sessionKey string, conv
 
 	return &usage, nil
 }
+
+// GetTokenEfficiencyReport aggregates session and global analytics over temporal windows and compaction metrics.
+func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey string) (*domain.TokenEfficiencyReport, error) {
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	midnightMilli := timeToMilli(midnight)
+	sevenDaysAgoMilli := timeToMilli(now.AddDate(0, 0, -7))
+
+	report := &domain.TokenEfficiencyReport{
+		SessionKey:  sessionKey,
+		GeneratedAt: now,
+	}
+
+	// 1. Today Usage & Turns
+	var todayWhere string
+	var todayArgs []any
+	if sessionKey != "" {
+		todayWhere = "WHERE session_key = ? AND created_at >= ?"
+		todayArgs = []any{sessionKey, midnightMilli}
+	} else {
+		todayWhere = "WHERE created_at >= ?"
+		todayArgs = []any{midnightMilli}
+	}
+	todayQuery := fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(thinking_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(total_tokens), 0)
+		FROM audit_logs
+		%s
+	`, todayWhere)
+	_ = s.reader().QueryRowContext(ctx, todayQuery, todayArgs...).Scan(
+		&report.TodayTurns,
+		&report.TodayUsage.InputTokens,
+		&report.TodayUsage.OutputTokens,
+		&report.TodayUsage.ThinkingTokens,
+		&report.TodayUsage.CacheReadTokens,
+		&report.TodayUsage.TotalTokens,
+	)
+
+	// 2. Past 7 Days Usage & Turns
+	var past7Where string
+	var past7Args []any
+	if sessionKey != "" {
+		past7Where = "WHERE session_key = ? AND created_at >= ?"
+		past7Args = []any{sessionKey, sevenDaysAgoMilli}
+	} else {
+		past7Where = "WHERE created_at >= ?"
+		past7Args = []any{sevenDaysAgoMilli}
+	}
+	past7Query := fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(thinking_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(total_tokens), 0)
+		FROM audit_logs
+		%s
+	`, past7Where)
+	_ = s.reader().QueryRowContext(ctx, past7Query, past7Args...).Scan(
+		&report.Past7DaysTurns,
+		&report.Past7DaysUsage.InputTokens,
+		&report.Past7DaysUsage.OutputTokens,
+		&report.Past7DaysUsage.ThinkingTokens,
+		&report.Past7DaysUsage.CacheReadTokens,
+		&report.Past7DaysUsage.TotalTokens,
+	)
+
+	// 3. All-Time Usage & Turns
+	var allWhere string
+	var allArgs []any
+	if sessionKey != "" {
+		allWhere = "WHERE session_key = ?"
+		allArgs = []any{sessionKey}
+	}
+	allQuery := fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(thinking_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(total_tokens), 0)
+		FROM audit_logs
+		%s
+	`, allWhere)
+	_ = s.reader().QueryRowContext(ctx, allQuery, allArgs...).Scan(
+		&report.AllTimeTurns,
+		&report.AllTimeUsage.InputTokens,
+		&report.AllTimeUsage.OutputTokens,
+		&report.AllTimeUsage.ThinkingTokens,
+		&report.AllTimeUsage.CacheReadTokens,
+		&report.AllTimeUsage.TotalTokens,
+	)
+
+	report.AvgCacheHitRatio = report.AllTimeUsage.CacheHitRatio()
+	report.TotalCostSavedPct = report.AllTimeUsage.EffectiveCostSavingsRatio()
+
+	// 4. Model Breakdown
+	modelQuery := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(model, ''), 'default'),
+		       COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(thinking_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(total_tokens), 0)
+		FROM audit_logs
+		%s
+		GROUP BY COALESCE(NULLIF(model, ''), 'default')
+		ORDER BY SUM(total_tokens) DESC
+	`, allWhere)
+
+	rows, err := s.reader().QueryContext(ctx, modelQuery, allArgs...)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var b domain.ModelTokenBreakdown
+			if err := rows.Scan(
+				&b.Model,
+				&b.TurnCount,
+				&b.Usage.InputTokens,
+				&b.Usage.OutputTokens,
+				&b.Usage.ThinkingTokens,
+				&b.Usage.CacheReadTokens,
+				&b.Usage.TotalTokens,
+			); err == nil {
+				cap, _, _ := domain.LookupModelCapability(b.Model, nil)
+				b.DisplayName = cap.DisplayName
+				if b.DisplayName == "" {
+					b.DisplayName = b.Model
+				}
+				report.ModelBreakdown = append(report.ModelBreakdown, b)
+			}
+		}
+	}
+
+	// 5. Compaction Savings
+	var compQuery string
+	var compArgs []any
+	if sessionKey != "" {
+		compQuery = "SELECT COUNT(*) FROM conversations WHERE session_key = ? AND is_archived = 1 AND title LIKE '[Compacted]%'"
+		compArgs = []any{sessionKey}
+	} else {
+		compQuery = "SELECT COUNT(*) FROM conversations WHERE is_archived = 1 AND title LIKE '[Compacted]%'"
+	}
+	_ = s.reader().QueryRowContext(ctx, compQuery, compArgs...).Scan(&report.TotalCompactions)
+	if report.TotalCompactions > 0 {
+		report.EstTokensSaved = int64(report.TotalCompactions) * 700000
+	}
+
+	return report, nil
+}

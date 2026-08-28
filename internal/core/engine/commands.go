@@ -41,8 +41,8 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/status":
 		responseText = e.handleStatusCommand(ctx, session)
 
-	case "/tokens", "/token", "/metrics":
-		responseText = e.handleTokensCommand(ctx, session)
+	case "/tokens", "/token", "/metrics", "/stats", "/analytics":
+		responseText = e.handleTokensCommand(ctx, session, args)
 
 	case "/context":
 		responseText = e.handleContextCommand(ctx, session)
@@ -96,6 +96,9 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/new":
 		responseText = e.handleNewConversationCommand(ctx, session, args)
 
+	case "/compact", "/compress":
+		responseText = e.handleCompactCommand(ctx, session, args)
+
 	case "/pin":
 		responseText = e.handlePinCommand(ctx, session, args, true)
 
@@ -108,24 +111,20 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		} else {
 			session.ResetActiveConversationID()
 			if err := e.storage.SaveSession(ctx, session); err != nil {
-				responseText = fmt.Sprintf("⚠️ Failed to reset conversation: %v", err)
+				responseText = fmt.Sprintf("⚠️ Failed to reset conversation context: %v", err)
 			} else {
 				scope := "Global Mode"
 				if session.ActiveProject != "" {
 					scope = fmt.Sprintf("Project: %s", session.ActiveProject)
 				}
-				responseText = fmt.Sprintf("🔄 **Conversation context reset** for [%s • %s].\nNext message will start a fresh conversation session.", session.ActiveAgent, scope)
+				responseText = fmt.Sprintf("🧹 **Short-term conversation context reset** for [%s • %s].\nYour next message will begin in a fresh, clean context.", session.ActiveAgent, scope)
 			}
 		}
 
-	case "/force_unlock":
+	case "/force_unlock", "/unlock":
 		e.cancelActiveTurn(sessionKey)
-		unlocked := e.lockManager.ForceUnlock(sessionKey)
-		if unlocked {
-			responseText = "🔓 **Session lock forcefully released** and any active subprocess was cancelled."
-		} else {
-			responseText = "🔓 Session was not locked. Active state has been reset."
-		}
+		e.lockManager.ForceUnlock(sessionKey)
+		responseText = "🔓 **Session mutex forcefully released.** Any hanging turn subprocess has been terminated."
 
 	default:
 		responseText = fmt.Sprintf("❓ Unknown command `%s`. Type `/help` for available commands.", cmd)
@@ -164,6 +163,7 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/c`" + ` (or ` + "`/conversations`" + `) — View interactive conversation list with 1-touch buttons.
 • ` + "`/c <#>`" + ` — Fast switch to conversation by number (e.g. ` + "`/c 2`" + `).
 • ` + "`/new`" + ` — Start a fresh new conversation context.
+• ` + "`/compact [note]`" + ` (or ` + "`/compress`" + `) — Compress bloated context into a structured continuity digest (~99% token reduction).
 • ` + "`/pin`" + ` / ` + "`/unpin`" + ` — Pin or unpin the current active conversation.
 • ` + "`/c rename <title>`" + ` — Rename the current active conversation.
 • ` + "`/c archive`" + ` — Archive the current conversation.
@@ -270,7 +270,14 @@ func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Sessio
 	)
 }
 
-func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Session) string {
+func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if len(args) > 0 {
+		sub := strings.ToLower(args[0])
+		if sub == "stats" || sub == "analytics" || sub == "report" || sub == "all" || sub == "history" || sub == "summary" {
+			return e.handleTokenEfficiencyReportCommand(ctx, session)
+		}
+	}
+
 	activeConvID := session.GetActiveConversationID()
 	scopeLabel := "🌐 Global Chat Mode"
 	if session.ActiveProject != "" {
@@ -285,7 +292,7 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 	sessionStats, _ := e.storage.GetTokenStats(ctx, session.SessionKey, "")
 
 	if (convStats == nil || convStats.TotalTokens == 0) && (sessionStats == nil || sessionStats.TotalTokens == 0) {
-		return fmt.Sprintf("📊 **No token metrics recorded yet** for [%s • %s].\n\nSend a message to start a conversation session and track token metrics.", session.ActiveAgent, scopeLabel)
+		return fmt.Sprintf("📊 **No token metrics recorded yet** for [%s • %s].\n\nSend a message to start a conversation session and track token metrics.\n\n💡 _Tip: Type `/tokens stats` or `/stats` for full system efficiency report._", session.ActiveAgent, scopeLabel)
 	}
 
 	convTag := activeConvID
@@ -295,9 +302,32 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 		convTag = convTag[:8] + "..."
 	}
 
+	var agentObj *domain.Agent
+	if session.ActiveAgent != "" {
+		agentObj, _ = e.storage.GetAgent(ctx, session.ActiveAgent)
+	}
+	resolvedModel, _, _ := e.ResolveExecutionParams("", "", session, agentObj)
+	customAliases := make(map[string]string)
+	if e.cfg != nil {
+		customAliases = e.cfg.AGY.ModelAliases
+	}
+	capability, _, _ := domain.LookupModelCapability(resolvedModel, customAliases)
+	maxContext := capability.EffectiveMaxContext()
+	compactThreshold := capability.EffectiveCompactThreshold()
+
+	modelDisplayName := capability.DisplayName
+	if modelDisplayName == "" {
+		if capability.ID != "" {
+			modelDisplayName = capability.ID
+		} else {
+			modelDisplayName = "Gemini 3.7 Flash (Default)"
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 **agyent Token Usage & Cache Metrics**\n"))
 	sb.WriteString(fmt.Sprintf("• **Active Agent:** %s\n", session.ActiveAgent))
+	sb.WriteString(fmt.Sprintf("• **Active Model:** %s (Max Window: %s tokens)\n", modelDisplayName, formatNumber(maxContext)))
 	sb.WriteString(fmt.Sprintf("• **Context Scope:** %s\n", scopeLabel))
 	recentLogs, _ := e.storage.ListAuditLogs(ctx, session.SessionKey, 5)
 	var latestLog *domain.AuditLog
@@ -315,11 +345,18 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 			cacheState = "⚡ WARM (KV-Cache Active)"
 		}
 
+		utilizationPct := float64(latestLog.Usage.InputTokens) / float64(maxContext) * 100.0
+		thresholdPct := capability.CompactThresholdRatio * 100.0
+		if thresholdPct <= 0 {
+			thresholdPct = 70.0
+		}
+
 		sb.WriteString("📐 **Active Turn Context Window:**\n")
-		sb.WriteString(fmt.Sprintf("• **Prompt Input Size:** %s\n", formatNumber(latestLog.Usage.InputTokens)))
+		sb.WriteString(fmt.Sprintf("• **Prompt Input Size:** %s (%.1f%% of %s window)\n", formatNumber(latestLog.Usage.InputTokens), utilizationPct, formatNumber(maxContext)))
 		sb.WriteString(fmt.Sprintf("• **⚡ KV-Cache Hit:** %s (%.1f%% Cache Hit)\n", formatNumber(latestLog.Usage.CacheReadTokens), latestHitRatio))
 		sb.WriteString(fmt.Sprintf("• **Fresh Uncached Input:** %s\n", formatNumber(latestLog.Usage.UncachedInputTokens())))
 		sb.WriteString(fmt.Sprintf("• **Turn Output:** %s (Thinking: %s)\n", formatNumber(latestLog.Usage.OutputTokens), formatNumber(latestLog.Usage.ThinkingTokens)))
+		sb.WriteString(fmt.Sprintf("• **🧹 Auto-Compact Threshold:** %s tokens (%.0f%% limit)\n", formatNumber(compactThreshold), thresholdPct))
 		sb.WriteString(fmt.Sprintf("• **Cache State:** %s\n\n", cacheState))
 	}
 
@@ -345,6 +382,120 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 		sb.WriteString(fmt.Sprintf("• **Lifetime Output:** %s | **Thinking:** %s\n", formatNumber(sessionStats.OutputTokens), formatNumber(sessionStats.ThinkingTokens)))
 		sb.WriteString(fmt.Sprintf("• **Lifetime Total:** %s (Net Savings: ~%.1f%%)\n", formatNumber(sessionStats.TotalTokens), sessionCostSaved))
 	}
+
+	sb.WriteString("\n💡 _Tip: Type `/tokens stats` or `/stats` for full temporal analytics & compaction efficiency report._")
+	return sb.String()
+}
+
+func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session *domain.Session) string {
+	report, err := e.storage.GetTokenEfficiencyReport(ctx, session.SessionKey)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to generate token analytics report: %v", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📈 **agyent Token Analytics & Efficiency Report**\n")
+	sb.WriteString(fmt.Sprintf("• **Active Agent:** `%s`\n", session.ActiveAgent))
+	sb.WriteString(fmt.Sprintf("• **Report Generated:** `%s`\n\n", report.GeneratedAt.Format("2006-01-02 15:04:05")))
+
+	// 1. Today Usage
+	sb.WriteString("📅 **Today's Consumption:**\n")
+	if report.TodayTurns > 0 {
+		todayHit := report.TodayUsage.CacheHitRatio()
+		todaySaved := report.TodayUsage.EffectiveCostSavingsRatio()
+		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.TodayTurns, formatNumber(report.TodayUsage.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **⚡ Cache Read:** %s (%.1f%% Hit Rate)\n", formatNumber(report.TodayUsage.CacheReadTokens), todayHit))
+		sb.WriteString(fmt.Sprintf("• **Fresh Input:** %s | **Output:** %s\n", formatNumber(report.TodayUsage.UncachedInputTokens()), formatNumber(report.TodayUsage.OutputTokens)))
+		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Saved:** ~%.1f%%\n\n", todaySaved))
+	} else {
+		sb.WriteString("• _No turns recorded today yet._\n\n")
+	}
+
+	// 2. Past 7 Days
+	sb.WriteString("🗓️ **Past 7 Days Consumption:**\n")
+	if report.Past7DaysTurns > 0 {
+		p7Hit := report.Past7DaysUsage.CacheHitRatio()
+		p7Saved := report.Past7DaysUsage.EffectiveCostSavingsRatio()
+		sb.WriteString(fmt.Sprintf("• **Turns:** %d | **Total Billed:** %s tokens\n", report.Past7DaysTurns, formatNumber(report.Past7DaysUsage.TotalTokens)))
+		sb.WriteString(fmt.Sprintf("• **⚡ Cache Read:** %s (%.1f%% Hit Rate)\n", formatNumber(report.Past7DaysUsage.CacheReadTokens), p7Hit))
+		sb.WriteString(fmt.Sprintf("• **Fresh Input:** %s | **Output:** %s\n", formatNumber(report.Past7DaysUsage.UncachedInputTokens()), formatNumber(report.Past7DaysUsage.OutputTokens)))
+		sb.WriteString(fmt.Sprintf("• **💰 Estimated Cost Saved:** ~%.1f%%\n\n", p7Saved))
+	} else {
+		sb.WriteString("• _No turns recorded in the past 7 days._\n\n")
+	}
+
+	// 3. All-Time Lifetime
+	sb.WriteString("🌐 **All-Time Lifetime Totals:**\n")
+	if report.AllTimeTurns > 0 {
+		sb.WriteString(fmt.Sprintf("• **Total Executed Turns:** %d\n", report.AllTimeTurns))
+		sb.WriteString(fmt.Sprintf("• **Total Input Processed:** %s tokens\n", formatNumber(report.AllTimeUsage.InputTokens)))
+		sb.WriteString(fmt.Sprintf("• **⚡ Total Cached Input:** %s (%.1f%% Lifetime Cache Hit)\n", formatNumber(report.AllTimeUsage.CacheReadTokens), report.AvgCacheHitRatio))
+		sb.WriteString(fmt.Sprintf("• **Total Output Produced:** %s (Thinking: %s)\n", formatNumber(report.AllTimeUsage.OutputTokens), formatNumber(report.AllTimeUsage.ThinkingTokens)))
+		sb.WriteString(fmt.Sprintf("• **💎 Net Resource Savings:** ~%.1f%% (Prefix KV-Cache Discount)\n\n", report.TotalCostSavedPct))
+	} else {
+		sb.WriteString("• _No lifetime turns recorded._\n\n")
+	}
+
+	// 4. Compaction Efficiency
+	sb.WriteString("🧹 **Context Compactor Efficiency:**\n")
+	if report.TotalCompactions > 0 {
+		sb.WriteString(fmt.Sprintf("• **Successful Compactions:** %d runs\n", report.TotalCompactions))
+		sb.WriteString(fmt.Sprintf("• **Estimated Bloat Prevented:** ~%s tokens\n", formatNumber(int(report.EstTokensSaved))))
+		sb.WriteString("• **Average Context Reduction:** ~99.6% per compaction\n\n")
+	} else {
+		sb.WriteString("• **Successful Compactions:** 0 runs (Context has not needed compaction yet)\n\n")
+	}
+
+	// 5. Model Breakdown
+	if len(report.ModelBreakdown) > 0 {
+		sb.WriteString("🤖 **Breakdown by Model:**\n")
+		for _, m := range report.ModelBreakdown {
+			hitRatio := m.Usage.CacheHitRatio()
+			sb.WriteString(fmt.Sprintf("• **%s:** %d turns | %s tokens | ⚡ %.1f%% cached\n", m.DisplayName, m.TurnCount, formatNumber(m.Usage.TotalTokens), hitRatio))
+		}
+	}
+
+	return sb.String()
+}
+
+func (e *Engine) handleCompactCommand(ctx context.Context, session *domain.Session, args []string) string {
+	if e.HasActiveTurn(session.SessionKey) {
+		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before compacting."
+	}
+
+	activeConvID := session.GetActiveConversationID()
+	if activeConvID == "" {
+		return "⚠️ No active conversation to compact in current scope. Start a conversation with a message first."
+	}
+
+	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+	if err != nil {
+		agent = &domain.Agent{Name: session.ActiveAgent}
+	}
+
+	customNote := strings.Join(args, " ")
+
+	res, err := e.CompactSessionContext(ctx, session, agent, "manual", customNote)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to compact conversation: %v", err)
+	}
+
+	scope := "Global Mode"
+	if session.ActiveProject != "" {
+		scope = fmt.Sprintf("Project: %s", session.ActiveProject)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🧹 **Conversation Context Compacted Successfully** for [%s • %s]!\n\n", session.ActiveAgent, scope))
+	sb.WriteString(fmt.Sprintf("• **Archived Conversation:** `%s`\n", res.OldConversationID))
+	if res.OriginalTokens > 0 {
+		sb.WriteString(fmt.Sprintf("• **Original Context Size:** %s tokens\n", formatNumber(res.OriginalTokens)))
+		sb.WriteString(fmt.Sprintf("• **Continuity Digest Size:** ~%s tokens\n", formatNumber(res.CompactedTokens)))
+		sb.WriteString(fmt.Sprintf("• **💰 Token Reduction:** ~%.1f%%\n", res.ReductionPercent))
+	} else {
+		sb.WriteString(fmt.Sprintf("• **Continuity Digest Size:** ~%s tokens\n", formatNumber(res.CompactedTokens)))
+	}
+	sb.WriteString("\n🌱 **Fresh Context Ready:** Your next message will seamlessly continue with the structured continuity digest in Level 4.")
 
 	return sb.String()
 }

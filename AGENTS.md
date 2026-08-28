@@ -134,14 +134,15 @@ When contributing or modifying code, agents **must adhere** to the following non
 - Use the `FlexTime` custom scanner in `internal/adapters/storage/sqlite/helpers.go` when scanning timestamps to safely handle both ISO-8601 strings and Unix epoch integers.
 - Use the **Dual-Pool SQLite Engine**: `writeDB` with `MaxOpenConns=1` (eliminating `SQLITE_BUSY` concurrency deadlocks) and `readDB` with `MaxOpenConns=20` for high parallel read throughput.
 
-### 4.2. Prefix KV-Cache Preservation
+### 4.2. Prefix KV-Cache Preservation & Context Compaction
 - To ensure optimal performance and ~75% cost savings on Gemini cached models, the prompt hierarchy **must maintain strict prefix ordering**:
   - **Level 0:** Static System Runtime Foundation (`[SYSTEM RUNTIME FOUNDATION]`) at Index 0.
   - **Level 1:** Global Core Directives (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `AGENTS.md`).
   - **Level 2:** Workspace Project Directives (`.agents/AGENTS.md`).
   - **Level 3:** Progressive Skills Index (~60 tokens/skill metadata header).
-  - **Level 4:** Temporal Context Marker & Current User Turn.
+  - **Level 4:** Temporal Context Marker, Previous Session Continuity Digest (upon `/compact` or auto-compaction), and Current User Turn.
 - Separate initial turns (`ComposeResolvedTurnPrompt`) from continuation turns (`ComposeContinuationPrompt`) to eliminate redundant directive serialization on subsequent turns.
+- Compacted Continuity Digests **must always reside in Level 4** to preserve Level 0–3 prefix invariance across all agents and sessions.
 
 ### 4.3. Workspace Isolation & Safe Process Execution
 - Subprocess executions must never pollute the product repository. Pass `--project outside-of-project --add-dir <workspaceDir>` when executing via the AGY harness.

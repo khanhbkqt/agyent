@@ -247,6 +247,12 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 		sb.WriteString("\n")
 	}
 
+	// Level 4: Previous Session Continuity Digest (if newly compacted)
+	if len(temporalTagOpt) > 1 && strings.TrimSpace(temporalTagOpt[1]) != "" {
+		sb.WriteString(strings.TrimSpace(temporalTagOpt[1]))
+		sb.WriteString("\n\n")
+	}
+
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("User Prompt: ")
 		sb.WriteString(msg.Text)
