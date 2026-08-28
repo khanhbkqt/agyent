@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agyent/internal/core/domain"
@@ -197,8 +198,8 @@ func (s *SQLiteStore) GetTokenStats(ctx context.Context, sessionKey string, conv
 	return &usage, nil
 }
 
-// GetTokenEfficiencyReport aggregates session and global analytics over temporal windows and compaction metrics.
-func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey string) (*domain.TokenEfficiencyReport, error) {
+// GetTokenEfficiencyReport aggregates session and global analytics over temporal windows, agent breakdown, and compaction metrics.
+func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey string, agentName string) (*domain.TokenEfficiencyReport, error) {
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	midnightMilli := timeToMilli(midnight)
@@ -206,19 +207,38 @@ func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey s
 
 	report := &domain.TokenEfficiencyReport{
 		SessionKey:  sessionKey,
+		AgentFilter: agentName,
 		GeneratedAt: now,
 	}
 
-	// 1. Today Usage & Turns
-	var todayWhere string
-	var todayArgs []any
+	// Base conditions
+	var baseClauses []string
+	var baseArgs []any
+
 	if sessionKey != "" {
-		todayWhere = "WHERE session_key = ? AND created_at >= ?"
-		todayArgs = []any{sessionKey, midnightMilli}
-	} else {
-		todayWhere = "WHERE created_at >= ?"
-		todayArgs = []any{midnightMilli}
+		baseClauses = append(baseClauses, "session_key = ?")
+		baseArgs = append(baseArgs, sessionKey)
 	}
+	if agentName != "" {
+		baseClauses = append(baseClauses, "agent_name = ?")
+		baseArgs = append(baseArgs, agentName)
+	}
+
+	buildWhere := func(extraClause string, extraArgs ...any) (string, []any) {
+		clauses := append([]string(nil), baseClauses...)
+		args := append([]any(nil), baseArgs...)
+		if extraClause != "" {
+			clauses = append(clauses, extraClause)
+			args = append(args, extraArgs...)
+		}
+		if len(clauses) == 0 {
+			return "", args
+		}
+		return "WHERE " + strings.Join(clauses, " AND "), args
+	}
+
+	// 1. Today Usage & Turns
+	todayWhere, todayArgs := buildWhere("created_at >= ?", midnightMilli)
 	todayQuery := fmt.Sprintf(`
 		SELECT COUNT(*),
 		       COALESCE(SUM(input_tokens), 0),
@@ -239,15 +259,7 @@ func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey s
 	)
 
 	// 2. Past 7 Days Usage & Turns
-	var past7Where string
-	var past7Args []any
-	if sessionKey != "" {
-		past7Where = "WHERE session_key = ? AND created_at >= ?"
-		past7Args = []any{sessionKey, sevenDaysAgoMilli}
-	} else {
-		past7Where = "WHERE created_at >= ?"
-		past7Args = []any{sevenDaysAgoMilli}
-	}
+	past7Where, past7Args := buildWhere("created_at >= ?", sevenDaysAgoMilli)
 	past7Query := fmt.Sprintf(`
 		SELECT COUNT(*),
 		       COALESCE(SUM(input_tokens), 0),
@@ -268,12 +280,7 @@ func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey s
 	)
 
 	// 3. All-Time Usage & Turns
-	var allWhere string
-	var allArgs []any
-	if sessionKey != "" {
-		allWhere = "WHERE session_key = ?"
-		allArgs = []any{sessionKey}
-	}
+	allWhere, allArgs := buildWhere("")
 	allQuery := fmt.Sprintf(`
 		SELECT COUNT(*),
 		       COALESCE(SUM(input_tokens), 0),
@@ -335,15 +342,55 @@ func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey s
 		}
 	}
 
-	// 5. Compaction Savings
-	var compQuery string
-	var compArgs []any
-	if sessionKey != "" {
-		compQuery = "SELECT COUNT(*) FROM conversations WHERE session_key = ? AND is_archived = 1 AND title LIKE '[Compacted]%'"
-		compArgs = []any{sessionKey}
-	} else {
-		compQuery = "SELECT COUNT(*) FROM conversations WHERE is_archived = 1 AND title LIKE '[Compacted]%'"
+	// 5. Agent Breakdown (if not already filtered to a single agent)
+	if agentName == "" {
+		agentWhere, agentArgs := buildWhere("")
+		agentQuery := fmt.Sprintf(`
+			SELECT COALESCE(NULLIF(agent_name, ''), 'default'),
+			       COUNT(*),
+			       COALESCE(SUM(input_tokens), 0),
+			       COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(thinking_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0),
+			       COALESCE(SUM(total_tokens), 0)
+			FROM audit_logs
+			%s
+			GROUP BY COALESCE(NULLIF(agent_name, ''), 'default')
+			ORDER BY SUM(total_tokens) DESC
+		`, agentWhere)
+
+		if aRows, err := s.reader().QueryContext(ctx, agentQuery, agentArgs...); err == nil {
+			defer aRows.Close()
+			for aRows.Next() {
+				var ab domain.AgentTokenBreakdown
+				if err := aRows.Scan(
+					&ab.AgentName,
+					&ab.TurnCount,
+					&ab.Usage.InputTokens,
+					&ab.Usage.OutputTokens,
+					&ab.Usage.ThinkingTokens,
+					&ab.Usage.CacheReadTokens,
+					&ab.Usage.TotalTokens,
+				); err == nil {
+					report.AgentBreakdown = append(report.AgentBreakdown, ab)
+				}
+			}
+		}
 	}
+
+	// 6. Compaction Savings
+	var compClauses []string
+	var compArgs []any
+	compClauses = append(compClauses, "is_archived = 1", "title LIKE '[Compacted]%'")
+	if sessionKey != "" {
+		compClauses = append(compClauses, "session_key = ?")
+		compArgs = append(compArgs, sessionKey)
+	}
+	if agentName != "" {
+		compClauses = append(compClauses, "agent_name = ?")
+		compArgs = append(compArgs, agentName)
+	}
+	compQuery := fmt.Sprintf("SELECT COUNT(*) FROM conversations WHERE %s", strings.Join(compClauses, " AND "))
 	_ = s.reader().QueryRowContext(ctx, compQuery, compArgs...).Scan(&report.TotalCompactions)
 	if report.TotalCompactions > 0 {
 		report.EstTokensSaved = int64(report.TotalCompactions) * 700000

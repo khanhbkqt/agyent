@@ -273,8 +273,22 @@ func (e *Engine) handleStatusCommand(ctx context.Context, session *domain.Sessio
 func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Session, args []string) string {
 	if len(args) > 0 {
 		sub := strings.ToLower(args[0])
-		if sub == "stats" || sub == "analytics" || sub == "report" || sub == "all" || sub == "history" || sub == "summary" {
-			return e.handleTokenEfficiencyReportCommand(ctx, session)
+		if sub == "stats" || sub == "analytics" || sub == "report" || sub == "history" || sub == "summary" {
+			agentFilter := ""
+			if len(args) > 1 {
+				target := strings.TrimSpace(args[1])
+				if target != "global" && target != "all" {
+					agentFilter = target
+				}
+			}
+			return e.handleTokenEfficiencyReportCommand(ctx, session, agentFilter)
+		}
+
+		// Direct agent filter or global query, e.g. "/tokens agyent" or "/stats coder" or "/stats global"
+		if sub == "global" || sub == "all" {
+			return e.handleTokenEfficiencyReportCommand(ctx, session, "")
+		} else if sub != "turn" && sub != "session" {
+			return e.handleTokenEfficiencyReportCommand(ctx, session, args[0])
 		}
 	}
 
@@ -292,7 +306,7 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 	sessionStats, _ := e.storage.GetTokenStats(ctx, session.SessionKey, "")
 
 	if (convStats == nil || convStats.TotalTokens == 0) && (sessionStats == nil || sessionStats.TotalTokens == 0) {
-		return fmt.Sprintf("📊 **No token metrics recorded yet** for [%s • %s].\n\nSend a message to start a conversation session and track token metrics.\n\n💡 _Tip: Type `/tokens stats` or `/stats` for full system efficiency report._", session.ActiveAgent, scopeLabel)
+		return fmt.Sprintf("📊 **No token metrics recorded yet** for [%s • %s].\n\nSend a message to start a conversation session and track token metrics.\n\n💡 _Tip: Type `/tokens stats` or `/stats [agent_name]` for full system efficiency report._", session.ActiveAgent, scopeLabel)
 	}
 
 	convTag := activeConvID
@@ -383,19 +397,23 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 		sb.WriteString(fmt.Sprintf("• **Lifetime Total:** %s (Net Savings: ~%.1f%%)\n", formatNumber(sessionStats.TotalTokens), sessionCostSaved))
 	}
 
-	sb.WriteString("\n💡 _Tip: Type `/tokens stats` or `/stats` for full temporal analytics & compaction efficiency report._")
+	sb.WriteString("\n💡 _Tip: Type `/tokens stats` or `/stats [agent_name]` for full temporal analytics & compaction efficiency report._")
 	return sb.String()
 }
 
-func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session *domain.Session) string {
-	report, err := e.storage.GetTokenEfficiencyReport(ctx, session.SessionKey)
+func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session *domain.Session, agentFilter string) string {
+	report, err := e.storage.GetTokenEfficiencyReport(ctx, session.SessionKey, agentFilter)
 	if err != nil {
 		return fmt.Sprintf("⚠️ Failed to generate token analytics report: %v", err)
 	}
 
 	var sb strings.Builder
 	sb.WriteString("📈 **agyent Token Analytics & Efficiency Report**\n")
-	sb.WriteString(fmt.Sprintf("• **Active Agent:** `%s`\n", session.ActiveAgent))
+	if agentFilter != "" {
+		sb.WriteString(fmt.Sprintf("• **Agent Filter:** `%s`\n", agentFilter))
+	} else {
+		sb.WriteString(fmt.Sprintf("• **Active Agent:** `%s` (All Agents in Session)\n", session.ActiveAgent))
+	}
 	sb.WriteString(fmt.Sprintf("• **Report Generated:** `%s`\n\n", report.GeneratedAt.Format("2006-01-02 15:04:05")))
 
 	// 1. Today Usage
@@ -446,7 +464,17 @@ func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session
 		sb.WriteString("• **Successful Compactions:** 0 runs (Context has not needed compaction yet)\n\n")
 	}
 
-	// 5. Model Breakdown
+	// 5. Agent Breakdown
+	if len(report.AgentBreakdown) > 0 {
+		sb.WriteString("👥 **Breakdown by Agent Persona:**\n")
+		for _, ab := range report.AgentBreakdown {
+			hitRatio := ab.Usage.CacheHitRatio()
+			sb.WriteString(fmt.Sprintf("• **%s:** %d turns | %s tokens | ⚡ %.1f%% cached\n", ab.AgentName, ab.TurnCount, formatNumber(ab.Usage.TotalTokens), hitRatio))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 6. Model Breakdown
 	if len(report.ModelBreakdown) > 0 {
 		sb.WriteString("🤖 **Breakdown by Model:**\n")
 		for _, m := range report.ModelBreakdown {

@@ -79,7 +79,7 @@ type AuditRepository interface {
 	LogAudit(ctx context.Context, log *domain.AuditLog) error
 	ListAuditLogs(ctx context.Context, sessionKey string, limit int) ([]domain.AuditLog, error)
 	GetTokenStats(ctx context.Context, sessionKey string, convID string) (*domain.TokenUsage, error)
-	GetTokenEfficiencyReport(ctx context.Context, sessionKey string) (*domain.TokenEfficiencyReport, error)
+	GetTokenEfficiencyReport(ctx context.Context, sessionKey string, agentName string) (*domain.TokenEfficiencyReport, error)
 }
 
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.

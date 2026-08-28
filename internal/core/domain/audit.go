@@ -62,9 +62,17 @@ type ModelTokenBreakdown struct {
 	Usage       TokenUsage `json:"usage"`
 }
 
+// AgentTokenBreakdown tracks aggregated token usage for a specific agent persona.
+type AgentTokenBreakdown struct {
+	AgentName string     `json:"agent_name"`
+	TurnCount int        `json:"turn_count"`
+	Usage     TokenUsage `json:"usage"`
+}
+
 // TokenEfficiencyReport aggregates session and global analytics over temporal windows and compaction metrics.
 type TokenEfficiencyReport struct {
 	SessionKey         string                `json:"session_key,omitempty"`
+	AgentFilter        string                `json:"agent_filter,omitempty"`
 	GeneratedAt        time.Time             `json:"generated_at"`
 	TodayUsage         TokenUsage            `json:"today_usage"`
 	TodayTurns         int                   `json:"today_turns"`
@@ -73,6 +81,7 @@ type TokenEfficiencyReport struct {
 	AllTimeUsage       TokenUsage            `json:"all_time_usage"`
 	AllTimeTurns       int                   `json:"all_time_turns"`
 	ModelBreakdown     []ModelTokenBreakdown `json:"model_breakdown"`
+	AgentBreakdown     []AgentTokenBreakdown `json:"agent_breakdown"`
 	TotalCompactions   int                   `json:"total_compactions"`
 	EstTokensSaved     int64                 `json:"est_tokens_saved"`
 	AvgCacheHitRatio   float64               `json:"avg_cache_hit_ratio"`
