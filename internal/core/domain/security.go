@@ -99,6 +99,16 @@ type ToolEvaluationRequest struct {
 	CascadeDepth   int                    `json:"cascade_depth,omitempty"`
 }
 
+// TurnSecurityContext captures the security identity and preset bound to an active turn.
+type TurnSecurityContext struct {
+	ConversationID string         `json:"conversation_id"`
+	SessionKey     string         `json:"session_key"`
+	WorkspaceDir   string         `json:"workspace_dir"`
+	Preset         SecurityPreset `json:"preset"`
+	AgentName      string         `json:"agent_name"`
+	CreatedAt      time.Time      `json:"created_at"`
+}
+
 // ToolEvaluationResponse represents the output sent back to the hook bridge.
 type ToolEvaluationResponse struct {
 	Decision  SecurityDecisionType   `json:"decision"`

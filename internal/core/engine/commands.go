@@ -1724,6 +1724,7 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 
 	// Default: Show Dashboard with Interactive Preset Switcher Buttons (filtered to >= baseline)
 	summary := e.securityManager.GetDashboardSummary(sessionKey)
+	summary.Preset = baselinePreset
 
 	var sb strings.Builder
 	sb.WriteString("🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n")

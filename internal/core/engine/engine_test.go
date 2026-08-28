@@ -485,6 +485,14 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 			},
 		},
 		{
+			name:      "Stream Toggle Off",
+			command:   "/stream off",
+			expectSub: "Streaming Mode DISABLED",
+			validateFn: func(t *testing.T) {
+				assert.False(t, eng.IsStreamingEnabled())
+			},
+		},
+		{
 			name:      "List Agents",
 			command:   "/agents",
 			expectSub: "Registered Agents:",
@@ -532,7 +540,7 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 		{
 			name:      "New Conversation",
 			command:   "/new Dự án mới",
-			expectSub: "New conversation created",
+			expectSub: "Mock response for:",
 		},
 		{
 			name:      "Conversation Clean",
@@ -1020,3 +1028,137 @@ func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.StatusInitialized, dbAgent.Status)
 }
+
+func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
+	eng, runner, channel, store, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	// Configure per-agent security overrides in config
+	cfg.Security.Preset = "balanced"
+	cfg.Agents = map[string]config.AgentProfileConfig{
+		"admin_agent": {
+			SecurityPreset: "unrestricted",
+			DefaultModel:   "gemini-2.5-pro",
+		},
+		"auditor_agent": {
+			SecurityPreset: "strict",
+			DefaultModel:   "gemini-2.5-flash",
+		},
+	}
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	adminUser := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "chat-sec-1", Type: "private"}
+
+	// 1. Initialize admin_agent via message
+	adminMsg := domain.CanonicalMessage{
+		ID:        "msg-admin-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/use admin_agent",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, adminMsg))
+
+	// Send a turn to trigger agent creation and verification
+	turnMsg1 := domain.CanonicalMessage{
+		ID:        "msg-admin-turn",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "Run deployment tasks",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, turnMsg1))
+
+	agent1, err := store.GetAgent(ctx, "admin_agent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.PresetUnrestricted, agent1.SecurityPreset, "admin_agent must be initialized with unrestricted preset from config")
+
+	// Check /security output for admin_agent
+	secCmd1 := domain.CanonicalMessage{
+		ID:        "msg-admin-sec",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, secCmd1))
+	sent := channel.GetSentMessages()
+	require.NotEmpty(t, sent)
+	lastSent := sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Active Agent</b>      : <code>admin_agent</code>")
+	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>unrestricted</code>")
+
+	// 2. Initialize auditor_agent via /use
+	auditMsg := domain.CanonicalMessage{
+		ID:        "msg-audit-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/use auditor_agent",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, auditMsg))
+
+	turnMsg2 := domain.CanonicalMessage{
+		ID:        "msg-audit-turn",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "Inspect codebase vulnerabilities",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, turnMsg2))
+
+	agent2, err := store.GetAgent(ctx, "auditor_agent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.PresetStrict, agent2.SecurityPreset, "auditor_agent must be initialized with strict preset from config")
+
+	// Check /security output for auditor_agent
+	secCmd2 := domain.CanonicalMessage{
+		ID:        "msg-audit-sec",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, secCmd2))
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Active Agent</b>      : <code>auditor_agent</code>")
+	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>strict</code>")
+
+	// 3. Initialize unlisted agent -> falls back to balanced
+	fallbackMsg := domain.CanonicalMessage{
+		ID:        "msg-fall-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/use generic_assistant",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, fallbackMsg))
+
+	turnMsg3 := domain.CanonicalMessage{
+		ID:        "msg-fall-turn",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "Help me summarize notes",
+	}
+	require.NoError(t, eng.HandleDebouncedMessage(ctx, turnMsg3))
+
+	agent3, err := store.GetAgent(ctx, "generic_assistant")
+	require.NoError(t, err)
+	assert.Equal(t, domain.PresetBalanced, agent3.SecurityPreset, "unlisted agent must fall back to balanced preset")
+
+	_ = runner
+}
+

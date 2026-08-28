@@ -53,14 +53,17 @@ type SecurityManagerPort interface {
 	// EnsureWorkspaceHooks guarantees that .agents/hooks.json is provisioned in the given workspace.
 	EnsureWorkspaceHooks(workspaceDir string) error
 
-	// RegisterActiveTurn registers the active sessionKey associated with a running turn.
-	RegisterActiveTurn(convID string, sessionKey string, workspaceDir string)
+	// RegisterActiveTurn registers the active sessionKey, preset, and workspace associated with a running turn.
+	RegisterActiveTurn(turn domain.TurnSecurityContext)
 
 	// UnregisterActiveTurn removes the active turn association when execution concludes.
 	UnregisterActiveTurn(convID string, workspaceDir string)
 
 	// ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.
 	ResolveSessionKey(convID string, workspaceDir string) string
+
+	// ResolveTurnContext retrieves the full active TurnSecurityContext for a given conversationID or workspace.
+	ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool)
 }
 
 // HookIPCPort defines the IPC server interface communicating with agyent-hook binary.

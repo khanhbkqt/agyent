@@ -31,6 +31,14 @@ func TestSQLiteStore_AgentOwnershipAndRBAC(t *testing.T) {
 		assert.Equal(t, "architect_bot", retrieved.Name)
 		assert.Equal(t, "1001", retrieved.OwnerID)
 		assert.False(t, retrieved.IsPublic)
+		assert.Equal(t, domain.PresetBalanced, retrieved.SecurityPreset, "Unspecified preset must default to balanced")
+
+		// Update to Strict
+		retrieved.SecurityPreset = domain.PresetStrict
+		require.NoError(t, store.SaveAgent(ctx, retrieved))
+		updated, err := store.GetAgent(ctx, "architect_bot")
+		require.NoError(t, err)
+		assert.Equal(t, domain.PresetStrict, updated.SecurityPreset, "Updated preset must persist accurately")
 	})
 
 	t.Run("ShareAgent and ListAgentPermissions", func(t *testing.T) {

@@ -332,6 +332,17 @@ security:
       - "APP_NAME"
       - "DATABASE_URL"
       - "API_BASE_URL"
+
+# Declarative Per-Agent Security Presets & Profiles
+agents:
+  dev_admin:
+    security_preset: "unrestricted" # Full autonomy for admin agent
+    default_model: "gemini-2.5-pro"
+  auditor:
+    security_preset: "strict"       # Whitelist-only for security auditor
+    default_model: "gemini-2.5-flash"
+  researcher:
+    security_preset: "read_only"    # Read-only code exploration
 ```
 
 ---
@@ -348,6 +359,15 @@ import (
 
 // SecurityManagerPort coordinates multi-layer tool interception, path jailing, and policy decisions.
 type SecurityManagerPort interface {
+    // RegisterActiveTurn registers per-turn security context (preset, agent, workspace) for active evaluation.
+    RegisterActiveTurn(turn domain.TurnSecurityContext)
+    
+    // UnregisterActiveTurn cleans up active turn security context upon turn completion.
+    UnregisterActiveTurn(conversationID string, workspaceDir string)
+    
+    // ResolveTurnContext looks up the active turn context for a given conversation and workspace.
+    ResolveTurnContext(conversationID string, workspaceDir string) (domain.TurnSecurityContext, bool)
+    
     // EvaluateToolCall evaluates any tool call synchronously intercepted by PreToolUse hook.
     EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error)
     
@@ -355,20 +375,27 @@ type SecurityManagerPort interface {
     EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error)
     
     // EvaluatePath verifies if target file access is permitted within the active workspace jail.
-    EvaluatePath(ctx context.Context, sessionKey string, targetPath string, isWrite bool) (domain.SecurityDecision, error)
+    EvaluatePath(ctx context.Context, sessionKey string, workspaceDir string, targetPath string, isWrite bool) (domain.SecurityDecision, error)
     
     // EvaluateURL verifies that destination URL does not target private IPs or cloud metadata (with DNS Rebinding protection).
     EvaluateURL(ctx context.Context, urlStr string) (domain.SecurityDecision, error)
     
     // SanitizeToolOutput inspects external tool outputs (web, mcp) for indirect prompt injections.
-    SanitizeToolOutput(ctx context.Context, output string) (string, error)
+    SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error)
 
     // GrantSessionPermission adds a temporary permission grant to the session cache.
     GrantSessionPermission(sessionKey string, pattern string)
     
+    // AddWhitelistEntry adds a persistent whitelist command rule.
+    AddWhitelistEntry(cmd string)
+    
+    // SetPreset switches the fallback security preset.
+    SetPreset(preset string)
+    
     // GetDashboardSummary returns statistics for /security slash command.
     GetDashboardSummary(sessionKey string) domain.SecurityDashboard
 }
+```
 
 // HookIPCPort defines the IPC server interface communicating with agyent-hook binary.
 type HookIPCPort interface {

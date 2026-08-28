@@ -162,16 +162,26 @@ type SecurityConfig struct {
 	DLP                    DLPConfig                   `yaml:"dlp" json:"dlp"`
 }
 
+// AgentProfileConfig defines per-agent declarative configuration overrides in config.yaml.
+type AgentProfileConfig struct {
+	SecurityPreset string `yaml:"security_preset" json:"security_preset"` // e.g. "unrestricted", "developer", "balanced", "strict", "read_only"
+	DefaultModel   string `yaml:"default_model" json:"default_model"`
+	DefaultEffort  string `yaml:"default_effort" json:"default_effort"`
+	WorkspacePath  string `yaml:"workspace_path" json:"workspace_path"`
+	Description    string `yaml:"description" json:"description"`
+}
+
 // Config represents the complete runtime configuration of agyent.
 type Config struct {
-	Server    ServerConfig    `yaml:"server" json:"server"`
-	Telegram  TelegramConfig  `yaml:"telegram" json:"telegram"`
-	AGY       AGYConfig       `yaml:"agy" json:"agy"`
-	Storage   StorageConfig   `yaml:"storage" json:"storage"`
-	Logging   LoggingConfig   `yaml:"logging" json:"logging"`
-	Evolution EvolutionConfig `yaml:"evolution" json:"evolution"`
-	Subagent  SubagentConfig  `yaml:"subagent" json:"subagent"`
-	Security  SecurityConfig  `yaml:"security" json:"security"`
+	Server    ServerConfig                  `yaml:"server" json:"server"`
+	Telegram  TelegramConfig                `yaml:"telegram" json:"telegram"`
+	AGY       AGYConfig                     `yaml:"agy" json:"agy"`
+	Storage   StorageConfig                 `yaml:"storage" json:"storage"`
+	Logging   LoggingConfig                 `yaml:"logging" json:"logging"`
+	Evolution EvolutionConfig               `yaml:"evolution" json:"evolution"`
+	Subagent  SubagentConfig                `yaml:"subagent" json:"subagent"`
+	Security  SecurityConfig                `yaml:"security" json:"security"`
+	Agents    map[string]AgentProfileConfig `yaml:"agents" json:"agents"`
 }
 
 // DefaultConfig returns a new Config populated with sensible defaults.
@@ -225,7 +235,25 @@ func DefaultConfig() *Config {
 			DefaultEffort:         "low",
 		},
 		Security: GetEffectiveSecurityPreset("balanced"),
+		Agents:   make(map[string]AgentProfileConfig),
 	}
+}
+
+// ResolveAgentPreset returns the configured security preset for the specific agent,
+// falling back to the global security.preset or "balanced".
+func (c *Config) ResolveAgentPreset(agentName string) string {
+	if c == nil {
+		return "balanced"
+	}
+	if agentName != "" && len(c.Agents) > 0 {
+		if a, ok := c.Agents[agentName]; ok && strings.TrimSpace(a.SecurityPreset) != "" {
+			return strings.TrimSpace(a.SecurityPreset)
+		}
+	}
+	if strings.TrimSpace(c.Security.Preset) != "" {
+		return strings.TrimSpace(c.Security.Preset)
+	}
+	return "balanced"
 }
 
 // GetEffectiveSecurityPreset returns the default SecurityConfig corresponding to the given preset name.
@@ -521,6 +549,14 @@ func (c *Config) ExpandPaths() error {
 			return err
 		}
 	}
+	for name, a := range c.Agents {
+		if a.WorkspacePath != "" {
+			if expanded, err := ExpandPath(a.WorkspacePath); err == nil {
+				a.WorkspacePath = expanded
+				c.Agents[name] = a
+			}
+		}
+	}
 	return nil
 }
 
@@ -614,6 +650,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Subagent.DefaultTimeoutSeconds < 0 {
 		return errors.New("subagent default_timeout_seconds cannot be negative")
+	}
+	for name, a := range c.Agents {
+		if a.SecurityPreset != "" {
+			switch strings.ToLower(a.SecurityPreset) {
+			case "unrestricted", "full_access", "developer", "balanced", "strict", "read_only":
+			default:
+				return fmt.Errorf("invalid security_preset %q for agent %q: must be unrestricted, developer, balanced, strict, or read_only", a.SecurityPreset, name)
+			}
+		}
 	}
 	return nil
 }

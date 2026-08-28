@@ -162,6 +162,17 @@ storage:
   agents_dir: "~/.agyent/agents" # Root directory containing agent workspaces
   debounce_seconds: 2.0
   heartbeat_interval_seconds: 4.0
+
+# Declarative Per-Agent Profiles & Security Presets
+agents:
+  dev_admin:
+    security_preset: "unrestricted" # Full access for trusted dev admin
+    default_model: "gemini-2.5-pro"
+  auditor:
+    security_preset: "strict"       # Whitelist-only for security auditor
+    default_model: "gemini-2.5-flash"
+  researcher:
+    security_preset: "read_only"    # Read-only code exploration
 ```
 
 ---

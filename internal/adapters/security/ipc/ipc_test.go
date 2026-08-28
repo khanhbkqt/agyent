@@ -51,10 +51,12 @@ func (m *mockSecurityManager) GetDashboardSummary(sessionKey string) domain.Secu
 func (m *mockSecurityManager) EnsureWorkspaceHooks(workspaceDir string) error {
 	return nil
 }
-func (m *mockSecurityManager) RegisterActiveTurn(convID string, sessionKey string, workspaceDir string) {
-}
+func (m *mockSecurityManager) RegisterActiveTurn(turn domain.TurnSecurityContext)           {}
 func (m *mockSecurityManager) UnregisterActiveTurn(convID string, workspaceDir string)     {}
 func (m *mockSecurityManager) ResolveSessionKey(convID string, workspaceDir string) string { return "" }
+func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool) {
+	return domain.TurnSecurityContext{}, false
+}
 
 func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 	addr := "127.0.0.1:49988"

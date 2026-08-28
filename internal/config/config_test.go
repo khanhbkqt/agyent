@@ -406,4 +406,37 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 		cfg.Telegram.AdminUserIDs = []int64{123}
 		assert.Error(t, cfg.Validate())
 	})
+
+	t.Run("Per-Agent Configuration and Preset Resolution", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.Preset = "balanced"
+		cfg.Agents = map[string]config.AgentProfileConfig{
+			"coder_bot": {
+				SecurityPreset: "developer",
+				DefaultModel:   "gemini-2.5-pro",
+			},
+			"auditor_bot": {
+				SecurityPreset: "strict",
+				DefaultModel:   "gemini-2.5-flash",
+			},
+			"unrestricted_bot": {
+				SecurityPreset: "unrestricted",
+			},
+		}
+
+		// Specific configured agent returns its own preset
+		assert.Equal(t, "developer", cfg.ResolveAgentPreset("coder_bot"))
+		assert.Equal(t, "strict", cfg.ResolveAgentPreset("auditor_bot"))
+		assert.Equal(t, "unrestricted", cfg.ResolveAgentPreset("unrestricted_bot"))
+
+		// Unlisted agent falls back to global security.preset
+		assert.Equal(t, "balanced", cfg.ResolveAgentPreset("unknown_bot"))
+
+		// Invalid preset in agent config fails validation
+		cfg.Agents["invalid_bot"] = config.AgentProfileConfig{
+			SecurityPreset: "super_safe",
+		}
+		assert.Error(t, cfg.Validate())
+	})
 }
+

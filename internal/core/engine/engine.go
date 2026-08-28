@@ -405,7 +405,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		if !isPublic {
 			ownerID = msg.Sender.ID
 		}
-		defaultPreset := domain.SecurityPreset(e.cfg.Security.Preset)
+		defaultPreset := domain.SecurityPreset(e.cfg.ResolveAgentPreset(session.ActiveAgent))
 		if defaultPreset == "" {
 			defaultPreset = domain.PresetBalanced
 		}
@@ -424,11 +424,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if agent.SecurityPreset == "" {
-		agent.SecurityPreset = domain.PresetBalanced
-	}
-
-	if e.securityManager != nil {
-		e.securityManager.SetPreset(agent.SecurityPreset)
+		agent.SecurityPreset = domain.SecurityPreset(e.cfg.ResolveAgentPreset(agent.Name))
 	}
 
 	if agent.WorkspacePath == "" {
@@ -577,7 +573,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	var execErr error
 
 	if e.securityManager != nil {
-		e.securityManager.RegisterActiveTurn(activeConvID, sessionKey, workspaceDir)
+		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
+			ConversationID: activeConvID,
+			SessionKey:     sessionKey,
+			WorkspaceDir:   workspaceDir,
+			Preset:         agent.SecurityPreset,
+			AgentName:      agent.Name,
+			CreatedAt:      time.Now(),
+		})
 		defer e.securityManager.UnregisterActiveTurn(activeConvID, workspaceDir)
 	}
 

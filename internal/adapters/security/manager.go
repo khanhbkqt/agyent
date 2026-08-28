@@ -28,21 +28,53 @@ type sessionGrant struct {
 	expiresAt time.Time
 }
 
-// Manager coordinates all security guardrail evaluators and HITL approval states.
-type Manager struct {
-	mu                sync.RWMutex
+type presetEvaluators struct {
 	cfg               config.SecurityConfig
 	pathjailEval      *pathjail.Evaluator
 	networkEval       *network.Evaluator
 	subagentEval      *subagents.Evaluator
 	sanitizerEval     *sanitizer.Evaluator
-	hitlPort          ports.HITLApprovalPort
 	blacklistPatterns []*regexp.Regexp
 	whitelistPatterns []*regexp.Regexp
-	sessionGrants     map[string][]sessionGrant // sessionKey -> grants
-	activeTurns       map[string]string         // convID -> sessionKey
-	activeWorkspaces  map[string]string         // workspaceDir -> sessionKey
-	logger            *slog.Logger
+}
+
+func buildEvaluatorBundle(cfg config.SecurityConfig) *presetEvaluators {
+	pe := &presetEvaluators{
+		cfg:           cfg,
+		pathjailEval:  pathjail.NewEvaluator(cfg.Filesystem, cfg.AgentConfigManagement.ManageableFiles),
+		networkEval:   network.NewEvaluator(cfg.Network),
+		subagentEval:  subagents.NewEvaluator(cfg.Subagents),
+		sanitizerEval: sanitizer.NewEvaluator(cfg.DLP),
+	}
+
+	pe.blacklistPatterns = make([]*regexp.Regexp, 0, len(cfg.Commands.CustomBlacklist))
+	for _, p := range cfg.Commands.CustomBlacklist {
+		if re, err := regexp.Compile(p); err == nil {
+			pe.blacklistPatterns = append(pe.blacklistPatterns, re)
+		}
+	}
+
+	pe.whitelistPatterns = make([]*regexp.Regexp, 0, len(cfg.Commands.CustomWhitelist))
+	for _, p := range cfg.Commands.CustomWhitelist {
+		if re, err := regexp.Compile(p); err == nil {
+			pe.whitelistPatterns = append(pe.whitelistPatterns, re)
+		}
+	}
+
+	return pe
+}
+
+// Manager coordinates all security guardrail evaluators and HITL approval states.
+type Manager struct {
+	mu               sync.RWMutex
+	defaultCfg       config.SecurityConfig
+	defaultPreset    domain.SecurityPreset
+	evaluators       map[domain.SecurityPreset]*presetEvaluators
+	hitlPort         ports.HITLApprovalPort
+	sessionGrants    map[string][]sessionGrant                 // sessionKey -> grants
+	activeTurns      map[string]domain.TurnSecurityContext     // convID -> TurnSecurityContext
+	activeWorkspaces map[string]domain.TurnSecurityContext     // workspaceDir -> TurnSecurityContext
+	logger           *slog.Logger
 
 	// Metrics (Lock-free atomic counters)
 	totalEvaluations atomic.Int64
@@ -50,44 +82,63 @@ type Manager struct {
 	approvedToday    atomic.Int64
 }
 
-// NewManager constructs a new Security Manager.
+// NewManager constructs a new Security Manager with isolated evaluator pools per preset.
 func NewManager(cfg config.SecurityConfig, hitlPort ports.HITLApprovalPort, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
+	initialPreset := domain.SecurityPreset(cfg.Preset)
+	if initialPreset == "" {
+		initialPreset = domain.PresetBalanced
+	}
+
 	m := &Manager{
-		cfg:              cfg,
+		defaultCfg:       cfg,
+		defaultPreset:    initialPreset,
+		evaluators:       make(map[domain.SecurityPreset]*presetEvaluators),
 		hitlPort:         hitlPort,
 		sessionGrants:    make(map[string][]sessionGrant),
-		activeTurns:      make(map[string]string),
-		activeWorkspaces: make(map[string]string),
+		activeTurns:      make(map[string]domain.TurnSecurityContext),
+		activeWorkspaces: make(map[string]domain.TurnSecurityContext),
 		logger:           logger,
 	}
 
-	m.rebuildEvaluators()
+	// Pre-build evaluator bundles for all standard presets
+	for _, p := range domain.AllSecurityPresets {
+		presetCfg := config.GetEffectiveSecurityPreset(string(p))
+		if len(cfg.Commands.CustomBlacklist) > 0 {
+			presetCfg.Commands.CustomBlacklist = append(presetCfg.Commands.CustomBlacklist, cfg.Commands.CustomBlacklist...)
+		}
+		if len(cfg.Commands.CustomWhitelist) > 0 {
+			presetCfg.Commands.CustomWhitelist = append(presetCfg.Commands.CustomWhitelist, cfg.Commands.CustomWhitelist...)
+		}
+		if len(cfg.Filesystem.AllowedPaths) > 0 {
+			presetCfg.Filesystem.AllowedPaths = append(presetCfg.Filesystem.AllowedPaths, cfg.Filesystem.AllowedPaths...)
+		}
+		if len(cfg.Filesystem.ForbiddenPaths) > 0 {
+			presetCfg.Filesystem.ForbiddenPaths = append(presetCfg.Filesystem.ForbiddenPaths, cfg.Filesystem.ForbiddenPaths...)
+		}
+		m.evaluators[p] = buildEvaluatorBundle(presetCfg)
+	}
+
 	return m
 }
 
-func (m *Manager) rebuildEvaluators() {
-	m.pathjailEval = pathjail.NewEvaluator(m.cfg.Filesystem, m.cfg.AgentConfigManagement.ManageableFiles)
-	m.networkEval = network.NewEvaluator(m.cfg.Network)
-	m.subagentEval = subagents.NewEvaluator(m.cfg.Subagents)
-	m.sanitizerEval = sanitizer.NewEvaluator(m.cfg.DLP)
+func (m *Manager) getEvaluatorBundle(preset domain.SecurityPreset) *presetEvaluators {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	m.blacklistPatterns = make([]*regexp.Regexp, 0, len(m.cfg.Commands.CustomBlacklist))
-	for _, p := range m.cfg.Commands.CustomBlacklist {
-		if re, err := regexp.Compile(p); err == nil {
-			m.blacklistPatterns = append(m.blacklistPatterns, re)
-		}
+	if eb, ok := m.evaluators[preset]; ok {
+		return eb
 	}
-
-	m.whitelistPatterns = make([]*regexp.Regexp, 0, len(m.cfg.Commands.CustomWhitelist))
-	for _, p := range m.cfg.Commands.CustomWhitelist {
-		if re, err := regexp.Compile(p); err == nil {
-			m.whitelistPatterns = append(m.whitelistPatterns, re)
-		}
+	if eb, ok := m.evaluators[m.defaultPreset]; ok {
+		return eb
 	}
+	if eb, ok := m.evaluators[domain.PresetBalanced]; ok {
+		return eb
+	}
+	return buildEvaluatorBundle(m.defaultCfg)
 }
 
 // EvaluateToolCall intercepts any tool call synchronously before substrate execution.
@@ -96,12 +147,24 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 
 	m.totalEvaluations.Add(1)
 
+	// Resolve the active turn's security context (preset and session)
+	turnCtx, hasTurn := m.ResolveTurnContext(req.ConversationID, req.WorkspaceDir)
+
 	m.mu.RLock()
-	preset := m.cfg.Preset
+	preset := m.defaultPreset
 	m.mu.RUnlock()
 
-	// If Preset is Unrestricted -> Allow 100% of tool calls immediately with full autonomy
-	if preset == string(domain.PresetUnrestricted) {
+	if hasTurn && turnCtx.Preset != "" {
+		preset = turnCtx.Preset
+	}
+
+	sessionKey := req.SessionKey
+	if sessionKey == "" && hasTurn {
+		sessionKey = turnCtx.SessionKey
+	}
+
+	// 0. If Preset is Unrestricted -> Allow 100% of tool calls immediately with full autonomy
+	if preset == domain.PresetUnrestricted {
 		m.recordApproved()
 		return domain.SecurityDecision{
 			Decision:  domain.DecisionAllow,
@@ -110,13 +173,15 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}, nil
 	}
 
+	bundle := m.getEvaluatorBundle(preset)
+
 	var decision domain.SecurityDecision
 	var err error
 
 	switch req.ToolName {
 	case "run_command":
 		cmd, _ := req.Args["CommandLine"].(string)
-		decision, err = m.EvaluateCommand(ctx, req.SessionKey, req.Role, cmd)
+		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, bundle)
 
 	case "view_file", "write_to_file", "replace_file_content":
 		targetPath, _ := req.Args["TargetFile"].(string)
@@ -124,27 +189,28 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			targetPath, _ = req.Args["AbsolutePath"].(string)
 		}
 		isWrite := req.ToolName == "write_to_file" || req.ToolName == "replace_file_content"
-		m.mu.RLock()
-		preset := m.cfg.Preset
-		m.mu.RUnlock()
-		if isWrite && preset == "read_only" {
+		if isWrite && preset == domain.PresetReadOnly {
 			decision = domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
 				Reason:   "🛡️ [Security Gate]: File modification is strictly forbidden under Read Only security preset",
 			}
 			break
 		}
-		decision, err = m.EvaluatePath(ctx, req.SessionKey, req.WorkspaceDir, targetPath, isWrite)
+		ws := req.WorkspaceDir
+		if ws == "" && hasTurn {
+			ws = turnCtx.WorkspaceDir
+		}
+		if ws == "" {
+			ws = "."
+		}
+		decision, err = bundle.pathjailEval.EvaluatePath(ws, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
 
 	case "read_url_content", "web_search":
 		urlStr, _ := req.Args["Url"].(string)
-		decision, err = m.EvaluateURL(ctx, urlStr)
+		decision, err = bundle.networkEval.EvaluateURL(urlStr)
 
 	case "invoke_subagent", "define_subagent":
-		m.mu.RLock()
-		evaluator := m.subagentEval
-		m.mu.RUnlock()
-		decision, err = evaluator.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
+		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
 
 	default:
 		decision = domain.SecurityDecision{
@@ -163,7 +229,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	}
 
 	m.mu.RLock()
-	timeoutSec := m.cfg.ApprovalTimeoutSeconds
+	timeoutSec := bundle.cfg.ApprovalTimeoutSeconds
 	hitlPort := m.hitlPort
 	m.mu.RUnlock()
 
@@ -172,9 +238,14 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		if timeoutSec <= 0 {
 			timeoutSec = 60
 		}
+		agentName := "agent"
+		if hasTurn && turnCtx.AgentName != "" {
+			agentName = turnCtx.AgentName
+		}
 		appReq := domain.ApprovalRequest{
 			RequestID:    fmt.Sprintf("hitl-%d", time.Now().UnixNano()),
-			SessionKey:   req.SessionKey,
+			SessionKey:   sessionKey,
+			AgentName:    agentName,
 			ToolName:     req.ToolName,
 			DiffPreview:  decision.Reason,
 			IsConfigEdit: strings.Contains(decision.Reason, "configuration file"),
@@ -189,7 +260,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			appReq.TargetFile = target
 		}
 
-		m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason)
+		m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName)
 		appDecision, appErr := hitlPort.RequestApproval(ctx, appReq)
 		if appErr != nil || !appDecision.Approved {
 			m.recordBlocked()
@@ -202,7 +273,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 
 		// If user selected "Allow for Session" -> Grant temporary permission
 		if appDecision.Action == "allow_session" && appReq.CommandLine != "" {
-			m.GrantSessionPermission(req.SessionKey, appReq.CommandLine)
+			m.GrantSessionPermission(sessionKey, appReq.CommandLine)
 		}
 
 		m.recordApproved()
@@ -223,33 +294,31 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	return decision, nil
 }
 
-// EvaluateCommand validates shell commands against active rules and session grants.
-func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error) {
+func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey string, role string, cmd string, bundle *presetEvaluators) (domain.SecurityDecision, error) {
 	if cmd == "" {
 		return domain.SecurityDecision{Decision: domain.DecisionDeny, Reason: "Empty command"}, nil
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	preset := domain.SecurityPreset(bundle.cfg.Preset)
 
-	// 0. Check Unrestricted Preset (Full Autonomy)
-	if m.cfg.Preset == string(domain.PresetUnrestricted) {
+	// 0. Check Unrestricted Preset
+	if preset == domain.PresetUnrestricted {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionAllow,
 			Reason:   "🛡️ [Security Preset: Unrestricted]: Command permitted with full autonomy",
 		}, nil
 	}
 
-	// 1. Check Read-Only Preset (Highest Precedence)
-	if m.cfg.Preset == string(domain.PresetReadOnly) {
+	// 1. Check Read-Only Preset
+	if preset == domain.PresetReadOnly {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
 			Reason:   "🛡️ [Security Preset: Read Only]: Shell command execution is completely disabled",
 		}, nil
 	}
 
-	// 2. Check Blacklist Patterns (Precedes Session Grants)
-	for _, bl := range m.blacklistPatterns {
+	// 2. Check Blacklist Patterns
+	for _, bl := range bundle.blacklistPatterns {
 		if bl.MatchString(cmd) {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
@@ -258,8 +327,11 @@ func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role s
 		}
 	}
 
-	// 3. Check in-memory session grants (Exact / Token Prefix match only)
-	if grants, ok := m.sessionGrants[sessionKey]; ok {
+	// 3. Check in-memory session grants
+	m.mu.RLock()
+	grants, hasGrants := m.sessionGrants[sessionKey]
+	m.mu.RUnlock()
+	if hasGrants {
 		now := time.Now()
 		for _, g := range grants {
 			if g.expiresAt.After(now) {
@@ -274,7 +346,7 @@ func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role s
 	}
 
 	// 4. Check Whitelist Patterns
-	for _, wl := range m.whitelistPatterns {
+	for _, wl := range bundle.whitelistPatterns {
 		if wl.MatchString(cmd) || strings.HasPrefix(cmd, wl.String()) {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionAllow,
@@ -284,7 +356,7 @@ func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role s
 	}
 
 	// 5. Preset Strict mode -> auto block if not in whitelist
-	if m.cfg.Preset == string(domain.PresetStrict) {
+	if preset == domain.PresetStrict {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
 			Reason:   fmt.Sprintf("🛡️ [Security Preset: Strict]: Command '%s' is not explicitly whitelisted", cmd),
@@ -292,7 +364,7 @@ func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role s
 	}
 
 	// 6. Preset Balanced mode -> Ask HITL for sensitive actions
-	if m.cfg.Preset == string(domain.PresetBalanced) && sensitiveCommandRegex.MatchString(cmd) {
+	if preset == domain.PresetBalanced && sensitiveCommandRegex.MatchString(cmd) {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionAsk,
 			Reason:   fmt.Sprintf("Sensitive shell execution: `%s`", cmd),
@@ -305,36 +377,31 @@ func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role s
 	}, nil
 }
 
+// EvaluateCommand validates shell commands against active rules and session grants.
+func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error) {
+	bundle := m.getEvaluatorBundle(m.defaultPreset)
+	return m.evaluateCommandWithBundle(ctx, sessionKey, role, cmd, bundle)
+}
+
 // EvaluatePath validates file access within workspace boundaries.
 func (m *Manager) EvaluatePath(ctx context.Context, sessionKey string, workspaceDir string, targetPath string, isWrite bool) (domain.SecurityDecision, error) {
-	m.mu.RLock()
-	evaluator := m.pathjailEval
-	allowDelegated := m.cfg.AgentConfigManagement.Enabled
-	m.mu.RUnlock()
-
+	bundle := m.getEvaluatorBundle(m.defaultPreset)
 	if workspaceDir == "" {
 		workspaceDir = "."
 	}
-
-	return evaluator.EvaluatePath(workspaceDir, targetPath, isWrite, allowDelegated)
+	return bundle.pathjailEval.EvaluatePath(workspaceDir, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
 }
 
 // EvaluateURL validates outbound network URLs.
 func (m *Manager) EvaluateURL(ctx context.Context, urlStr string) (domain.SecurityDecision, error) {
-	m.mu.RLock()
-	evaluator := m.networkEval
-	m.mu.RUnlock()
-
-	return evaluator.EvaluateURL(urlStr)
+	bundle := m.getEvaluatorBundle(m.defaultPreset)
+	return bundle.networkEval.EvaluateURL(urlStr)
 }
 
 // SanitizeToolOutput masks secrets within tool output.
 func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error) {
-	m.mu.RLock()
-	evaluator := m.sanitizerEval
-	m.mu.RUnlock()
-
-	return evaluator.RedactSecrets(output), nil
+	bundle := m.getEvaluatorBundle(m.defaultPreset)
+	return bundle.sanitizerEval.RedactSecrets(output), nil
 }
 
 // GrantSessionPermission adds a temporary permission grant.
@@ -349,36 +416,41 @@ func (m *Manager) GrantSessionPermission(sessionKey string, pattern string) {
 	m.logger.Info("Granted temporary session permission", "session", sessionKey, "pattern", pattern)
 }
 
-// SetPreset dynamically updates the active preset.
+// SetPreset dynamically updates the default fallback preset.
 func (m *Manager) SetPreset(preset domain.SecurityPreset) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.cfg = config.GetEffectiveSecurityPreset(string(preset))
-	m.rebuildEvaluators()
-	m.logger.Info("Switched security preset dynamically", "preset", preset)
+	m.defaultPreset = preset
+	m.defaultCfg.Preset = string(preset)
+	m.logger.Info("Updated default security preset fallback", "preset", preset)
 }
 
-// SetRedactionMode dynamically updates the redaction mode.
+// SetRedactionMode dynamically updates the redaction mode across all evaluators.
 func (m *Manager) SetRedactionMode(mode domain.RedactionMode) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.cfg.DLP.RedactionMode = string(mode)
-	if m.sanitizerEval != nil {
-		m.sanitizerEval.SetRedactionMode(mode)
+	for _, bundle := range m.evaluators {
+		bundle.cfg.DLP.RedactionMode = string(mode)
+		if bundle.sanitizerEval != nil {
+			bundle.sanitizerEval.SetRedactionMode(mode)
+		}
 	}
 	m.logger.Info("Switched DLP redaction mode", "mode", mode)
 }
 
-// AddWhitelistEntry appends a new command to the whitelist.
+// AddWhitelistEntry appends a new command to the whitelist across all evaluators.
 func (m *Manager) AddWhitelistEntry(entry string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.cfg.Commands.CustomWhitelist = append(m.cfg.Commands.CustomWhitelist, entry)
-	if re, err := regexp.Compile(entry); err == nil {
-		m.whitelistPatterns = append(m.whitelistPatterns, re)
+	re, err := regexp.Compile(entry)
+	for _, bundle := range m.evaluators {
+		bundle.cfg.Commands.CustomWhitelist = append(bundle.cfg.Commands.CustomWhitelist, entry)
+		if err == nil {
+			bundle.whitelistPatterns = append(bundle.whitelistPatterns, re)
+		}
 	}
 	m.logger.Info("Added custom whitelist entry", "entry", entry)
 }
@@ -388,16 +460,40 @@ func (m *Manager) GetDashboardSummary(sessionKey string) domain.SecurityDashboar
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	activePreset := m.defaultPreset
+	for _, t := range m.activeTurns {
+		if t.SessionKey == sessionKey && t.Preset != "" {
+			activePreset = t.Preset
+			break
+		}
+	}
+
+	bundle := m.evaluators[activePreset]
+	if bundle == nil {
+		bundle = m.evaluators[domain.PresetBalanced]
+	}
+
+	var allowedCmds []string
+	var allowedPaths []string
+	var redMode domain.RedactionMode
+	var configDelegated bool
+	if bundle != nil {
+		allowedCmds = bundle.cfg.Commands.CustomWhitelist
+		allowedPaths = bundle.cfg.Filesystem.AllowedPaths
+		redMode = domain.RedactionMode(bundle.cfg.DLP.RedactionMode)
+		configDelegated = bundle.cfg.AgentConfigManagement.Enabled
+	}
+
 	return domain.SecurityDashboard{
-		Preset:           domain.SecurityPreset(m.cfg.Preset),
+		Preset:           activePreset,
 		ActiveJail:       "Workspace Jailed",
-		AllowedCommands:  m.cfg.Commands.CustomWhitelist,
-		AllowedPaths:     m.cfg.Filesystem.AllowedPaths,
+		AllowedCommands:  allowedCmds,
+		AllowedPaths:     allowedPaths,
 		TotalEvaluations: m.totalEvaluations.Load(),
 		BlockedToday:     m.blockedToday.Load(),
 		ApprovedToday:    m.approvedToday.Load(),
-		RedactionMode:    domain.RedactionMode(m.cfg.DLP.RedactionMode),
-		ConfigDelegated:  m.cfg.AgentConfigManagement.Enabled,
+		RedactionMode:    redMode,
+		ConfigDelegated:  configDelegated,
 	}
 }
 
@@ -415,15 +511,19 @@ func (m *Manager) EnsureWorkspaceHooks(workspaceDir string) error {
 	return err
 }
 
-// RegisterActiveTurn registers the active sessionKey associated with a running turn.
-func (m *Manager) RegisterActiveTurn(convID string, sessionKey string, workspaceDir string) {
+// RegisterActiveTurn registers the active sessionKey, preset, and workspace associated with a running turn.
+func (m *Manager) RegisterActiveTurn(turn domain.TurnSecurityContext) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if convID != "" {
-		m.activeTurns[convID] = sessionKey
+
+	if turn.CreatedAt.IsZero() {
+		turn.CreatedAt = time.Now()
 	}
-	if workspaceDir != "" {
-		m.activeWorkspaces[filepath.Clean(workspaceDir)] = sessionKey
+	if turn.ConversationID != "" {
+		m.activeTurns[turn.ConversationID] = turn
+	}
+	if turn.WorkspaceDir != "" {
+		m.activeWorkspaces[filepath.Clean(turn.WorkspaceDir)] = turn
 	}
 }
 
@@ -431,6 +531,7 @@ func (m *Manager) RegisterActiveTurn(convID string, sessionKey string, workspace
 func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	if convID != "" {
 		delete(m.activeTurns, convID)
 	}
@@ -441,17 +542,26 @@ func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 
 // ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.
 func (m *Manager) ResolveSessionKey(convID string, workspaceDir string) string {
+	if turn, ok := m.ResolveTurnContext(convID, workspaceDir); ok {
+		return turn.SessionKey
+	}
+	return ""
+}
+
+// ResolveTurnContext retrieves the full active TurnSecurityContext for a given conversationID or workspace.
+func (m *Manager) ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	if convID != "" {
-		if s, ok := m.activeTurns[convID]; ok && s != "" {
-			return s
+		if t, ok := m.activeTurns[convID]; ok && t.SessionKey != "" {
+			return t, true
 		}
 	}
 	if workspaceDir != "" {
-		if s, ok := m.activeWorkspaces[filepath.Clean(workspaceDir)]; ok && s != "" {
-			return s
+		if t, ok := m.activeWorkspaces[filepath.Clean(workspaceDir)]; ok && t.SessionKey != "" {
+			return t, true
 		}
 	}
-	return ""
+	return domain.TurnSecurityContext{}, false
 }
