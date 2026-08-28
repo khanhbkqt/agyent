@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.5] - 2026-08-28
+
+### Added
+- **Per-Agent Declarative Security Isolation (Milestone 14 Polish):** Support for declaring per-agent `security_preset` directly inside `config.yaml` (`agents.<name>.security_preset`). Refactored `SecurityManager` with pre-built isolated evaluator bundles per posture and introduced per-turn execution context (`TurnSecurityContext`) to prevent concurrent singleton state mutations.
+- **Model Context Capabilities & Autonomous Context Compaction (Milestone 15):** Integrated context window capabilities metadata for Gemini, Claude, and GPT-OSS models. Added sliding-window autonomous compaction engine (`internal/core/engine/compactor.go`) and new in-chat `/compact` slash command. Preserves Level 0–3 system prefix KV-cache by anchoring compacted continuity digests strictly within Level 4 prompt boundaries.
+- **Multi-Agent Token Analytics & Granular Filtering:** Added `GetTokenStatsReport` in SQLite storage and enhanced `/tokens` command with agent-level filtering (`/tokens <agent_name>`) and multi-agent breakdown cards displaying input, output, cache-read savings, and total tokens.
+- **Global Token Analytics CLI (`agyent stats`):** Added new CLI command `agyent stats` for terminal-based token consumption analytics, supporting global summaries, per-agent breakdowns, session-specific filters, and live cache efficiency metrics.
+
+### Fixed
+- **RBAC Security Access Control on `/compact`:** Enforced agent owner/admin verification on `/compact` slash command while allowing unclaimed system agents to be managed smoothly.
+
+---
+
 ## [1.0.4] - 2026-08-28
 
 ### Added
