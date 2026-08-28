@@ -356,13 +356,13 @@ func (s *SQLiteStore) CheckAgentAccess(ctx context.Context, agentName, userID st
 		return false, "", err
 	}
 
-	// 1. Check if public
-	if agent.IsPublic {
+	// 1. Check if public or unclaimed system agent
+	if agent.IsPublic || agent.OwnerID == "" {
 		return true, "public", nil
 	}
 
 	// 2. Check if owner
-	if agent.OwnerID != "" && agent.OwnerID == userID {
+	if agent.OwnerID == userID {
 		return true, "owner", nil
 	}
 

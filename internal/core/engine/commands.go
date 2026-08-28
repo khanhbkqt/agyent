@@ -97,7 +97,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handleNewConversationCommand(ctx, session, args)
 
 	case "/compact", "/compress":
-		responseText = e.handleCompactCommand(ctx, session, args)
+		responseText = e.handleCompactCommand(ctx, msg.Sender, session, args)
 
 	case "/pin":
 		responseText = e.handlePinCommand(ctx, session, args, true)
@@ -458,7 +458,7 @@ func (e *Engine) handleTokenEfficiencyReportCommand(ctx context.Context, session
 	return sb.String()
 }
 
-func (e *Engine) handleCompactCommand(ctx context.Context, session *domain.Session, args []string) string {
+func (e *Engine) handleCompactCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
 	if e.HasActiveTurn(session.SessionKey) {
 		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before compacting."
 	}
@@ -466,6 +466,17 @@ func (e *Engine) handleCompactCommand(ctx context.Context, session *domain.Sessi
 	activeConvID := session.GetActiveConversationID()
 	if activeConvID == "" {
 		return "⚠️ No active conversation to compact in current scope. Start a conversation with a message first."
+	}
+
+	// RBAC Authorization check
+	if session.ActiveAgent != "" && sender.ID != "" {
+		allowed, role, err := e.storage.CheckAgentAccess(ctx, session.ActiveAgent, sender.ID)
+		if err == nil && !allowed {
+			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to operate agent **%s**.", session.ActiveAgent)
+		}
+		if role == "viewer" {
+			return fmt.Sprintf("⛔ **Permission Denied:** Users with **viewer** role cannot archive or compact context for agent **%s**.", session.ActiveAgent)
+		}
 	}
 
 	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
