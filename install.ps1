@@ -1,4 +1,4 @@
-﻿# agyent Windows PowerShell Installer
+# agyent Windows PowerShell Installer
 # Usage: irm https://raw.githubusercontent.com/khanhbkqt/agyent/main/install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
