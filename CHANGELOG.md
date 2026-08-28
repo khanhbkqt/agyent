@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.6] - 2026-08-28
+
+### Fixed
+- **Token Cache Hit Ratio & Gross Input Calculation:** Corrected gross input calculation (`InputTokens + CacheReadTokens`) for multi-step tool call turns in both `/tokens` in-chat report and `agyent stats` CLI command. Accurately calculates cache hit efficiency percentage (`CacheReadTokens / GrossInputTokens * 100%`) across complex multi-step reasoning trajectories.
+
+---
+
 ## [1.0.5] - 2026-08-28
 
 ### Added
