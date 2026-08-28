@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4] - 2026-08-28
+
+### Added
+- **Diagnostic Engine & Triage Command (`agyent doctor`):** Added a modular health diagnostic subsystem under `internal/doctor/` and new CLI command `agyent doctor` (with alias `docter`). Covers automated diagnostics across 7 critical domains: system environment, configuration integrity, AGY CLI authentication/health/quota triage, SQLite WAL database integrity & active/hung session locks, Telegram bot token connectivity, security gateway posture, and plugin directory validation. Supports automated remediation with `--fix`.
+- **Self-Updater Subsystem & Upgrade Command (`agyent update`):** Added automated self-updater under `internal/updater/` and new CLI command `agyent update` (with alias `upgrade`). Features real-time GitHub release tracking, SemVer version comparison, interactive confirmation prompts, safe binary replacement across platforms (handling locked running processes), and startup update notification banners.
+
+### Fixed
+- **One-Line Installer Seamless Execution:** Stripped UTF-8 BOM sequence from `install.ps1` and `install.sh` to eliminate PowerShell token parsing errors during `irm ... | iex` execution, and added graceful running process termination and file overwrite safety.
+
+---
+
 ## [1.0.3] - 2026-08-28
 
 ### Added
