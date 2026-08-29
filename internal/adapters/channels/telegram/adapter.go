@@ -259,7 +259,7 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 	_, _ = bot.DeleteWebhook(&gotgbot.DeleteWebhookOpts{
 		DropPendingUpdates: false,
 		RequestOpts: &gotgbot.RequestOpts{
-			Timeout: 2 * time.Second,
+			Timeout: 5 * time.Second,
 		},
 	})
 
@@ -274,13 +274,16 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 		updates, err := bot.GetUpdates(&gotgbot.GetUpdatesOpts{
 			Offset:  offset,
 			Limit:   100,
-			Timeout: 1, // Short timeout to allow rapid cancellation
+			Timeout: 10, // 10s server-side long polling for immediate delivery and low network/CPU overhead
 			RequestOpts: &gotgbot.RequestOpts{
-				Timeout: 3 * time.Second,
+				Timeout: 25 * time.Second, // Generous client timeout buffer to tolerate cross-datacenter latency & TLS handshakes
 			},
 		})
 
 		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return
+			}
 			slog.WarnContext(ctx, "Telegram polling error",
 				slog.Int64("bot_id", bot.Id),
 				slog.String("bot_username", bot.Username),
@@ -289,7 +292,7 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(500 * time.Millisecond):
 				continue
 			}
 		}

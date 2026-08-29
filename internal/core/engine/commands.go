@@ -983,6 +983,33 @@ func (e *Engine) switchAgent(ctx context.Context, sender domain.SenderUser, sess
 
 	agent, err := e.storage.GetAgent(ctx, agentName)
 	if err != nil {
+		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, agentName)
+		_ = os.MkdirAll(agentPath, 0755)
+		isPublic := (agentName == "agyent")
+		ownerID := ""
+		if !isPublic {
+			ownerID = sender.ID
+		}
+		defaultPreset := domain.SecurityPreset(e.cfg.ResolveAgentPreset(agentName))
+		if defaultPreset == "" {
+			defaultPreset = domain.PresetBalanced
+		}
+		agent = &domain.Agent{
+			Name:           agentName,
+			Description:    "Agyent - Trợ lý AI cá nhân đa năng",
+			Status:         domain.StatusUninitialized,
+			WorkspacePath:  agentPath,
+			SecurityPreset: defaultPreset,
+			OwnerID:        ownerID,
+			IsPublic:       isPublic,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		if saveErr := e.storage.SaveAgent(ctx, agent); saveErr == nil {
+			err = nil
+		}
+	}
+	if err != nil {
 		return fmt.Sprintf("⚠️ Agent `%s` not found. Use `/agents` to view available agents.", agentName)
 	}
 
