@@ -41,7 +41,7 @@ type Engine struct {
 	startTime        time.Time
 
 	turnsMu     sync.Mutex
-	activeTurns map[string]context.CancelFunc
+	activeTurns map[string]activeTurnEntry
 
 	compactionMu            sync.RWMutex
 	pendingCompactedDigests map[string]string
@@ -51,6 +51,11 @@ type Engine struct {
 	cancel      context.CancelFunc
 	running     atomic.Bool
 	wg          sync.WaitGroup
+}
+
+type activeTurnEntry struct {
+	turnID string
+	cancel context.CancelFunc
 }
 
 // NewEngine constructs and wires a new Engine orchestrator instance.
@@ -79,7 +84,7 @@ func NewEngine(
 		contextResolver:         contextResolver,
 		mcpRegistry:             mcpRegistry,
 		pluginManager:           pluginManager,
-		activeTurns:             make(map[string]context.CancelFunc),
+		activeTurns:             make(map[string]activeTurnEntry),
 		pendingCompactedDigests: make(map[string]string),
 		inboundChan:             make(chan domain.CanonicalMessage, 200),
 		ctx:                     ctx,
@@ -211,6 +216,20 @@ func (e *Engine) Start(ctx context.Context) error {
 	// 4. Start background Evolution Orchestrator (if configured)
 	if e.evolution != nil {
 		_ = e.evolution.Start(e.ctx)
+	}
+
+	// 5. Subscribe to Force Kill & Cancellation events from EventBus
+	if e.eventBus != nil {
+		e.eventBus.SubscribeSync(domain.EventForceKillRequested, func(ctx context.Context, evt domain.Event) error {
+			if payload, ok := evt.Payload.(domain.ForceKillPayload); ok && payload.SessionKey != "" {
+				slog.WarnContext(ctx, "Force kill requested via EventBus",
+					slog.String("session_key", payload.SessionKey),
+					slog.String("reason", payload.Reason),
+				)
+				e.ForceUnlockSession(payload.SessionKey)
+			}
+			return nil
+		})
 	}
 
 	return nil
@@ -400,11 +419,12 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	defer unlock()
 
 	// 2. Setup Turn Context with Cancellation Map for /force_unlock
+	turnID := fmt.Sprintf("turn-%d", time.Now().UnixNano())
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 
-	e.registerActiveTurn(sessionKey, turnCancel)
-	defer e.unregisterActiveTurn(sessionKey)
+	e.registerActiveTurn(sessionKey, turnID, turnCancel)
+	defer e.unregisterActiveTurn(sessionKey, turnID)
 
 	// Refresh typing indicator while resolving session and context
 	_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
@@ -885,25 +905,50 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	return nil
 }
 
-func (e *Engine) registerActiveTurn(sessionKey string, cancel context.CancelFunc) {
+func (e *Engine) registerActiveTurn(sessionKey string, turnID string, cancel context.CancelFunc) {
 	e.turnsMu.Lock()
 	defer e.turnsMu.Unlock()
-	e.activeTurns[sessionKey] = cancel
+	e.activeTurns[sessionKey] = activeTurnEntry{turnID: turnID, cancel: cancel}
 }
 
-func (e *Engine) unregisterActiveTurn(sessionKey string) {
+func (e *Engine) unregisterActiveTurn(sessionKey string, turnID string) {
 	e.turnsMu.Lock()
 	defer e.turnsMu.Unlock()
-	delete(e.activeTurns, sessionKey)
+	if entry, exists := e.activeTurns[sessionKey]; exists && entry.turnID == turnID {
+		delete(e.activeTurns, sessionKey)
+	}
 }
 
 func (e *Engine) cancelActiveTurn(sessionKey string) {
 	e.turnsMu.Lock()
 	defer e.turnsMu.Unlock()
-	if cancel, exists := e.activeTurns[sessionKey]; exists {
-		cancel()
+	if entry, exists := e.activeTurns[sessionKey]; exists {
+		entry.cancel()
 		delete(e.activeTurns, sessionKey)
 	}
+}
+
+// ForceUnlockSession cancels any running turn subprocess, resets the lock manager,
+// cancels any pending HITL security approvals, and emits stream cleanup events.
+func (e *Engine) ForceUnlockSession(sessionKey string) {
+	e.cancelActiveTurn(sessionKey)
+	e.lockManager.ForceUnlock(sessionKey)
+
+	if e.securityManager != nil {
+		e.securityManager.CancelSessionApprovals(sessionKey)
+	}
+
+	if e.eventBus != nil {
+		_ = e.eventBus.SyncEmit(context.Background(), domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+			SessionKey: sessionKey,
+			Error:      "Session forcefully unlocked by user",
+		}))
+	}
+}
+
+// EventBus returns the attached EventBusPort instance.
+func (e *Engine) EventBus() ports.EventBusPort {
+	return e.eventBus
 }
 
 // Stop gracefully shuts down the engine, cancels in-flight turns, and closes background workers.
@@ -921,8 +966,8 @@ func (e *Engine) Stop(ctx context.Context) error {
 	}
 
 	e.turnsMu.Lock()
-	for k, cancel := range e.activeTurns {
-		cancel()
+	for k, entry := range e.activeTurns {
+		entry.cancel()
 		delete(e.activeTurns, k)
 	}
 	e.turnsMu.Unlock()

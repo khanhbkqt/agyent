@@ -241,6 +241,33 @@ func (h *HITLCoordinator) CancelPendingRequest(requestID string) {
 	}
 }
 
+// CancelPendingRequestsForSession terminates all active approval cards for a given session.
+func (h *HITLCoordinator) CancelPendingRequestsForSession(sessionKey string) {
+	h.pending.Range(func(key, val interface{}) bool {
+		entry, ok := val.(*pendingHITL)
+		if ok && entry.req.SessionKey == sessionKey {
+			if entry.resolved.CompareAndSwap(false, true) {
+				select {
+				case entry.respChan <- domain.ApprovalDecision{
+					RequestID: entry.req.RequestID,
+					Action:    "cancelled",
+					Approved:  false,
+					Timestamp: time.Now(),
+				}:
+				default:
+				}
+				h.updateCardOnDecision(entry, domain.ApprovalDecision{
+					RequestID: entry.req.RequestID,
+					Action:    "cancelled",
+					Approved:  false,
+					Timestamp: time.Now(),
+				})
+			}
+		}
+		return true
+	})
+}
+
 func (h *HITLCoordinator) formatCardText(req domain.ApprovalRequest) string {
 	var sb strings.Builder
 	sb.WriteString("🛡️ **[Agyent Security Gateway] Approval Request**\n")

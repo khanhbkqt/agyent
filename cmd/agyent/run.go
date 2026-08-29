@@ -108,6 +108,7 @@ var runCmd = &cobra.Command{
 		// 6. Initialize Universal Security Gateway & IPC Host
 		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
 		secMgr := securityAdapter.NewManager(cfg.Security, channel.HITLCoordinator(), mainLogger)
+		secMgr.SetEventBus(bus)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
 
 		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)

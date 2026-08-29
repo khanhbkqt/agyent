@@ -57,6 +57,7 @@ func (m *mockSecurityManager) ResolveSessionKey(convID string, workspaceDir stri
 func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool) {
 	return domain.TurnSecurityContext{}, false
 }
+func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string) {}
 
 func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 	addr := "127.0.0.1:49988"

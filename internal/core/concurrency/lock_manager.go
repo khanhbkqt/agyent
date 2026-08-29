@@ -19,7 +19,9 @@ var (
 
 type lockEntry struct {
 	sem      chan struct{}
+	cancelCh chan struct{}
 	refCount int
+	isClosed bool
 }
 
 // SessionLockManager coordinates per-session mutual exclusion with automatic reference counting
@@ -46,6 +48,7 @@ func (m *SessionLockManager) Acquire(ctx context.Context, sessionKey string, tim
 	if !exists {
 		entry = &lockEntry{
 			sem:      make(chan struct{}, 1),
+			cancelCh: make(chan struct{}),
 			refCount: 0,
 		}
 		m.locks[sessionKey] = entry
@@ -77,6 +80,18 @@ func (m *SessionLockManager) Acquire(ctx context.Context, sessionKey string, tim
 
 	select {
 	case entry.sem <- struct{}{}:
+		// Non-blocking check to guard against select pseudo-randomness if cancelCh closed simultaneously
+		select {
+		case <-entry.cancelCh:
+			select {
+			case <-entry.sem:
+			default:
+			}
+			cleanupRef()
+			return nil, ErrLockCanceled
+		default:
+		}
+
 		var once sync.Once
 		unlock := func() {
 			once.Do(func() {
@@ -88,6 +103,10 @@ func (m *SessionLockManager) Acquire(ctx context.Context, sessionKey string, tim
 			})
 		}
 		return unlock, nil
+
+	case <-entry.cancelCh:
+		cleanupRef()
+		return nil, ErrLockCanceled
 
 	case <-ctx.Done():
 		cleanupRef()
@@ -107,23 +126,23 @@ func (m *SessionLockManager) ActiveLockCount() int {
 }
 
 // ForceUnlock unconditionally resets the lock state for sessionKey.
-// Returns true if a lock entry existed and was actively held.
+// Any in-flight goroutines waiting to acquire the lock for this key are immediately aborted with ErrLockCanceled.
+// Returns true if a lock entry existed.
 func (m *SessionLockManager) ForceUnlock(sessionKey string) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	entry, exists := m.locks[sessionKey]
 	if !exists {
+		m.mu.Unlock()
 		return false
 	}
-
-	released := false
-	select {
-	case <-entry.sem:
-		released = true
-	default:
-	}
-
 	delete(m.locks, sessionKey)
-	return released
+
+	// Close cancelCh to immediately unblock and abort all waiting goroutines on this entry
+	if !entry.isClosed {
+		entry.isClosed = true
+		close(entry.cancelCh)
+	}
+	m.mu.Unlock()
+
+	return true
 }

@@ -28,7 +28,20 @@ const (
 	EventSubagentCompleted    EventType = "subagent.completed"
 	EventSubagentFailed       EventType = "subagent.failed"
 	EventSubagentCancelled    EventType = "subagent.cancelled"
+
+	// Control & Cancellation Events
+	EventForceKillRequested EventType = "execution.force_kill"
 )
+
+// ForceKillPayload carries parameters to terminate an active execution turn and release session lock.
+type ForceKillPayload struct {
+	SessionKey     string    `json:"session_key"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Reason         string    `json:"reason"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
+func (p ForceKillPayload) GetSessionKey() string { return p.SessionKey }
 
 // SubagentEventPayload carries subagent task lifecycle transitions on the EventBus.
 type SubagentEventPayload struct {

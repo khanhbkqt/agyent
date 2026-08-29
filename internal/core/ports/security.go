@@ -64,6 +64,9 @@ type SecurityManagerPort interface {
 
 	// ResolveTurnContext retrieves the full active TurnSecurityContext for a given conversationID or workspace.
 	ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool)
+
+	// CancelSessionApprovals terminates all pending approval requests for a given session.
+	CancelSessionApprovals(sessionKey string)
 }
 
 // HookIPCPort defines the IPC server interface communicating with agyent-hook binary.
@@ -83,4 +86,7 @@ type HITLApprovalPort interface {
 
 	// CancelPendingRequest terminates a pending approval request when the turn is aborted.
 	CancelPendingRequest(requestID string)
+
+	// CancelPendingRequestsForSession terminates all pending approval requests for a given session.
+	CancelPendingRequestsForSession(sessionKey string)
 }

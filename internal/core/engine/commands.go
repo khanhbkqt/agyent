@@ -130,8 +130,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		}
 
 	case "/force_unlock", "/unlock":
-		e.cancelActiveTurn(sessionKey)
-		e.lockManager.ForceUnlock(sessionKey)
+		e.ForceUnlockSession(sessionKey)
 		responseText = "🔓 **Session mutex forcefully released.** Any hanging turn subprocess has been terminated."
 
 	default:

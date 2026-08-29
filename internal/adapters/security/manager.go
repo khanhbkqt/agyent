@@ -74,12 +74,20 @@ type Manager struct {
 	sessionGrants    map[string][]sessionGrant             // sessionKey -> grants
 	activeTurns      map[string]domain.TurnSecurityContext // convID -> TurnSecurityContext
 	activeWorkspaces map[string]domain.TurnSecurityContext // workspaceDir -> TurnSecurityContext
+	eventBus         ports.EventBusPort
 	logger           *slog.Logger
 
 	// Metrics (Lock-free atomic counters)
 	totalEvaluations atomic.Int64
 	blockedToday     atomic.Int64
 	approvedToday    atomic.Int64
+}
+
+// SetEventBus sets the EventBusPort on the security manager.
+func (m *Manager) SetEventBus(bus ports.EventBusPort) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventBus = bus
 }
 
 // NewManager constructs a new Security Manager with isolated evaluator pools per preset.
@@ -264,6 +272,21 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		appDecision, appErr := hitlPort.RequestApproval(ctx, appReq)
 		if appErr != nil || !appDecision.Approved {
 			m.recordBlocked()
+
+			if appDecision.Action == "force_kill" {
+				m.mu.RLock()
+				eb := m.eventBus
+				m.mu.RUnlock()
+				if eb != nil {
+					_ = eb.SyncEmit(ctx, domain.NewEvent(domain.EventForceKillRequested, domain.ForceKillPayload{
+						SessionKey:     sessionKey,
+						ConversationID: req.ConversationID,
+						Reason:         "User clicked Force Kill Agent on security approval card",
+						Timestamp:      time.Now(),
+					}))
+				}
+			}
+
 			return domain.SecurityDecision{
 				Decision:  domain.DecisionDeny,
 				Reason:    fmt.Sprintf("🛡️ [Security Gate]: Action rejected by user or approval timed out (%s)", appDecision.Action),
@@ -564,4 +587,14 @@ func (m *Manager) ResolveTurnContext(convID string, workspaceDir string) (domain
 		}
 	}
 	return domain.TurnSecurityContext{}, false
+}
+
+// CancelSessionApprovals terminates all pending HITL approval requests for the given session.
+func (m *Manager) CancelSessionApprovals(sessionKey string) {
+	m.mu.RLock()
+	hitl := m.hitlPort
+	m.mu.RUnlock()
+	if hitl != nil {
+		hitl.CancelPendingRequestsForSession(sessionKey)
+	}
 }

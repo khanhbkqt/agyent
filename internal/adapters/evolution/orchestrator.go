@@ -136,7 +136,21 @@ type sessionGen struct {
 	lastAccess time.Time
 }
 
-// NotifyUserActivity increments generation ID and aborts in-flight reflection if user resumes chatting.
+func (o *EvolutionOrchestrator) getGenerationID(sessionKey string) int64 {
+	if val, ok := o.genMap.Load(sessionKey); ok {
+		switch v := val.(type) {
+		case sessionGen:
+			return v.id
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		}
+	}
+	return 1
+}
+
+// NotifyUserActivity registers user interaction, bumping the generation ID and aborting stale reflections.
 func (o *EvolutionOrchestrator) NotifyUserActivity(sessionKey string) {
 	if sessionKey == "" {
 		return
@@ -160,12 +174,8 @@ func (o *EvolutionOrchestrator) NotifyUserActivity(sessionKey string) {
 
 	// Increment generation ID
 	var currentGen int64 = 1
-	if val, ok := o.genMap.Load(sessionKey); ok {
-		if sg, ok := val.(sessionGen); ok {
-			currentGen = sg.id + 1
-		} else if id, ok := val.(int64); ok {
-			currentGen = id + 1
-		}
+	if _, ok := o.genMap.Load(sessionKey); ok {
+		currentGen = o.getGenerationID(sessionKey) + 1
 	}
 	o.genMap.Store(sessionKey, sessionGen{id: currentGen, lastAccess: time.Now()})
 
@@ -208,10 +218,7 @@ func (o *EvolutionOrchestrator) TriggerConversationEvolution(ctx context.Context
 		}
 	}
 
-	var currentGen int64 = 1
-	if val, ok := o.genMap.Load(conv.SessionKey); ok {
-		currentGen = val.(int64)
-	}
+	currentGen := o.getGenerationID(conv.SessionKey)
 
 	snapshot := domain.ConversationSnapshot{
 		ConversationID:    conv.ID,
@@ -299,17 +306,9 @@ func (o *EvolutionOrchestrator) processTask(task evolutionTask) {
 	defer o.abortMap.Delete(snapshot.SessionKey)
 
 	// Check if Generation ID changed before starting
-	if val, ok := o.genMap.Load(snapshot.SessionKey); ok {
-		var genID int64
-		if sg, ok := val.(sessionGen); ok {
-			genID = sg.id
-		} else if id, ok := val.(int64); ok {
-			genID = id
-		}
-		if genID != snapshot.GenerationID {
-			slog.Debug("Generation changed before reflection start, aborting", slog.String("session_key", snapshot.SessionKey))
-			return
-		}
+	if o.getGenerationID(snapshot.SessionKey) != snapshot.GenerationID {
+		slog.Debug("Generation changed before reflection start, aborting", slog.String("session_key", snapshot.SessionKey))
+		return
 	}
 
 	// 4. Run Reflection Engine
@@ -334,17 +333,9 @@ func (o *EvolutionOrchestrator) processTask(task evolutionTask) {
 	}
 
 	// Check if Generation ID changed during reflection
-	if val, ok := o.genMap.Load(snapshot.SessionKey); ok {
-		var genID int64
-		if sg, ok := val.(sessionGen); ok {
-			genID = sg.id
-		} else if id, ok := val.(int64); ok {
-			genID = id
-		}
-		if genID != snapshot.GenerationID {
-			slog.Debug("Generation changed during reflection, discarding results", slog.String("session_key", snapshot.SessionKey))
-			return
-		}
+	if o.getGenerationID(snapshot.SessionKey) != snapshot.GenerationID {
+		slog.Debug("Generation changed during reflection, discarding results", slog.String("session_key", snapshot.SessionKey))
+		return
 	}
 
 	// 5. Persistence Routing:

@@ -12,6 +12,7 @@ import (
 	"agyent/internal/adapters/security/ipc"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,8 @@ func (m *mockHITLApprovalPort) HandleCallback(ctx context.Context, callbackID st
 }
 
 func (m *mockHITLApprovalPort) CancelPendingRequest(requestID string) {}
+
+func (m *mockHITLApprovalPort) CancelPendingRequestsForSession(sessionKey string) {}
 
 func TestSecurityManager_EvaluateToolCall_CommandPolicies(t *testing.T) {
 	cfg := config.GetEffectiveSecurityPreset("balanced")
@@ -94,6 +97,43 @@ func TestSecurityManager_EvaluateToolCall_CommandPolicies(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, hitlTriggered, "python -c must trigger HITL in balanced preset")
 	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 6. HITL Force Kill emits EventForceKillRequested
+	var capturedEvent domain.Event
+	mockBus := &mockEventBusForSecMgr{
+		emitFn: func(e domain.Event) {
+			capturedEvent = e
+		},
+	}
+	mgr.SetEventBus(mockBus)
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		return domain.ApprovalDecision{Approved: false, Action: "force_kill"}, nil
+	}
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey:     "telegram:test:forcekill",
+		ConversationID: "conv-123",
+		ToolName:       "run_command",
+		Args:           map[string]interface{}{"CommandLine": "chmod 777 /var/data"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Equal(t, domain.EventForceKillRequested, capturedEvent.Type)
+	payload, ok := capturedEvent.Payload.(domain.ForceKillPayload)
+	require.True(t, ok)
+	assert.Equal(t, "telegram:test:forcekill", payload.SessionKey)
+	assert.Equal(t, "conv-123", payload.ConversationID)
+}
+
+type mockEventBusForSecMgr struct {
+	ports.EventBusPort
+	emitFn func(domain.Event)
+}
+
+func (m *mockEventBusForSecMgr) SyncEmit(ctx context.Context, evt domain.Event) error {
+	if m.emitFn != nil {
+		m.emitFn(evt)
+	}
+	return nil
 }
 
 func TestSecurityManager_PresetSwitching(t *testing.T) {

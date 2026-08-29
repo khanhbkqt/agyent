@@ -1312,4 +1312,151 @@ func TestEngine_EvolutionExplicitSwitchHooks(t *testing.T) {
 	mockEvo.mu.Unlock()
 }
 
+func TestEngine_ForceUnlockSession_AndNewConversation(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionKey := "telegram:123456"
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+
+	// Set runner to block until cancelled
+	blockingCh := make(chan struct{})
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-blockingCh:
+			return &domain.ExecutionResult{Success: true, ResponseText: "done"}, nil
+		}
+	}
+
+	// 1. Start long-running turn in background
+	go func() {
+		msg := domain.CanonicalMessage{
+			ID:        "msg-block-1",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "long running task",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg)
+	}()
+
+	// Wait for turn to start and register active turn
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, eng.HasActiveTurn(sessionKey), "expected active turn in flight")
+
+	// 2. Calling /new while turn is active should fail with busy error
+	busyMsg := domain.CanonicalMessage{
+		ID:        "msg-new-fail",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/new",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	err := eng.HandleDebouncedMessage(ctx, busyMsg)
+	require.NoError(t, err)
+
+	// 3. Force unlock the session
+	eng.ForceUnlockSession(sessionKey)
+	assert.False(t, eng.HasActiveTurn(sessionKey), "expected active turn to be cleaned up after ForceUnlockSession")
+
+	// 4. Calling /new now should succeed immediately
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-fresh-after-force",
+			ResponseText:   "Xin chào! Cuộc trò chuyện mới đã sẵn sàng.",
+		}, nil
+	}
+
+	newMsg := domain.CanonicalMessage{
+		ID:        "msg-new-success",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/new",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	err = eng.HandleDebouncedMessage(ctx, newMsg)
+	require.NoError(t, err)
+}
+
+func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	sessionKey := "telegram:123456"
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+
+	blockingCh := make(chan struct{})
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-blockingCh:
+			return &domain.ExecutionResult{Success: true, ResponseText: "done"}, nil
+		}
+	}
+
+	// 1. Start long-running turn
+	go func() {
+		msg := domain.CanonicalMessage{
+			ID:        "msg-block-2",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "running something",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, eng.HasActiveTurn(sessionKey))
+
+	// 2. Emit EventForceKillRequested on EventBus (simulating HITL Force Kill button)
+	bus := eng.EventBus()
+	require.NotNil(t, bus)
+	err := bus.SyncEmit(ctx, domain.NewEvent(domain.EventForceKillRequested, domain.ForceKillPayload{
+		SessionKey: sessionKey,
+		Reason:     "User pressed Force Kill Agent",
+		Timestamp:  time.Now(),
+	}))
+	require.NoError(t, err)
+
+	// Wait for async handler
+	require.Eventually(t, func() bool {
+		return !eng.HasActiveTurn(sessionKey)
+	}, 2*time.Second, 10*time.Millisecond, "expected active turn to be cleaned up after EventForceKillRequested")
+
+	// 3. New conversation executes cleanly
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-fresh-2",
+			ResponseText:   "New context ready!",
+		}, nil
+	}
+
+	newMsg := domain.CanonicalMessage{
+		ID:        "msg-new-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/new",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	err = eng.HandleDebouncedMessage(ctx, newMsg)
+	require.NoError(t, err)
+}
+
 
