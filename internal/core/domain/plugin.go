@@ -34,4 +34,3 @@ type PluginSyncResult struct {
 	Reason           string `json:"reason,omitempty"`
 	Path             string `json:"path"`
 }
-

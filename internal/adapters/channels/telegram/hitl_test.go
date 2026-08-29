@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,4 +76,52 @@ func TestHITLCoordinator_NonAdminDenied(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, decision.Approved)
 	assert.Equal(t, "timeout", decision.Action)
+}
+
+func TestHITLCoordinator_LargePayloadTruncation(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AdminUserIDs: []int64{123456789},
+		},
+		Security: config.GetEffectiveSecurityPreset("balanced"),
+	}
+
+	coordinator := NewHITLCoordinator(nil, cfg, nil)
+
+	hugeCommand := "echo " + strings.Repeat("A", 10000)
+	hugeDiff := "diff --git a/file b/file\n" + strings.Repeat("+ line of large code\n", 500)
+	hugeFile := "/path/to/very/long/" + strings.Repeat("subfolder/", 50) + "file.go"
+
+	req := domain.ApprovalRequest{
+		RequestID:   "hitl-test-large",
+		SessionKey:  "telegram:123456789",
+		ToolName:    "run_command",
+		AgentName:   "coder",
+		CommandLine: hugeCommand,
+		TargetFile:  hugeFile,
+		DiffPreview: hugeDiff,
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(10 * time.Second),
+	}
+
+	cardText := coordinator.formatCardText(req)
+	formatted := FormatMarkdownToTelegramHTML(cardText)
+
+	// Telegram max text length is 4096. Our formatted text must be comfortably below this limit.
+	assert.Less(t, len([]rune(formatted)), 3500)
+	assert.Contains(t, cardText, "chars omitted")
+	assert.Contains(t, formatted, "<code>coder</code>")
+}
+
+func TestTruncateString(t *testing.T) {
+	assert.Equal(t, "", truncateString("", 100))
+	assert.Equal(t, "hello", truncateString("hello", 10))
+
+	truncatedSingle := truncateString("This is a very long single-line text that needs truncation.", 30)
+	assert.Contains(t, truncatedSingle, "chars omitted")
+	assert.LessOrEqual(t, len([]rune(truncatedSingle)), 35)
+
+	multiLine := "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6"
+	truncatedMulti := truncateString(multiLine, 25)
+	assert.Contains(t, truncatedMulti, "\n... [")
 }

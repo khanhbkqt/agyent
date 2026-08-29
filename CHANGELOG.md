@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.9] - 2026-08-29
+
+### Added
+- **CLI Security Preset Management (`agyent security`):** Introduced full `agyent security` CLI command suite (`status`, `preset` / `set-preset`, `list-presets`) allowing host administrators to inspect security postures, list preset matrices, and switch or downgrade presets freely across `config.yaml` and SQLite database without monotonic chat restrictions.
+- **Onboarding Setup Wizard Polish (`agyent init`):** Upgraded `agyent init` into a multi-step interactive onboarding experience with Security Preset selection (`unrestricted`, `developer`, `balanced`, `strict`, `read_only`), HITL Approval Timeout setup, and automated extraction/enablement of builtin Capability Plugins (`browser-camoufox`, `database-sqlite`, `subagent-dispatcher`, `system-diagnostics`).
+- **Non-Interactive Onboarding Flags:** Added `--security-preset`, `--approval-timeout`, `--plugins`, `--enable-all-plugins`, and `--skip-plugins` flags to `agyent init` for automated server provisioning.
+
+---
+
 ## [1.0.8] - 2026-08-29
 
 ### Added

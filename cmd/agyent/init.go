@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"agyent/internal/wizard"
 
@@ -11,18 +12,23 @@ import (
 )
 
 var (
-	nonInteractive     bool
-	tokenFlag          string
-	adminFlag          string
-	agentsDirFlag      string
-	agyPathFlag        string
-	debounceFlag       float64
-	createDefaultAgent bool
+	nonInteractive      bool
+	tokenFlag           string
+	adminFlag           string
+	agentsDirFlag       string
+	agyPathFlag         string
+	debounceFlag        float64
+	createDefaultAgent  bool
+	securityPresetFlag  string
+	approvalTimeoutFlag int
+	pluginsFlag         string
+	enableAllPlugins    bool
+	skipPlugins         bool
 
 	initCmd = &cobra.Command{
 		Use:   "init",
 		Short: "Initialize configuration and workspace for agyent",
-		Long:  `Run an interactive wizard to configure Telegram bot credentials, admin IDs, workspace paths, and agy CLI integration.`,
+		Long:  `Run an interactive wizard to configure Telegram bot credentials, security posture, plugins, workspace paths, and agy CLI integration.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			ctx := context.Background()
 
@@ -36,6 +42,16 @@ var (
 				}
 			}
 
+			var pluginsList []string
+			if pluginsFlag != "" {
+				parts := strings.Split(pluginsFlag, ",")
+				for _, p := range parts {
+					if trimmed := strings.TrimSpace(p); trimmed != "" {
+						pluginsList = append(pluginsList, trimmed)
+					}
+				}
+			}
+
 			opts := wizard.WizardOptions{
 				NonInteractive:     nonInteractive,
 				ConfigPath:         cfgFile,
@@ -45,6 +61,11 @@ var (
 				AGYPath:            agyPathFlag,
 				DebounceSeconds:    debounceFlag,
 				CreateDefaultAgent: createDefaultAgent,
+				SecurityPreset:     securityPresetFlag,
+				ApprovalTimeout:    approvalTimeoutFlag,
+				Plugins:            pluginsList,
+				EnableAllPlugins:   enableAllPlugins,
+				SkipPlugins:        skipPlugins,
 			}
 
 			_, err := wizard.RunWizard(ctx, opts)
@@ -64,6 +85,11 @@ func init() {
 	initCmd.Flags().StringVar(&agyPathFlag, "agy-path", "", "Path to AGY CLI binary")
 	initCmd.Flags().Float64Var(&debounceFlag, "debounce", 2.0, "Message debounce duration in seconds")
 	initCmd.Flags().BoolVar(&createDefaultAgent, "create-default-agent", true, "Automatically create starter 'agyent' agent")
+	initCmd.Flags().StringVar(&securityPresetFlag, "security-preset", "balanced", "Default security preset ('unrestricted', 'developer', 'balanced', 'strict', 'read_only')")
+	initCmd.Flags().IntVar(&approvalTimeoutFlag, "approval-timeout", 60, "Security HITL approval timeout in seconds")
+	initCmd.Flags().StringVar(&pluginsFlag, "plugins", "", "Comma-separated list of capability plugins to install (e.g. 'browser-camoufox,database-sqlite')")
+	initCmd.Flags().BoolVar(&enableAllPlugins, "enable-all-plugins", false, "Install and enable all builtin capability plugins")
+	initCmd.Flags().BoolVar(&skipPlugins, "skip-plugins", false, "Skip installing capability plugins during setup")
 
 	rootCmd.AddCommand(initCmd)
 }

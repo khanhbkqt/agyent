@@ -667,5 +667,3 @@ func resolveCommandPath(cmd string) string {
 	}
 	return cmd
 }
-
-

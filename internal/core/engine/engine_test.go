@@ -1458,5 +1458,3 @@ func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {
 	err = eng.HandleDebouncedMessage(ctx, newMsg)
 	require.NoError(t, err)
 }
-
-

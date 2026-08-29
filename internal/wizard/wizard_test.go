@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"agyent/internal/adapters/storage/sqlite"
 	"agyent/internal/config"
+	"agyent/internal/core/domain"
 	"agyent/internal/wizard"
 
 	"github.com/stretchr/testify/assert"
@@ -175,17 +177,21 @@ func TestRunWizard_NonInteractive(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	agentsDir := filepath.Join(tmpDir, "agents")
+	dbPath := filepath.Join(tmpDir, "test.db")
 
 	opts := wizard.WizardOptions{
 		NonInteractive:     true,
 		ConfigPath:         configPath,
-		DBPath:             filepath.Join(tmpDir, "test.db"),
+		DBPath:             dbPath,
 		BotToken:           "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ1234567890",
 		AdminUserIDs:       []int64{987654321},
 		AgentsDir:          agentsDir,
 		AGYPath:            "agy",
 		DebounceSeconds:    2.5,
 		CreateDefaultAgent: true,
+		SecurityPreset:     "developer",
+		ApprovalTimeout:    45,
+		SkipPlugins:        true,
 	}
 
 	ctx := context.Background()
@@ -198,15 +204,44 @@ func TestRunWizard_NonInteractive(t *testing.T) {
 	assert.Equal(t, []int64{987654321}, cfg.Telegram.AdminUserIDs)
 	assert.Equal(t, agentsDir, cfg.Storage.AgentsDir)
 	assert.Equal(t, 2.5, cfg.Storage.DebounceSeconds)
+	assert.Equal(t, "developer", cfg.Security.Preset)
+	assert.Equal(t, 45, cfg.Security.ApprovalTimeoutSeconds)
+	assert.Equal(t, "developer", cfg.Agents["agyent"].SecurityPreset)
 
-	// Check created file
+	// Check created config.yaml file
 	loaded, err := config.Load(configPath)
 	require.NoError(t, err)
 	assert.Equal(t, "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ1234567890", loaded.Telegram.BotToken)
+	assert.Equal(t, "developer", loaded.Security.Preset)
+	assert.Equal(t, 45, loaded.Security.ApprovalTimeoutSeconds)
 
 	// Check agent workspace dir created
 	agentPath := config.ResolveAgentWorkspace(agentsDir, "agyent")
 	info, err := os.Stat(agentPath)
 	assert.NoError(t, err)
 	assert.True(t, info.IsDir())
+
+	// Check SQLite database agent security preset
+	store, err := sqlite.Open(dbPath)
+	require.NoError(t, err)
+	defer store.Close()
+
+	agent, err := store.GetAgent(ctx, "agyent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.SecurityPreset("developer"), agent.SecurityPreset)
+}
+
+func TestSetupPlugins(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginsDir := filepath.Join(tmpDir, "plugins")
+
+	ctx := context.Background()
+	installed, err := wizard.SetupPlugins(ctx, []string{"browser-camoufox", "database-sqlite"}, pluginsDir)
+	require.NoError(t, err)
+	assert.Contains(t, installed, "browser-camoufox")
+	assert.Contains(t, installed, "database-sqlite")
+
+	// Verify plugin.json exists and enabled is true
+	manifestPath := filepath.Join(pluginsDir, "browser-camoufox", "plugin.json")
+	assert.FileExists(t, manifestPath)
 }

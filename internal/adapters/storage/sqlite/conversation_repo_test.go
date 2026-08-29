@@ -251,4 +251,3 @@ func TestListRecentConversations_WildcardFilter(t *testing.T) {
 		t.Errorf("expected 1 conversation for agent-b (conv-wild-2), got total=%d len=%d", totalAgentB, len(byAgentB))
 	}
 }
-

@@ -173,8 +173,10 @@ The wizard will guide you through:
 1. Entering your Telegram Bot Token.
 2. Specifying your Telegram numeric Admin User ID(s).
 3. Setting the agent workspaces directory (default: `~/.agyent/agents/`).
-4. Verifying the `agy` CLI binary in `$PATH`.
-5. Generating the starter agent (`agyent`) with default identity files.
+4. Selecting the default **Security Preset** (`unrestricted`, `developer`, `balanced`, `strict`, `read_only`) & HITL timeout.
+5. Choosing which builtin **Capability Plugins** (`browser-camoufox`, `database-sqlite`, `system-diagnostics`, `subagent-dispatcher`) to install and enable.
+6. Verifying the `agy` CLI binary in `$PATH`.
+7. Generating the starter agent (`agyent`) with default identity files and assigned security preset.
 
 **Non-Interactive Setup (for CI/CD & automated deployment):**
 ```bash
@@ -184,7 +186,27 @@ agyent init \
   --admin "123456789" \
   --agents-dir "~/.agyent/agents" \
   --agy-path "agy" \
-  --debounce 2.0
+  --debounce 2.0 \
+  --security-preset "developer" \
+  --approval-timeout 60 \
+  --enable-all-plugins
+```
+
+#### 🛡️ `agyent security` — Manage Security Presets & Guardrails
+
+Manage gateway security postures directly from the terminal without monotonic chat downgrade restrictions:
+```bash
+# View current security dashboard & agent presets
+agyent security status
+
+# List all 5 security presets with autonomy levels & permissions
+agyent security list-presets
+
+# Switch global security preset (unrestricted | developer | balanced | strict | read_only)
+agyent security preset unrestricted
+
+# Switch preset for a specific agent profile
+agyent security preset strict --agent auditor
 ```
 
 #### 📡 `agyent register-commands` — Sync Slash Commands with Telegram

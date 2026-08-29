@@ -45,6 +45,31 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 		t.Logf("Binary version output:\n%s", string(out))
 	})
 
+	// 1.1. Security commands e2e test
+	t.Run("SecurityListPresetsCommand", func(t *testing.T) {
+		out, err := exec.Command(exePath, "security", "list-presets").CombinedOutput()
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "Agyent Security Presets Matrix")
+		assert.Contains(t, string(out), "unrestricted")
+		assert.Contains(t, string(out), "developer")
+		assert.Contains(t, string(out), "balanced")
+		assert.Contains(t, string(out), "strict")
+		assert.Contains(t, string(out), "read_only")
+		t.Logf("Security list-presets output:\n%s", string(out))
+	})
+
+	// 1.2. Init help flags test
+	t.Run("InitFlagsHelp", func(t *testing.T) {
+		out, err := exec.Command(exePath, "init", "--help").CombinedOutput()
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "--security-preset")
+		assert.Contains(t, string(out), "--approval-timeout")
+		assert.Contains(t, string(out), "--plugins")
+		assert.Contains(t, string(out), "--enable-all-plugins")
+		assert.Contains(t, string(out), "--skip-plugins")
+		t.Logf("Init help output:\n%s", string(out))
+	})
+
 	// 2. Offline Default-Deny test
 	t.Run("OfflineFailSafeDefaultDeny", func(t *testing.T) {
 		payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"dir"}},"stepIdx":1,"conversationId":"test-offline"}`

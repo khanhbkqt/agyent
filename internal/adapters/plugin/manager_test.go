@@ -178,4 +178,3 @@ func TestPluginManager_ProvenanceAndDowngradeProtection(t *testing.T) {
 	assert.True(t, resDowngrade.Skipped)
 	assert.Equal(t, "already up-to-date", resDowngrade.Reason)
 }
-

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
@@ -82,11 +83,24 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 			opts.MessageThreadId = threadID
 		}
 		formatted := FormatMarkdownToTelegramHTML(cardText)
+		if utf8.RuneCountInString(formatted) > 4000 {
+			formatted = FormatMarkdownToTelegramHTML(truncateString(cardText, 2500))
+		}
 		msg, err := h.bot.SendMessage(chatID, formatted, opts)
+		if err != nil {
+			h.logger.Warn("Failed to send HTML HITL approval message, retrying plain text fallback", "error", err)
+			opts.ParseMode = ""
+			plainText := StripHTMLTags(formatted)
+			if utf8.RuneCountInString(plainText) > 4000 {
+				plainText = truncateString(plainText, 3800)
+			}
+			msg, err = h.bot.SendMessage(chatID, plainText, opts)
+			if err != nil {
+				h.logger.Error("Failed to send HITL approval message after fallback", "error", err)
+			}
+		}
 		if err == nil && msg != nil {
 			entry.messageID = msg.MessageId
-		} else {
-			h.logger.Warn("Failed to send HITL approval message", "error", err)
 		}
 	}
 
@@ -272,15 +286,29 @@ func (h *HITLCoordinator) formatCardText(req domain.ApprovalRequest) string {
 	var sb strings.Builder
 	sb.WriteString("🛡️ **[Agyent Security Gateway] Approval Request**\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	if req.AgentName != "" {
+		sb.WriteString(fmt.Sprintf("🤖 **Agent**      : `%s`\n", req.AgentName))
+	}
 	sb.WriteString(fmt.Sprintf("🛠️ **Tool**       : `%s`\n", req.ToolName))
 	if req.CommandLine != "" {
-		sb.WriteString(fmt.Sprintf("⚙️ **Command**    : `%s`\n", req.CommandLine))
+		cmd := truncateString(req.CommandLine, 800)
+		if strings.Contains(cmd, "\n") || len(cmd) > 100 || strings.Contains(cmd, "`") {
+			sb.WriteString(fmt.Sprintf("⚙️ **Command**    :\n```bash\n%s\n```\n", cmd))
+		} else {
+			sb.WriteString(fmt.Sprintf("⚙️ **Command**    : `%s`\n", cmd))
+		}
 	}
 	if req.TargetFile != "" {
-		sb.WriteString(fmt.Sprintf("📂 **Target File**: `%s`\n", req.TargetFile))
+		target := truncateString(req.TargetFile, 250)
+		sb.WriteString(fmt.Sprintf("📂 **Target File**: `%s`\n", target))
 	}
 	if req.DiffPreview != "" {
-		sb.WriteString(fmt.Sprintf("🔍 **Reason/Diff**: %s\n", req.DiffPreview))
+		diff := truncateString(req.DiffPreview, 1200)
+		if strings.Contains(diff, "\n") || len(diff) > 120 {
+			sb.WriteString(fmt.Sprintf("🔍 **Reason/Diff**:\n```\n%s\n```\n", diff))
+		} else {
+			sb.WriteString(fmt.Sprintf("🔍 **Reason/Diff**: %s\n", diff))
+		}
 	}
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	sb.WriteString("⚠️ *This sensitive action requires Administrator approval before execution.*")
@@ -337,10 +365,49 @@ func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.Ap
 
 	updated := fmt.Sprintf("%s\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📌 **Status:** %s", h.formatCardText(entry.req), statusText)
 	formatted := FormatMarkdownToTelegramHTML(updated)
-	_, _, _ = h.bot.EditMessageText(&gotgbot.EditMessageTextOpts{
+	if utf8.RuneCountInString(formatted) > 4000 {
+		formatted = FormatMarkdownToTelegramHTML(truncateString(updated, 2500))
+	}
+
+	opts := &gotgbot.EditMessageTextOpts{
 		ChatId:    entry.chatID,
 		MessageId: entry.messageID,
 		ParseMode: "HTML",
 		Text:      formatted,
-	})
+	}
+
+	_, _, err := h.bot.EditMessageText(opts)
+	if err != nil {
+		h.logger.Warn("Failed to edit HITL card HTML, attempting plaintext fallback", "error", err)
+		opts.ParseMode = ""
+		plainText := StripHTMLTags(formatted)
+		if utf8.RuneCountInString(plainText) > 4000 {
+			plainText = truncateString(plainText, 3800)
+		}
+		opts.Text = plainText
+		_, _, _ = h.bot.EditMessageText(opts)
+	}
+}
+
+func truncateString(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	total := len(runes)
+	if total <= maxRunes {
+		return s
+	}
+	omitted := total - maxRunes
+	var suffix string
+	if strings.Contains(s, "\n") {
+		suffix = fmt.Sprintf("\n... [%d chars omitted]", omitted)
+	} else {
+		suffix = fmt.Sprintf("... [%d chars omitted]", omitted)
+	}
+	suffixRunes := utf8.RuneCountInString(suffix)
+	if maxRunes > suffixRunes {
+		return string(runes[:maxRunes-suffixRunes]) + suffix
+	}
+	return string(runes[:maxRunes])
 }
