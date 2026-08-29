@@ -1223,3 +1223,93 @@ func TestEngine_InboundAttachmentRelocation(t *testing.T) {
 	// Original staging file was relocated
 	assert.NoFileExists(t, srcPath)
 }
+
+type mockEngineEvolutionOrchestrator struct {
+	mu             sync.Mutex
+	triggeredCount int
+	lastConvID     string
+	lastTrigger    domain.EvolutionTrigger
+}
+
+func (m *mockEngineEvolutionOrchestrator) Start(ctx context.Context) error { return nil }
+func (m *mockEngineEvolutionOrchestrator) Stop(ctx context.Context) error  { return nil }
+func (m *mockEngineEvolutionOrchestrator) TriggerConversationEvolution(ctx context.Context, convID string, trigger domain.EvolutionTrigger) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.triggeredCount++
+	m.lastConvID = convID
+	m.lastTrigger = trigger
+	return nil
+}
+func (m *mockEngineEvolutionOrchestrator) NotifyUserActivity(sessionKey string) {}
+
+func TestEngine_EvolutionExplicitSwitchHooks(t *testing.T) {
+	eng, _, _, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	mockEvo := &mockEngineEvolutionOrchestrator{}
+	eng.SetEvolutionOrchestrator(mockEvo)
+
+	sender := domain.SenderUser{ID: "998877", Username: "tester"}
+	chat := domain.ChatContext{ID: "998877", Type: "private"}
+
+	sessionKey := "telegram:998877"
+	sess, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
+	require.NoError(t, err)
+
+	// 1. Set active conversation
+	sess.SetActiveConversationID("conv-old-reset")
+	require.NoError(t, store.SaveSession(ctx, sess))
+
+	// 2. Test /reset command triggers evolution
+	resetMsg := domain.CanonicalMessage{
+		ID:        "msg-reset",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/reset",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	outbound, err := eng.HandleCommand(ctx, resetMsg)
+	require.NoError(t, err)
+	require.NotNil(t, outbound)
+	assert.Contains(t, outbound.Text, "Short-term conversation context reset")
+
+	// Wait for non-blocking SafeGo execution
+	time.Sleep(50 * time.Millisecond)
+
+	mockEvo.mu.Lock()
+	assert.Equal(t, 1, mockEvo.triggeredCount)
+	assert.Equal(t, "conv-old-reset", mockEvo.lastConvID)
+	assert.Equal(t, domain.TriggerExplicitSwitch, mockEvo.lastTrigger)
+	mockEvo.mu.Unlock()
+
+	// 3. Set another active conversation and test /new command
+	sess, err = store.GetOrCreateSession(ctx, sessionKey, "agyent")
+	require.NoError(t, err)
+	sess.SetActiveConversationID("conv-old-new")
+	require.NoError(t, store.SaveSession(ctx, sess))
+
+	newMsg := domain.CanonicalMessage{
+		ID:        "msg-new",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/new",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	err = eng.HandleDebouncedMessage(ctx, newMsg)
+	require.NoError(t, err)
+
+	// Wait for non-blocking SafeGo execution
+	time.Sleep(50 * time.Millisecond)
+
+	mockEvo.mu.Lock()
+	assert.Equal(t, 2, mockEvo.triggeredCount)
+	assert.Equal(t, "conv-old-new", mockEvo.lastConvID)
+	assert.Equal(t, domain.TriggerExplicitSwitch, mockEvo.lastTrigger)
+	mockEvo.mu.Unlock()
+}
+
+

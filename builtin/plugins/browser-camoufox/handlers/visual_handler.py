@@ -23,12 +23,13 @@ def _get_default_output_file(extension: str) -> str:
 def handle_screenshot(
     url: Optional[str] = None,
     session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
     selector: Optional[str] = None,
     full_page: bool = False,
     output_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Captures a screenshot of the specified URL or active session.
+    Captures a screenshot of the specified URL, active session, or profile.
     """
     mgr = BrowserManager.get_instance()
     dest = output_path or _get_default_output_file("png")
@@ -55,10 +56,11 @@ def handle_screenshot(
         }
 
     try:
-        if session_id:
-            session = mgr.get_session(session_id)
-            if not session:
-                return {"error": f"Session '{session_id}' not found."}
+        lookup = session_id or profile_name
+        if lookup:
+            session = mgr.get_session(lookup, auto_rehydrate=True)
+            if not session or not session.page:
+                return {"error": f"Session '{lookup}' not found."}
             return capture(session.page)
         elif url:
             def run(page: Any) -> Dict[str, Any]:
@@ -69,7 +71,7 @@ def handle_screenshot(
 
             return mgr.run_stateless(run, headless=True)
         else:
-            return {"error": "Either 'url' or 'session_id' must be provided."}
+            return {"error": "Either 'url', 'session_id', or 'profile_name' must be provided."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -77,6 +79,7 @@ def handle_screenshot(
 def handle_pdf_export(
     url: Optional[str] = None,
     session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -96,10 +99,11 @@ def handle_pdf_export(
         }
 
     try:
-        if session_id:
-            session = mgr.get_session(session_id)
-            if not session:
-                return {"error": f"Session '{session_id}' not found."}
+        lookup = session_id or profile_name
+        if lookup:
+            session = mgr.get_session(lookup, auto_rehydrate=True)
+            if not session or not session.page:
+                return {"error": f"Session '{lookup}' not found."}
             return export(session.page)
         elif url:
             def run(page: Any) -> Dict[str, Any]:
@@ -110,6 +114,6 @@ def handle_pdf_export(
 
             return mgr.run_stateless(run, headless=True)
         else:
-            return {"error": "Either 'url' or 'session_id' must be provided."}
+            return {"error": "Either 'url', 'session_id', or 'profile_name' must be provided."}
     except Exception as e:
         return {"error": str(e)}

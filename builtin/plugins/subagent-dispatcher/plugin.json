@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Asynchronous background subagent task dispatcher and non-blocking multi-agent orchestration for agyent",
   "author": "agyent team",
+  "publisher": "agyent",
   "enabled": true,
   "tags": ["subagent", "orchestration", "multi-agent", "background", "dispatch"]
 }

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Local SQLite database explorer, table inspector, and SQL query runner",
   "author": "agyent team",
+  "publisher": "agyent",
   "enabled": true,
   "tags": ["database", "sqlite", "sql", "data"]
 }

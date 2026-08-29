@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
 Camoufox Stealth Browser MCP Server.
-Implements Model Context Protocol (MCP) JSON-RPC 2.0 interface providing 12 autonomous web perception tools.
+Implements Model Context Protocol (MCP) JSON-RPC 2.0 interface providing 14 autonomous web perception tools.
+Supports high-performance HTTP Daemon proxying with automatic detached background process management
+and seamless in-process fallback.
 """
 
 import json
 import os
+import subprocess
 import sys
+import time
 import traceback
+import urllib.error
+import urllib.request
 from typing import Any, Dict, Optional
 
 # Ensure plugin root is in python path
@@ -24,6 +30,8 @@ from handlers.interactive_handler import (
     handle_act,
     handle_inspect_dom,
     handle_session_close,
+    handle_session_list,
+    handle_session_save,
     handle_session_start,
 )
 from handlers.network_handler import handle_intercept_api
@@ -36,11 +44,90 @@ from handlers.visual_handler import (
     handle_screenshot,
 )
 
+DAEMON_DIR = os.path.join(os.path.expanduser("~"), ".agyent", "camoufox")
+PORT_FILE = os.path.join(DAEMON_DIR, "daemon.port")
+LOG_FILE = os.path.join(DAEMON_DIR, "daemon.log")
+
 
 def log(msg: str) -> None:
     """Logs diagnostics to stderr to keep stdout strictly JSON-RPC clean."""
     sys.stderr.write(f"[CAMOUFOX_MCP] {msg}\n")
     sys.stderr.flush()
+
+
+def get_active_daemon_port() -> Optional[int]:
+    """Reads active port from daemon.port and checks /health."""
+    if not os.path.exists(PORT_FILE):
+        return None
+    try:
+        with open(PORT_FILE, "r", encoding="utf-8") as f:
+            port_str = f.read().strip()
+        if not port_str.isdigit():
+            return None
+        port = int(port_str)
+
+        # Health check
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                return port
+    except Exception:
+        pass
+    return None
+
+
+def ensure_daemon_running() -> Optional[int]:
+    """Ensures the background daemon is running and returns its port."""
+    if os.environ.get("CAMOUFOX_NO_DAEMON", "0") == "1":
+        return None
+
+    # Check if already running
+    port = get_active_daemon_port()
+    if port:
+        return port
+
+    # Spawn daemon in detached background process
+    log("Spawning Camoufox background daemon...")
+    daemon_script = os.path.join(current_dir, "daemon.py")
+    os.makedirs(DAEMON_DIR, exist_ok=True)
+
+    try:
+        log_f = open(LOG_FILE, "a", encoding="utf-8")
+        if sys.platform == "win32":
+            creation_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creation_flags |= subprocess.CREATE_NO_WINDOW
+            subprocess.Popen(
+                [sys.executable, daemon_script],
+                creationflags=creation_flags,
+                stdout=log_f,
+                stderr=log_f,
+                stdin=subprocess.DEVNULL,
+                cwd=current_dir,
+            )
+        else:
+            subprocess.Popen(
+                [sys.executable, daemon_script],
+                start_new_session=True,
+                stdout=log_f,
+                stderr=log_f,
+                stdin=subprocess.DEVNULL,
+                cwd=current_dir,
+            )
+
+        # Poll for daemon startup
+        start_wait = time.time()
+        while time.time() - start_wait < 6.0:
+            time.sleep(0.2)
+            port = get_active_daemon_port()
+            if port:
+                log(f"Connected to Camoufox background daemon on port {port}")
+                return port
+
+    except Exception as e:
+        log(f"Could not spawn daemon: {e}. Falling back to in-process mode.")
+
+    return None
 
 
 # Full Tool Definitions and JSON Schemas
@@ -70,6 +157,10 @@ TOOL_DEFINITIONS = [
                     "type": "integer",
                     "default": 5,
                     "description": "Maximum number of search results to return"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional persistent profile to reuse search history / cookies"
                 }
             },
             "required": ["query"]
@@ -101,7 +192,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_fetch_page",
-        "description": "Loads a webpage with full stealth fingerprinting, dismisses cookie/consent banners, and converts content into token-optimized Markdown.",
+        "description": "Loads a webpage with full stealth fingerprinting, dismisses cookie/consent banners, and converts content into token-optimized Markdown. Supports authenticated profiles.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -119,6 +210,14 @@ TOOL_DEFINITIONS = [
                     "type": "boolean",
                     "default": True,
                     "description": "Automatically dismiss cookie and consent dialogs"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name to fetch behind authentication or with persistent cookies"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID to fetch within"
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -138,6 +237,14 @@ TOOL_DEFINITIONS = [
                 "url": {
                     "type": "string",
                     "description": "Target web page URL"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID"
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -167,6 +274,14 @@ TOOL_DEFINITIONS = [
                     "additionalProperties": {"type": "string"},
                     "description": "Map of field name to sub-selector or attribute (e.g., {'title': 'h2', 'link': 'a@href', 'price': '.price'})"
                 },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name for authenticated scraping"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID"
+                },
                 "limit": {
                     "type": "integer",
                     "default": 20,
@@ -190,6 +305,14 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Regex pattern to match API endpoint URLs (e.g., '/api/v1/|/graphql')"
                 },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID"
+                },
                 "wait_time_ms": {
                     "type": "integer",
                     "default": 5000,
@@ -201,7 +324,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_session_start",
-        "description": "Starts a stateful browser session with persistent profile storage (cookies, localStorage) in ~/.agyent/camoufox/profiles/.",
+        "description": "Starts or reuses a persistent browser session with native Firefox profile storage (cookies, localStorage, IndexedDB) in ~/.agyent/camoufox/profiles/.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -229,7 +352,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_inspect_dom",
-        "description": "Inspects current page DOM and returns a numbered Accessibility Tree (AOM) [1], [2] or injects visual marks for AI grounding.",
+        "description": "Inspects current page DOM and returns a numbered Accessibility Tree (AOM) [1], [2] or injects visual marks for AI grounding. Supports auto-rehydration across turns.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -237,19 +360,22 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Active session ID from camoufox_session_start"
                 },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name if session_id is omitted"
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["a11y_tree", "visual_marks"],
                     "default": "a11y_tree",
                     "description": "Inspection mode"
                 }
-            },
-            "required": ["session_id"]
+            }
         }
     },
     {
         "name": "camoufox_act",
-        "description": "Executes human-like user actions on the page using Bézier mouse curves, Gaussian typing delays, or inertial scrolling.",
+        "description": "Executes human-like user actions on the page (click, type, hover, scroll, select_option, check, upload_file, switch_tab, new_tab, close_tab, go_back, reload).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -257,9 +383,18 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Active session ID"
                 },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name if session_id is omitted"
+                },
                 "action": {
                     "type": "string",
-                    "enum": ["click", "type", "hover", "scroll", "press_key", "navigate", "wait"],
+                    "enum": [
+                        "click", "type", "hover", "scroll", "press_key", "navigate",
+                        "select_option", "check", "uncheck", "upload_file",
+                        "switch_tab", "new_tab", "close_tab", "go_back", "go_forward", "reload",
+                        "wait_for_selector", "wait"
+                    ],
                     "description": "Action type to perform"
                 },
                 "target_id": {
@@ -268,10 +403,40 @@ TOOL_DEFINITIONS = [
                 },
                 "value": {
                     "type": "string",
-                    "description": "Text to type, key to press, URL to navigate, or scroll delta in pixels"
+                    "description": "Text to type, key to press, URL to navigate, file path to upload, tab index to switch, or scroll delta"
+                },
+                "expects_popup": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set to true if this click action is expected to open a new tab or OAuth login popup"
                 }
             },
-            "required": ["session_id", "action"]
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "camoufox_session_list",
+        "description": "Lists all active live browser sessions, open tabs, current URLs, and saved profiles in Profile Vault.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "camoufox_session_save",
+        "description": "Explicitly checkpoints active session cookies, DOM metadata, and state to Profile Vault without closing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to checkpoint"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Profile name to checkpoint"
+                }
+            }
         }
     },
     {
@@ -290,7 +455,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_screenshot",
-        "description": "Captures a high-resolution screenshot of a URL or active session, saving PNG to disk.",
+        "description": "Captures a high-resolution screenshot of a URL, active session, or profile, saving PNG to disk.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -301,6 +466,10 @@ TOOL_DEFINITIONS = [
                 "session_id": {
                     "type": "string",
                     "description": "Active session ID (for stateful screenshot)"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Profile name (for stateful screenshot)"
                 },
                 "selector": {
                     "type": "string",
@@ -320,7 +489,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_pdf_export",
-        "description": "Exports a web page or active session as a formatted PDF document.",
+        "description": "Exports a web page, active session, or profile as a formatted PDF document.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -332,6 +501,10 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Active session ID (for stateful export)"
                 },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Profile name (for stateful export)"
+                },
                 "output_path": {
                     "type": "string",
                     "description": "Optional target PDF file path"
@@ -342,14 +515,15 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def execute_tool(name: str, args: Dict[str, Any]) -> Any:
-    """Dispatches tool execution to the appropriate domain handler."""
+def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
+    """Local in-process fallback tool execution."""
     if name == "camoufox_search":
         return handle_search(
             query=args.get("query", ""),
             engine=args.get("engine", "duckduckgo"),
             locale=args.get("locale", "en-US"),
             max_results=args.get("max_results", 5),
+            profile_name=args.get("profile_name"),
         )
     elif name == "camoufox_discover_trends":
         return handle_discover_trends(
@@ -363,11 +537,15 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             extract_mode=args.get("extract_mode", "markdown"),
             auto_dismiss_banners=args.get("auto_dismiss_banners", True),
             timeout_ms=args.get("timeout_ms", 30000),
+            profile_name=args.get("profile_name"),
+            session_id=args.get("session_id"),
         )
     elif name == "camoufox_extract_json_ld":
         return handle_extract_json_ld(
             url=args.get("url", ""),
             timeout_ms=args.get("timeout_ms", 30000),
+            profile_name=args.get("profile_name"),
+            session_id=args.get("session_id"),
         )
     elif name == "camoufox_scrape_selector":
         return handle_scrape_selector(
@@ -375,12 +553,16 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             selector=args.get("selector", ""),
             fields=args.get("fields"),
             limit=args.get("limit", 20),
+            profile_name=args.get("profile_name"),
+            session_id=args.get("session_id"),
         )
     elif name == "camoufox_intercept_api":
         return handle_intercept_api(
             url=args.get("url", ""),
             url_pattern=args.get("url_pattern"),
             wait_time_ms=args.get("wait_time_ms", 5000),
+            profile_name=args.get("profile_name"),
+            session_id=args.get("session_id"),
         )
     elif name == "camoufox_session_start":
         return handle_session_start(
@@ -391,15 +573,25 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
         )
     elif name == "camoufox_inspect_dom":
         return handle_inspect_dom(
-            session_id=args.get("session_id", ""),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
             mode=args.get("mode", "a11y_tree"),
         )
     elif name == "camoufox_act":
         return handle_act(
-            session_id=args.get("session_id", ""),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
             action=args.get("action", ""),
             target_id=args.get("target_id"),
             value=args.get("value"),
+            expects_popup=args.get("expects_popup", False),
+        )
+    elif name == "camoufox_session_list":
+        return handle_session_list()
+    elif name == "camoufox_session_save":
+        return handle_session_save(
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
         )
     elif name == "camoufox_session_close":
         return handle_session_close(
@@ -409,6 +601,7 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
         return handle_screenshot(
             url=args.get("url"),
             session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
             selector=args.get("selector"),
             full_page=args.get("full_page", False),
             output_path=args.get("output_path"),
@@ -417,10 +610,39 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
         return handle_pdf_export(
             url=args.get("url"),
             session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
             output_path=args.get("output_path"),
         )
     else:
         raise ValueError(f"Tool '{name}' not found")
+
+
+def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
+    """Executes tool via background HTTP daemon."""
+    payload = json.dumps({"name": name, "args": args}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/rpc",
+        data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120.0) as resp:
+        body = resp.read().decode("utf-8")
+        data = json.loads(body)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        return data.get("result")
+
+
+def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
+    """Dispatches tool to daemon or in-process fallback."""
+    port = ensure_daemon_running()
+    if port:
+        try:
+            return execute_tool_via_daemon(port, name, args)
+        except Exception as e:
+            log(f"Daemon RPC failed ({e}). Falling back to local execution.")
+    return execute_tool_local(name, args)
 
 
 def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -429,6 +651,8 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     method = msg.get("method")
 
     if method == "initialize":
+        # Proactively ensure daemon is running
+        ensure_daemon_running()
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -439,7 +663,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
                 "serverInfo": {
                     "name": "camoufox-browser-plugin",
-                    "version": "1.1.0"
+                    "version": "1.2.0"
                 }
             }
         }
@@ -461,7 +685,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         log(f"Calling tool '{tool_name}' with args: {list(args.keys())}")
 
         try:
-            res = execute_tool(tool_name, args)
+            res = dispatch_tool(tool_name, args)
             text_out = json.dumps(res, ensure_ascii=False, indent=2)
             is_error = isinstance(res, dict) and "error" in res and res.get("error") is not None
             return {
@@ -506,7 +730,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def main() -> None:
-    log("Starting Camoufox Full Capabilities Engine MCP Server...")
+    log("Starting Camoufox Full Capabilities Engine MCP Server v1.2.0...")
     while True:
         try:
             line = sys.stdin.readline()

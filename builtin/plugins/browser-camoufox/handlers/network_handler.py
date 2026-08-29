@@ -15,11 +15,19 @@ def handle_intercept_api(
     url_pattern: Optional[str] = None,
     wait_time_ms: int = 5000,
     timeout_ms: int = 30000,
+    profile_name: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Navigates to URL, captures matching network payloads, and returns structured responses.
+    Supports persistent profile or live session interception.
     """
     mgr = BrowserManager.get_instance()
+    target_profile = profile_name
+    if session_id and not target_profile:
+        sess = mgr.get_session(session_id)
+        if sess:
+            target_profile = sess.profile_name
 
     def run(page: Any) -> Dict[str, Any]:
         sniffer = NetworkSniffer(url_pattern=url_pattern)
@@ -43,7 +51,7 @@ def handle_intercept_api(
         }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms + wait_time_ms)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms + wait_time_ms, profile_name=target_profile)
     except Exception as e:
         return {
             "url": url,

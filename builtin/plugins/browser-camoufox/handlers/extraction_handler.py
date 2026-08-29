@@ -15,11 +15,19 @@ def handle_fetch_page(
     extract_mode: str = "markdown",
     auto_dismiss_banners: bool = True,
     timeout_ms: int = 30000,
+    profile_name: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches a web page using Camoufox stealth browser and returns cleaned content.
+    Supports persistent profile context or session.
     """
     mgr = BrowserManager.get_instance()
+    target_profile = profile_name
+    if session_id and not target_profile:
+        sess = mgr.get_session(session_id)
+        if sess:
+            target_profile = sess.profile_name
 
     def run(page: Any) -> Dict[str, Any]:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -67,7 +75,7 @@ def handle_fetch_page(
             }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
     except Exception as e:
         return {
             "url": url,
@@ -79,11 +87,21 @@ def handle_fetch_page(
         }
 
 
-def handle_extract_json_ld(url: str, timeout_ms: int = 30000) -> Dict[str, Any]:
+def handle_extract_json_ld(
+    url: str,
+    timeout_ms: int = 30000,
+    profile_name: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Extracts Schema.org JSON-LD scripts, OpenGraph, and Twitter metadata from a page.
     """
     mgr = BrowserManager.get_instance()
+    target_profile = profile_name
+    if session_id and not target_profile:
+        sess = mgr.get_session(session_id)
+        if sess:
+            target_profile = sess.profile_name
 
     def run(page: Any) -> Dict[str, Any]:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -136,7 +154,7 @@ def handle_extract_json_ld(url: str, timeout_ms: int = 30000) -> Dict[str, Any]:
         }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
     except Exception as e:
         return {
             "url": url,
@@ -153,11 +171,18 @@ def handle_scrape_selector(
     fields: Optional[Dict[str, str]] = None,
     limit: int = 20,
     timeout_ms: int = 30000,
+    profile_name: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extracts structured items from a page using CSS selectors and field mappings.
     """
     mgr = BrowserManager.get_instance()
+    target_profile = profile_name
+    if session_id and not target_profile:
+        sess = mgr.get_session(session_id)
+        if sess:
+            target_profile = sess.profile_name
 
     def run(page: Any) -> Dict[str, Any]:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -221,7 +246,7 @@ def handle_scrape_selector(
         }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
     except Exception as e:
         return {
             "url": url,

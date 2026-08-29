@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"agyent/builtin"
 	"agyent/internal/adapters/channels/telegram"
 	contextAdapter "agyent/internal/adapters/context"
 	evolutionAdapter "agyent/internal/adapters/evolution"
@@ -122,7 +123,14 @@ var runCmd = &cobra.Command{
 			mainLogger.Warn("Failed to init MCP syncer", "error", err)
 			fmt.Fprintf(os.Stderr, "⚠️ Warning: Failed to init MCP syncer: %v\n", err)
 		}
-		pluginMgr := pluginAdapter.NewPluginManager("builtin/plugins")
+		pluginMgr := pluginAdapter.NewPluginManager("builtin/plugins", &builtin.EmbeddedPluginsFS)
+		if syncResults, syncErr := pluginMgr.SyncPlugins(context.Background(), "", false); syncErr == nil {
+			for _, r := range syncResults {
+				if r.Updated {
+					mainLogger.Info("Auto-synced embedded plugin", "name", r.Name, "version", r.EmbeddedVersion)
+				}
+			}
+		}
 
 		// 8. Initialize Debouncer & Core Engine
 		var eng *engine.Engine

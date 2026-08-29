@@ -136,6 +136,7 @@ def handle_search(
     locale: str = "en-US",
     max_results: int = 5,
     timeout_ms: int = 30000,
+    profile_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Performs a stealth search query and returns cleaned search items.
@@ -153,7 +154,7 @@ def handle_search(
             return _search_duckduckgo(page, query, max_results)
 
     try:
-        results = mgr.run_stateless(run, headless=True, locale=locale, timeout_ms=timeout_ms)
+        results = mgr.run_stateless(run, headless=True, locale=locale, timeout_ms=timeout_ms, profile_name=profile_name)
         return {
             "query": query,
             "engine": engine_clean,

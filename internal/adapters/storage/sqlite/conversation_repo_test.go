@@ -162,3 +162,93 @@ func TestSQLiteStore_ConversationRepository(t *testing.T) {
 		t.Errorf("expected error getting purged conversation, got nil")
 	}
 }
+
+func TestListRecentConversations_WildcardFilter(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_wildcard.db")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	// Create agents and sessions first for foreign keys
+	for _, agentName := range []string{"agent-a", "agent-b"} {
+		_ = store.SaveAgent(ctx, &domain.Agent{
+			Name:          agentName,
+			Status:        domain.StatusInitialized,
+			WorkspacePath: tempDir,
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		})
+	}
+	for _, sessKey := range []string{"telegram:user1", "telegram:user2"} {
+		_, _ = store.GetOrCreateSession(ctx, sessKey, "agent-a")
+	}
+
+	// Create conversations across multiple sessions and agents
+	c1 := &domain.Conversation{
+		ID:         "conv-wild-1",
+		SessionKey: "telegram:user1",
+		AgentName:  "agent-a",
+		TurnCount:  5,
+		IsPinned:   false,
+		IsArchived: false,
+	}
+	c2 := &domain.Conversation{
+		ID:         "conv-wild-2",
+		SessionKey: "telegram:user2",
+		AgentName:  "agent-b",
+		TurnCount:  10,
+		IsPinned:   true,
+		IsArchived: false,
+	}
+	c3 := &domain.Conversation{
+		ID:          "conv-wild-3",
+		SessionKey:  "telegram:user1",
+		AgentName:   "agent-a",
+		ProjectName: "proj-alpha",
+		TurnCount:   3,
+		IsPinned:    false,
+		IsArchived:  true, // Archived
+	}
+
+	for _, c := range []*domain.Conversation{c1, c2, c3} {
+		if err := store.SaveConversation(ctx, c); err != nil {
+			t.Fatalf("failed to save conversation %s: %v", c.ID, err)
+		}
+	}
+
+	// 1. Wildcard (all empty) -> should return all non-archived conversations (c2 pinned first, then c1)
+	allActive, total, err := store.ListRecentConversations(ctx, "", "", "", 50, 0)
+	if err != nil {
+		t.Fatalf("failed to list all active conversations: %v", err)
+	}
+	if total != 2 || len(allActive) != 2 {
+		t.Fatalf("expected 2 active conversations, got total=%d, len=%d", total, len(allActive))
+	}
+	if allActive[0].ID != "conv-wild-2" {
+		t.Errorf("expected pinned conv-wild-2 first, got %s", allActive[0].ID)
+	}
+
+	// 2. Filter by session_key only
+	byUser1, totalUser1, err := store.ListRecentConversations(ctx, "telegram:user1", "", "", 50, 0)
+	if err != nil {
+		t.Fatalf("failed to list by session_key: %v", err)
+	}
+	if totalUser1 != 1 || len(byUser1) != 1 || byUser1[0].ID != "conv-wild-1" {
+		t.Errorf("expected 1 conversation for user1 (conv-wild-1), got total=%d len=%d", totalUser1, len(byUser1))
+	}
+
+	// 3. Filter by agent_name only
+	byAgentB, totalAgentB, err := store.ListRecentConversations(ctx, "", "agent-b", "", 50, 0)
+	if err != nil {
+		t.Fatalf("failed to list by agent_name: %v", err)
+	}
+	if totalAgentB != 1 || len(byAgentB) != 1 || byAgentB[0].ID != "conv-wild-2" {
+		t.Errorf("expected 1 conversation for agent-b (conv-wild-2), got total=%d len=%d", totalAgentB, len(byAgentB))
+	}
+}
+

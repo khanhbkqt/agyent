@@ -114,26 +114,41 @@ func (s *SQLiteStore) ListRecentConversations(ctx context.Context, sessionKey, a
 		offset = 0
 	}
 
-	countQuery := `
-		SELECT COUNT(*)
-		FROM conversations
-		WHERE session_key = ? AND agent_name = ? AND project_name = ? AND is_archived = 0
-	`
+	whereClauses := []string{"is_archived = 0"}
+	var args []any
+
+	if strings.TrimSpace(sessionKey) != "" {
+		whereClauses = append(whereClauses, "session_key = ?")
+		args = append(args, sessionKey)
+	}
+	if strings.TrimSpace(agentName) != "" {
+		whereClauses = append(whereClauses, "agent_name = ?")
+		args = append(args, agentName)
+	}
+	if strings.TrimSpace(projectName) != "" {
+		whereClauses = append(whereClauses, "project_name = ?")
+		args = append(args, projectName)
+	}
+
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	countQuery := "SELECT COUNT(*) FROM conversations WHERE " + whereSQL
 	var totalCount int
-	if err := s.reader().QueryRowContext(ctx, countQuery, sessionKey, agentName, projectName).Scan(&totalCount); err != nil {
+	if err := s.reader().QueryRowContext(ctx, countQuery, args...).Scan(&totalCount); err != nil {
 		return nil, 0, fmt.Errorf("failed to count active conversations: %w", err)
 	}
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT id, session_key, agent_name, project_name, title, alias_index, turn_count,
 		       is_pinned, is_archived, last_reflected_step, created_at, updated_at
 		FROM conversations
-		WHERE session_key = ? AND agent_name = ? AND project_name = ? AND is_archived = 0
+		WHERE %s
 		ORDER BY is_pinned DESC, updated_at DESC
 		LIMIT ? OFFSET ?
-	`
+	`, whereSQL)
 
-	rows, err := s.reader().QueryContext(ctx, query, sessionKey, agentName, projectName, limit, offset)
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.reader().QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list recent conversations: %w", err)
 	}

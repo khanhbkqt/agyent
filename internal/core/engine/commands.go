@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agyent/internal/config"
+	"agyent/internal/core/concurrency"
 	"agyent/internal/core/domain"
 )
 
@@ -109,6 +110,13 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		if e.HasActiveTurn(sessionKey) {
 			responseText = "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting."
 		} else {
+			oldConvID := session.GetActiveConversationID()
+			if oldConvID != "" && e.evolution != nil {
+				bgCtx := context.WithoutCancel(ctx)
+				concurrency.SafeGo(func() {
+					_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+				})
+			}
 			session.ResetActiveConversationID()
 			if err := e.storage.SaveSession(ctx, session); err != nil {
 				responseText = fmt.Sprintf("⚠️ Failed to reset conversation context: %v", err)
@@ -1338,6 +1346,14 @@ func (e *Engine) handleNewConversationCommand(ctx context.Context, session *doma
 		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation."
 	}
 
+	oldConvID := session.GetActiveConversationID()
+	if oldConvID != "" && e.evolution != nil {
+		bgCtx := context.WithoutCancel(ctx)
+		concurrency.SafeGo(func() {
+			_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+		})
+	}
+
 	session.ResetActiveConversationID()
 	if err := e.storage.SaveSession(ctx, session); err != nil {
 		return fmt.Sprintf("⚠️ Failed to initialize new conversation: %v", err)
@@ -1380,6 +1396,14 @@ func (e *Engine) handleSwitchConversationCommand(ctx context.Context, session *d
 			return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
 		}
 		targetConv = conv
+	}
+
+	oldConvID := session.GetActiveConversationID()
+	if oldConvID != "" && oldConvID != targetConv.ID && e.evolution != nil {
+		bgCtx := context.WithoutCancel(ctx)
+		concurrency.SafeGo(func() {
+			_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+		})
 	}
 
 	session.SetActiveConversationID(targetConv.ID)

@@ -3,24 +3,27 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
 
 	"agyent/internal/updater"
 	"github.com/spf13/cobra"
 )
 
 var (
-	updateCheckFlag   bool
-	updateForceFlag   bool
-	updateDryRunFlag  bool
-	updateVersionFlag string
-	updateRepoFlag    string
+	updateCheckFlag       bool
+	updateForceFlag       bool
+	updateDryRunFlag      bool
+	updateSkipPluginsFlag bool
+	updateVersionFlag     string
+	updateRepoFlag        string
 
 	updateCmd = &cobra.Command{
 		Use:     "update",
 		Aliases: []string{"upgrade", "self-update"},
-		Short:   "Check for updates and automatically upgrade agyent binary",
+		Short:   "Check for updates and automatically upgrade agyent binary and plugins",
 		Long: `Connects to GitHub releases, compares the installed version with remote releases, 
-downloads platform-specific archives, and safely replaces the current agyent binary in-place.`,
+downloads platform-specific archives, safely replaces the current agyent binary in-place,
+and automatically synchronizes capability plugins.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			out := cmd.OutOrStdout()
@@ -72,6 +75,18 @@ downloads platform-specific archives, and safely replaces the current agyent bin
 			}
 
 			updater.RenderUpdateSuccess(out, res.CurrentVersion, res.TargetVersion, res.ReleaseURL)
+
+			// Automatically invoke new binary to synchronize updated embedded plugins
+			if !updateSkipPluginsFlag && res.ExecutablePath != "" {
+				fmt.Fprintln(out, "\n📦 Updating capability plugins to match new release...")
+				syncCmd := exec.CommandContext(ctx, res.ExecutablePath, "plugin", "update", "--all")
+				syncCmd.Stdout = out
+				syncCmd.Stderr = cmd.ErrOrStderr()
+				if err := syncCmd.Run(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "⚠️ Warning: Failed to auto-sync plugins: %v\n", err)
+				}
+			}
+
 			return nil
 		},
 	}
@@ -81,8 +96,10 @@ func init() {
 	updateCmd.Flags().BoolVar(&updateCheckFlag, "check", false, "Check for available updates without downloading or installing")
 	updateCmd.Flags().BoolVar(&updateForceFlag, "force", false, "Force reinstall even if already running the target version")
 	updateCmd.Flags().BoolVar(&updateDryRunFlag, "dry-run", false, "Simulate download and asset verification without replacing the binary")
+	updateCmd.Flags().BoolVar(&updateSkipPluginsFlag, "skip-plugins", false, "Skip automatic plugin synchronization after binary upgrade")
 	updateCmd.Flags().StringVar(&updateVersionFlag, "version", "latest", "Target version tag to install (e.g. 'v1.0.0' or 'latest')")
 	updateCmd.Flags().StringVar(&updateRepoFlag, "repo", updater.DefaultRepo, "GitHub repository to fetch releases from")
 
 	rootCmd.AddCommand(updateCmd)
 }
+

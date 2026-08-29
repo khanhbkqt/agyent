@@ -3,6 +3,8 @@ Handler for stateful multi-step agent interactions:
 - camoufox_session_start
 - camoufox_inspect_dom
 - camoufox_act
+- camoufox_session_list
+- camoufox_session_save
 - camoufox_session_close
 """
 
@@ -25,26 +27,31 @@ def handle_session_start(
     initial_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Initializes a stateful browser session connected to the Profile Vault.
+    Initializes or reuses a stateful browser session connected to the persistent Profile Vault.
     """
     mgr = BrowserManager.get_instance()
     try:
-        session_id = mgr.create_session(
+        session = mgr.get_or_create_session(
             profile_name=profile_name,
             headless=headless,
             locale=locale,
+            initial_url=initial_url,
             enable_sniffer=True,
         )
-        session = mgr.get_session(session_id)
-        if initial_url and session:
-            session.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
-            dismiss_cookie_banners(session.page)
+        if session and initial_url and session.page:
+            try:
+                dismiss_cookie_banners(session.page)
+            except Exception:
+                pass
 
         return {
-            "session_id": session_id,
+            "session_id": session.session_id if session else "",
             "profile_name": profile_name,
             "status": "active",
-            "current_url": session.page.url if session else "",
+            "current_url": session.page.url if session and session.page else "",
+            "current_title": session.page.title() if session and session.page else "",
+            "open_tabs_count": len(session.pages) if session else 0,
+            "open_tabs": session.get_tabs_info() if session else [],
         }
     except Exception as e:
         return {
@@ -56,16 +63,19 @@ def handle_session_start(
 
 
 def handle_inspect_dom(
-    session_id: str,
+    session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
     mode: str = "a11y_tree",
 ) -> Dict[str, Any]:
     """
     Extracts the current page's interactive element tree (AOM) or injects visual marks.
+    Supports auto-rehydration by session_id or profile_name.
     """
     mgr = BrowserManager.get_instance()
-    session = mgr.get_session(session_id)
-    if not session:
-        return {"error": f"Session '{session_id}' not found or already closed."}
+    lookup_key = session_id or profile_name or "default"
+    session = mgr.get_session(lookup_key, auto_rehydrate=True)
+    if not session or not session.page:
+        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated."}
 
     try:
         page = session.page
@@ -82,33 +92,40 @@ def handle_inspect_dom(
         tree_text = format_a11y_tree(elements, page_title=title, current_url=url)
 
         return {
-            "session_id": session_id,
+            "session_id": session.session_id,
+            "profile_name": session.profile_name,
             "page_title": title,
             "current_url": url,
+            "active_tab_index": session.active_page_index,
+            "open_tabs_count": len(session.pages),
             "element_count": len(elements),
             "a11y_tree": tree_text,
             "elements": [e.to_dict() for e in elements],
         }
     except Exception as e:
         return {
-            "session_id": session_id,
+            "session_id": session.session_id if session else "",
             "error": str(e),
         }
 
 
 def handle_act(
-    session_id: str,
-    action: str,
+    session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    action: str = "",
     target_id: Optional[Union[str, int]] = None,
     value: Optional[str] = None,
+    expects_popup: bool = False,
 ) -> Dict[str, Any]:
     """
     Executes human-like user actions on interactive page elements.
+    Supports clicks with synchronous popup capture, tab switching, select, check, file upload, and auto-rehydration.
     """
     mgr = BrowserManager.get_instance()
-    session = mgr.get_session(session_id)
-    if not session:
-        return {"error": f"Session '{session_id}' not found or already closed."}
+    lookup_key = session_id or profile_name or "default"
+    session = mgr.get_session(lookup_key, auto_rehydrate=True)
+    if not session or not session.page:
+        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated."}
 
     page = session.page
     action_clean = action.lower().strip()
@@ -121,43 +138,54 @@ def handle_act(
             dismiss_cookie_banners(page)
 
         elif action_clean == "click":
-            # Resolve target element or explicit (x, y) coordinate
-            if target_id is not None and "," in str(target_id):
-                try:
-                    parts = str(target_id).split(",")
-                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
-                    human_click(page, cx, cy)
-                except Exception:
-                    human_click(page, 400, 300)
-            elif value is not None and "," in str(value):
-                try:
-                    parts = str(value).split(",")
-                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
-                    human_click(page, cx, cy)
-                except Exception:
-                    human_click(page, 400, 300)
-            else:
-                locator = None
-                if target_id is not None:
-                    tid = str(target_id).strip()
-                    if tid.isdigit():
-                        locator = page.locator(f'[data-agy-id="{tid}"]')
-                    else:
-                        locator = page.locator(tid)
-
-                if locator and locator.count() > 0:
-                    box = locator.first.bounding_box()
-                    if box:
-                        cx = box["x"] + box["width"] / 2
-                        cy = box["y"] + box["height"] / 2
+            # If expects_popup is enabled, wrap click in context.expect_page()
+            def do_click():
+                if target_id is not None and "," in str(target_id):
+                    try:
+                        parts = str(target_id).split(",")
+                        cx, cy = float(parts[0].strip()), float(parts[1].strip())
                         human_click(page, cx, cy)
-                    else:
-                        locator.first.click()
+                    except Exception:
+                        human_click(page, 400, 300)
+                elif value is not None and "," in str(value):
+                    try:
+                        parts = str(value).split(",")
+                        cx, cy = float(parts[0].strip()), float(parts[1].strip())
+                        human_click(page, cx, cy)
+                    except Exception:
+                        human_click(page, 400, 300)
                 else:
-                    # Fallback center click
-                    human_click(page, 400, 300)
+                    locator = None
+                    if target_id is not None:
+                        tid = str(target_id).strip()
+                        if tid.isdigit():
+                            locator = page.locator(f'[data-agy-id="{tid}"]')
+                        else:
+                            locator = page.locator(tid)
 
-            # Wait a short moment for possible page transition
+                    if locator and locator.count() > 0:
+                        box = locator.first.bounding_box()
+                        if box:
+                            cx = box["x"] + box["width"] / 2
+                            cy = box["y"] + box["height"] / 2
+                            human_click(page, cx, cy)
+                        else:
+                            locator.first.click()
+                    else:
+                        human_click(page, 400, 300)
+
+            if expects_popup:
+                try:
+                    with session.context.expect_page(timeout=8000) as new_page_info:
+                        do_click()
+                    new_page = new_page_info.value
+                    new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    session.touch()
+                except Exception:
+                    do_click()
+            else:
+                do_click()
+
             time.sleep(0.5)
 
         elif action_clean == "type":
@@ -215,6 +243,90 @@ def handle_act(
             page.keyboard.press(key)
             time.sleep(0.3)
 
+        elif action_clean == "select_option":
+            locator = None
+            if target_id is not None:
+                tid = str(target_id).strip()
+                if tid.isdigit():
+                    locator = page.locator(f'[data-agy-id="{tid}"]')
+                else:
+                    locator = page.locator(tid)
+            if not locator or locator.count() == 0:
+                return {"error": f"Element '{target_id}' not found for select_option"}
+            locator.first.select_option(value or "")
+
+        elif action_clean in ("check", "uncheck"):
+            locator = None
+            if target_id is not None:
+                tid = str(target_id).strip()
+                if tid.isdigit():
+                    locator = page.locator(f'[data-agy-id="{tid}"]')
+                else:
+                    locator = page.locator(tid)
+            if not locator or locator.count() == 0:
+                return {"error": f"Element '{target_id}' not found for {action_clean}"}
+            if action_clean == "check":
+                locator.first.check()
+            else:
+                locator.first.uncheck()
+
+        elif action_clean == "upload_file":
+            if not value:
+                return {"error": "Missing file path 'value' for upload_file"}
+            locator = None
+            if target_id is not None:
+                tid = str(target_id).strip()
+                if tid.isdigit():
+                    locator = page.locator(f'[data-agy-id="{tid}"]')
+                else:
+                    locator = page.locator(tid)
+            if locator and locator.count() > 0:
+                locator.first.set_input_files(value)
+            else:
+                page.set_input_files('input[type="file"]', value)
+
+        elif action_clean == "go_back":
+            page.go_back(wait_until="domcontentloaded", timeout=15000)
+
+        elif action_clean == "go_forward":
+            page.go_forward(wait_until="domcontentloaded", timeout=15000)
+
+        elif action_clean == "reload":
+            page.reload(wait_until="domcontentloaded", timeout=20000)
+
+        elif action_clean == "switch_tab":
+            tab_idx = 0
+            if value:
+                try:
+                    tab_idx = int(value)
+                except ValueError:
+                    pass
+            success = session.set_active_page_index(tab_idx)
+            if not success:
+                return {"error": f"Tab index {tab_idx} is out of bounds (open tabs: {len(session.pages)})"}
+            page = session.page
+
+        elif action_clean == "new_tab":
+            new_p = session.context.new_page()
+            if value:
+                new_p.goto(value, wait_until="domcontentloaded", timeout=30000)
+            session.set_active_page_index(len(session.pages) - 1)
+            page = session.page
+
+        elif action_clean == "close_tab":
+            if len(session.pages) > 1:
+                page.close()
+                session.set_active_page_index(max(0, session.active_page_index - 1))
+                page = session.page
+            else:
+                return {"error": "Cannot close the only open tab. Use camoufox_session_close to terminate session."}
+
+        elif action_clean == "wait_for_selector":
+            if not target_id and not value:
+                return {"error": "Missing selector for wait_for_selector"}
+            sel = str(target_id) if target_id else str(value)
+            page.wait_for_selector(sel, timeout=15000)
+
         elif action_clean == "wait":
             wait_ms = 2000
             if value:
@@ -227,24 +339,64 @@ def handle_act(
         else:
             return {"error": f"Unsupported action '{action}'"}
 
+        # Touch and update session metadata
+        session.touch()
+        session.sync_to_vault(mgr.profile_vault)
+
         return {
             "status": "ok",
-            "session_id": session_id,
+            "session_id": session.session_id,
+            "profile_name": session.profile_name,
             "action": action_clean,
             "target_id": target_id,
-            "page_title": page.title(),
-            "current_url": page.url,
+            "active_tab_index": session.active_page_index,
+            "open_tabs_count": len(session.pages),
+            "page_title": page.title() if page else "",
+            "current_url": page.url if page else "",
         }
 
     except Exception as e:
         return {
             "status": "error",
-            "session_id": session_id,
+            "session_id": session.session_id if session else "",
+            "profile_name": session.profile_name if session else "",
             "action": action_clean,
             "error": str(e),
             "page_title": page.title() if page else "",
             "current_url": page.url if page else "",
         }
+
+
+def handle_session_list() -> Dict[str, Any]:
+    """
+    Lists all active live sessions and persistent profiles stored in Profile Vault.
+    """
+    mgr = BrowserManager.get_instance()
+    active_sessions = mgr.list_active_sessions()
+    saved_profiles = mgr.profile_vault.list_profiles()
+
+    return {
+        "active_sessions_count": len(active_sessions),
+        "active_sessions": active_sessions,
+        "saved_profiles_count": len(saved_profiles),
+        "saved_profiles": saved_profiles,
+    }
+
+
+def handle_session_save(
+    session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Explicitly saves active session cookies, DOM metadata, and state to disk without closing.
+    """
+    mgr = BrowserManager.get_instance()
+    lookup_key = session_id or profile_name or "default"
+    success = mgr.save_session(lookup_key)
+    return {
+        "lookup_key": lookup_key,
+        "status": "saved" if success else "not_found",
+    }
 
 
 def handle_session_close(session_id: str) -> Dict[str, Any]:

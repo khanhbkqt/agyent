@@ -1,8 +1,9 @@
 {
   "name": "browser-camoufox",
-  "version": "1.1.0",
-  "description": "Autonomous Stealth Web & Perception Engine powered by Camoufox C++ Kernel, Playwright & Human Kinematics",
+  "version": "1.2.0",
+  "description": "Continuous Stealth Web & Perception Engine with background daemon, multi-turn session persistence, and human kinematics",
   "author": "agyent team",
+  "publisher": "agyent",
   "enabled": true,
-  "tags": ["browser", "stealth", "scraping", "camoufox", "perception", "trends", "automation"]
+  "tags": ["browser", "stealth", "scraping", "camoufox", "perception", "trends", "automation", "persistence", "multi-session"]
 }

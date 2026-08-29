@@ -22,4 +22,10 @@ type PluginManagerPort interface {
 
 	// AssembleActivePlugins extracts all active MCP servers, skills, and rules from enabled plugins.
 	AssembleActivePlugins(ctx context.Context, globalHome string, workspaceDir string) (*domain.ResolvedContext, error)
+
+	// SyncPlugins synchronizes and updates embedded builtin plugins to the specified target directory.
+	SyncPlugins(ctx context.Context, destDir string, force bool) ([]domain.PluginSyncResult, error)
+
+	// ListEmbeddedPlugins returns all plugins embedded in the binary.
+	ListEmbeddedPlugins(ctx context.Context) ([]domain.Plugin, error)
 }

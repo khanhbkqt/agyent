@@ -8,6 +8,7 @@ type PluginManifest struct {
 	Version     string   `json:"version"`
 	Description string   `json:"description"`
 	Author      string   `json:"author,omitempty"`
+	Publisher   string   `json:"publisher,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Tags        []string `json:"tags,omitempty"`
 }
@@ -22,3 +23,15 @@ type Plugin struct {
 	Rules       string            `json:"rules,omitempty"`
 	InstalledAt time.Time         `json:"installed_at"`
 }
+
+// PluginSyncResult describes the outcome of syncing an embedded or remote plugin.
+type PluginSyncResult struct {
+	Name             string `json:"name"`
+	InstalledVersion string `json:"installed_version"`
+	EmbeddedVersion  string `json:"embedded_version"`
+	Updated          bool   `json:"updated"`
+	Skipped          bool   `json:"skipped"`
+	Reason           string `json:"reason,omitempty"`
+	Path             string `json:"path"`
+}
+

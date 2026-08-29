@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"agyent/builtin"
 	pluginAdapter "agyent/internal/adapters/plugin"
 	"agyent/internal/core/domain"
 
@@ -52,7 +53,7 @@ func TestPluginManager_ListAndAssemble(t *testing.T) {
 	ruleContent := "# Browser Stealth Rules\n- No images"
 	require.NoError(t, os.WriteFile(filepath.Join(pluginDir, "rules", "AGENTS.md"), []byte(ruleContent), 0644))
 
-	mgr := pluginAdapter.NewPluginManager(builtinDir)
+	mgr := pluginAdapter.NewPluginManager(builtinDir, nil)
 	ctx := context.Background()
 
 	// Test ListPlugins
@@ -86,3 +87,95 @@ func TestPluginManager_ListAndAssemble(t *testing.T) {
 	assert.Empty(t, assembledAfterDisable.ActivePlugins)
 	assert.Empty(t, assembledAfterDisable.ActiveMCPServers)
 }
+
+func TestPluginManager_SyncEmbeddedPlugins(t *testing.T) {
+	destDir := t.TempDir()
+	mgr := pluginAdapter.NewPluginManager("", &builtin.EmbeddedPluginsFS)
+	ctx := context.Background()
+
+	// 1. List embedded plugins
+	embedded, err := mgr.ListEmbeddedPlugins(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, embedded)
+
+	names := make([]string, len(embedded))
+	for i, ep := range embedded {
+		names[i] = ep.Manifest.Name
+	}
+	assert.Contains(t, names, "browser-camoufox")
+	assert.Contains(t, names, "database-sqlite")
+
+	// 2. Initial Sync
+	results, err := mgr.SyncPlugins(ctx, destDir, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	for _, r := range results {
+		assert.True(t, r.Updated, "expected plugin %s to be updated on initial sync", r.Name)
+		assert.DirExists(t, r.Path)
+		assert.FileExists(t, filepath.Join(r.Path, "plugin.json"))
+	}
+
+	// 3. Re-sync without force (should skip because already up-to-date)
+	resyncResults, err := mgr.SyncPlugins(ctx, destDir, false)
+	require.NoError(t, err)
+	for _, r := range resyncResults {
+		assert.True(t, r.Skipped, "expected plugin %s to be skipped on resync", r.Name)
+		assert.Equal(t, "already up-to-date", r.Reason)
+	}
+
+	// 4. Re-sync with force=true (should force update)
+	forceResults, err := mgr.SyncPlugins(ctx, destDir, true)
+	require.NoError(t, err)
+	for _, r := range forceResults {
+		assert.True(t, r.Updated, "expected plugin %s to be force-updated", r.Name)
+	}
+}
+
+func TestPluginManager_ProvenanceAndDowngradeProtection(t *testing.T) {
+	destDir := t.TempDir()
+	mgr := pluginAdapter.NewPluginManager("", &builtin.EmbeddedPluginsFS)
+	ctx := context.Background()
+
+	// 1. Create a custom user plugin with same name "browser-camoufox" but publisher: "custom-corp"
+	customPluginDir := filepath.Join(destDir, "browser-camoufox")
+	require.NoError(t, os.MkdirAll(customPluginDir, 0755))
+
+	customManifest := domain.PluginManifest{
+		Name:        "browser-camoufox",
+		Version:     "0.1.0",
+		Description: "My custom private version",
+		Publisher:   "custom-corp",
+		Enabled:     true,
+	}
+	data, err := json.Marshal(customManifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(customPluginDir, "plugin.json"), data, 0644))
+
+	// Also put a custom private file in the custom plugin
+	privateFile := filepath.Join(customPluginDir, "private_token.txt")
+	require.NoError(t, os.WriteFile(privateFile, []byte("super-secret-token"), 0600))
+
+	// 2. Sync without force -> Should skip the custom plugin!
+	res, err := mgr.ExtractPluginAtomic(ctx, "browser-camoufox", destDir, false)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Contains(t, res.Reason, "custom-corp")
+
+	// Verify private file is preserved intact
+	assert.FileExists(t, privateFile)
+
+	// 3. Test Downgrade Protection:
+	// Set publisher="agyent" but version="99.0.0"
+	customManifest.Publisher = "agyent"
+	customManifest.Version = "99.0.0"
+	data, err = json.Marshal(customManifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(customPluginDir, "plugin.json"), data, 0644))
+
+	resDowngrade, err := mgr.ExtractPluginAtomic(ctx, "browser-camoufox", destDir, false)
+	require.NoError(t, err)
+	assert.True(t, resDowngrade.Skipped)
+	assert.Equal(t, "already up-to-date", resDowngrade.Reason)
+}
+

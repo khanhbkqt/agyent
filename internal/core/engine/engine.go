@@ -297,6 +297,13 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 	}
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
 	if err == nil {
+		oldConvID := session.GetActiveConversationID()
+		if oldConvID != "" && e.evolution != nil {
+			bgCtx := context.WithoutCancel(ctx)
+			concurrency.SafeGo(func() {
+				_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+			})
+		}
 		session.ResetActiveConversationID()
 		_ = e.storage.SaveSession(ctx, session)
 	}
