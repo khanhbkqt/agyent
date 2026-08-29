@@ -445,6 +445,3 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "allow", resp3.Decision, "Real IPC call for strict agent with whitelisted cmd must return allow")
 }
-
-
-

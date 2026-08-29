@@ -63,7 +63,15 @@ func NewMediaManager(cfg *config.Config, bot *gotgbot.Bot) *MediaManager {
 	}
 }
 
-// SanitizeFilename cleans filename to prevent path traversal attacks.
+var windowsReservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true,
+	"com5": true, "com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true,
+	"lpt5": true, "lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// SanitizeFilename cleans filename to prevent path traversal attacks and Windows device name collisions.
 func SanitizeFilename(name string) string {
 	if name == "" {
 		return "file"
@@ -81,19 +89,29 @@ func SanitizeFilename(name string) string {
 	if cleaned == "" {
 		cleaned = "file"
 	}
+
+	// Check Windows reserved device names
+	baseOnly := strings.ToLower(cleaned)
+	if idx := strings.Index(baseOnly, "."); idx != -1 {
+		baseOnly = baseOnly[:idx]
+	}
+	if windowsReservedNames[baseOnly] {
+		cleaned = "safe_" + cleaned
+	}
+
 	return cleaned
 }
 
-// DownloadInboundMedia extracts and downloads media files from a Telegram message.
+// DownloadInboundMedia extracts and downloads media files from a Telegram message into staging directory.
 func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Message) ([]domain.Attachment, error) {
 	if msg == nil || m.bot == nil {
 		return nil, nil
 	}
 
 	var attachments []domain.Attachment
-	targetDir := filepath.Join(m.cfg.Storage.AgentsDir, "uploads")
+	targetDir := filepath.Join(m.cfg.Storage.AgentsDir, "staging")
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create upload directory: %w", err)
+		return nil, fmt.Errorf("failed to create staging upload directory: %w", err)
 	}
 
 	// 1. Photos (Take highest resolution)

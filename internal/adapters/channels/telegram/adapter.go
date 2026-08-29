@@ -256,7 +256,12 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 	}()
 
 	// Delete any existing webhook before polling
-	_, _ = bot.DeleteWebhook(&gotgbot.DeleteWebhookOpts{DropPendingUpdates: false})
+	_, _ = bot.DeleteWebhook(&gotgbot.DeleteWebhookOpts{
+		DropPendingUpdates: false,
+		RequestOpts: &gotgbot.RequestOpts{
+			Timeout: 2 * time.Second,
+		},
+	})
 
 	var offset int64 = 0
 	for {
@@ -270,6 +275,9 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 			Offset:  offset,
 			Limit:   100,
 			Timeout: 1, // Short timeout to allow rapid cancellation
+			RequestOpts: &gotgbot.RequestOpts{
+				Timeout: 3 * time.Second,
+			},
 		})
 
 		if err != nil {

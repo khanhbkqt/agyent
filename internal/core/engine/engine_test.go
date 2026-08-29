@@ -15,6 +15,7 @@ import (
 	pluginAdapter "agyent/internal/adapters/plugin"
 	securityAdapter "agyent/internal/adapters/security"
 	"agyent/internal/adapters/storage/sqlite"
+	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
@@ -1162,3 +1163,63 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	_ = runner
 }
 
+func TestEngine_InboundAttachmentRelocation(t *testing.T) {
+	ctx := context.Background()
+	eng, runner, _, store, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	wsMgr := workspaceAdapter.NewManager(nil)
+	eng.SetWorkspaceManager(wsMgr)
+
+	// Create staging file
+	stagingDir := filepath.Join(cfg.Storage.AgentsDir, "staging")
+	require.NoError(t, os.MkdirAll(stagingDir, 0755))
+	srcPath := filepath.Join(stagingDir, "sample_spec.pdf")
+	require.NoError(t, os.WriteFile(srcPath, []byte("PDF specifications content 123"), 0644))
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-att-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "111", Username: "stevan", FullName: "Stevan"},
+		Chat:      domain.ChatContext{ID: "chat-att-1", Type: "private"},
+		Text:      "Please read this uploaded spec",
+		Attachments: []domain.Attachment{
+			{
+				ID:       "att-file-1",
+				FileName: "sample_spec.pdf",
+				FilePath: srcPath,
+				Type:     "document",
+				MIMEType: "application/pdf",
+			},
+		},
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	// Verify runner received the turn request with attachments inside workspace
+	runner.mu.Lock()
+	calls := runner.streamCalls
+	if len(calls) == 0 {
+		calls = runner.executeCalls
+	}
+	runner.mu.Unlock()
+
+	require.NotEmpty(t, calls, "Runner must have received an execution turn")
+	lastReq := calls[len(calls)-1]
+
+	// Prompt must contain the in-workspace uploads path
+	assert.Contains(t, lastReq.Prompt, "uploads")
+	assert.Contains(t, lastReq.Prompt, "sample_spec.pdf")
+
+	// Verify uploads dir in agent workspace contains the file and .gitignore
+	agent, err := store.GetAgent(ctx, "agyent")
+	require.NoError(t, err)
+	uploadsDir := filepath.Join(agent.WorkspacePath, "uploads")
+	assert.DirExists(t, uploadsDir)
+	assert.FileExists(t, filepath.Join(uploadsDir, ".gitignore"))
+
+	// Original staging file was relocated
+	assert.NoFileExists(t, srcPath)
+}

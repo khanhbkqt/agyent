@@ -190,6 +190,22 @@ func TestMedia_PathTraversalSanitization(t *testing.T) {
 			input:    "....//....//",
 			expected: "file",
 		},
+		{
+			input:    "CON.txt",
+			expected: "safe_CON.txt",
+		},
+		{
+			input:    "prn.log",
+			expected: "safe_prn.log",
+		},
+		{
+			input:    "nul",
+			expected: "safe_nul",
+		},
+		{
+			input:    "aux.pdf",
+			expected: "safe_aux.pdf",
+		},
 	}
 
 	for _, tt := range tests {

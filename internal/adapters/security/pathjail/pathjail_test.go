@@ -76,3 +76,31 @@ func TestPathJail_WindowsQuirks(t *testing.T) {
 	assert.Equal(t, domain.DecisionDeny, decision.Decision)
 	assert.Contains(t, decision.Reason, "Device and loopback UNC")
 }
+
+func TestPathJail_InboundUploadsInWorkspace(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	externalUploadsDir := filepath.Join(tempDir, "external_uploads")
+	workspaceUploadsDir := filepath.Join(workspaceDir, "uploads")
+
+	require.NoError(t, os.MkdirAll(workspaceUploadsDir, 0755))
+	require.NoError(t, os.MkdirAll(externalUploadsDir, 0755))
+
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: true,
+		AllowedPaths:         []string{workspaceDir},
+	}
+	evaluator := NewEvaluator(cfg, nil)
+
+	// 1. Inbound file relocated inside workspace/uploads/ -> Allowed with 0 friction
+	wsUploadFile := filepath.Join(workspaceUploadsDir, "spec_123.pdf")
+	decision, err := evaluator.EvaluatePath(workspaceDir, wsUploadFile, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, decision.Decision, "in-workspace upload files must be allowed directly")
+
+	// 2. Out-of-workspace inbound file (legacy behavior) -> Denied by PathJail
+	extUploadFile := filepath.Join(externalUploadsDir, "spec_123.pdf")
+	decision2, err := evaluator.EvaluatePath(workspaceDir, extUploadFile, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision2.Decision, "external upload files outside workspace must be blocked by PathJail")
+}

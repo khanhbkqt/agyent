@@ -17,6 +17,7 @@ import (
 	securityAdapter "agyent/internal/adapters/security"
 	"agyent/internal/adapters/security/ipc"
 	"agyent/internal/adapters/storage/sqlite"
+	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
@@ -146,6 +147,7 @@ var runCmd = &cobra.Command{
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
 		eng.SetSecurityManager(secMgr)
+		eng.SetWorkspaceManager(workspaceAdapter.NewManager(mainLogger))
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
 		eng.SetSubagentDispatcher(subDispatcher)

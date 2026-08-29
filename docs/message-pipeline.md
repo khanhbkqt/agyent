@@ -56,14 +56,18 @@ sequenceDiagram
 
 ---
 
-### Stage 2: Automatic Inbound Media Synchronization
+### Stage 2: Automatic Inbound Media Synchronization & Workspace Relocation
 When a user uploads code files, logs, or photos:
-1. Gateway downloads the file into `workspace/uploads/<timestamp>_<filename>`.
-2. Assembles prompt header for `agy`:
+1. **Ingestion & Staging:** Gateway downloads the file into the staging cache (`~/.agyent/staging/<safe_name>`) with Windows reserved name and path traversal sanitization.
+2. **Turn Workspace Relocation:** When the Core Engine resolves the active session's workspace (`agent.WorkspacePath` or `proj.ProjectPath`), `WorkspacePort` automatically relocates or copies the staged files into `<workspaceDir>/uploads/<timestamp>_<safe_name>`.
+3. **Git Isolation:** Automatically provisions `<workspaceDir>/uploads/.gitignore` containing `*\n!.gitignore\n` to prevent personal/temporary uploads from polluting git tracking in repository workspaces.
+4. **Frictionless AGY Execution & Guardrails:** Because the attachments reside directly within `<workspaceDir>`, AGY CLI (`--add-dir <workspaceDir>`) and Universal Security Gateway (`PathJail`) grant 100% direct access without triggering permission prompts or sandbox blocks.
+5. **Level 4 Prompt Injection:** Formats attachments strictly within Level 4 to preserve KV-cache prefix hit rates (85–95%):
    ```text
-   [ATTACHED FILE RECEIVED]
-   File Path: /absolute/path/to/project/uploads/error.log
-   User Message: "Please analyze this error log for me"
+   [ATTACHED FILES RECEIVED]
+   - File: /absolute/path/to/project/uploads/1724930123_error.log (Type: document, Size: 1024 bytes)
+   
+   User Prompt: "Please analyze this error log for me"
    ```
 
 ---

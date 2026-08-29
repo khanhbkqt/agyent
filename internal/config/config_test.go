@@ -439,4 +439,3 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 		assert.Error(t, cfg.Validate())
 	})
 }
-

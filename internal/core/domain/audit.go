@@ -95,19 +95,19 @@ type AgentTokenBreakdown struct {
 
 // TokenEfficiencyReport aggregates session and global analytics over temporal windows and compaction metrics.
 type TokenEfficiencyReport struct {
-	SessionKey         string                `json:"session_key,omitempty"`
-	AgentFilter        string                `json:"agent_filter,omitempty"`
-	GeneratedAt        time.Time             `json:"generated_at"`
-	TodayUsage         TokenUsage            `json:"today_usage"`
-	TodayTurns         int                   `json:"today_turns"`
-	Past7DaysUsage     TokenUsage            `json:"past_7_days_usage"`
-	Past7DaysTurns     int                   `json:"past_7_days_turns"`
-	AllTimeUsage       TokenUsage            `json:"all_time_usage"`
-	AllTimeTurns       int                   `json:"all_time_turns"`
-	ModelBreakdown     []ModelTokenBreakdown `json:"model_breakdown"`
-	AgentBreakdown     []AgentTokenBreakdown `json:"agent_breakdown"`
-	TotalCompactions   int                   `json:"total_compactions"`
-	EstTokensSaved     int64                 `json:"est_tokens_saved"`
-	AvgCacheHitRatio   float64               `json:"avg_cache_hit_ratio"`
-	TotalCostSavedPct  float64               `json:"total_cost_saved_pct"`
+	SessionKey        string                `json:"session_key,omitempty"`
+	AgentFilter       string                `json:"agent_filter,omitempty"`
+	GeneratedAt       time.Time             `json:"generated_at"`
+	TodayUsage        TokenUsage            `json:"today_usage"`
+	TodayTurns        int                   `json:"today_turns"`
+	Past7DaysUsage    TokenUsage            `json:"past_7_days_usage"`
+	Past7DaysTurns    int                   `json:"past_7_days_turns"`
+	AllTimeUsage      TokenUsage            `json:"all_time_usage"`
+	AllTimeTurns      int                   `json:"all_time_turns"`
+	ModelBreakdown    []ModelTokenBreakdown `json:"model_breakdown"`
+	AgentBreakdown    []AgentTokenBreakdown `json:"agent_breakdown"`
+	TotalCompactions  int                   `json:"total_compactions"`
+	EstTokensSaved    int64                 `json:"est_tokens_saved"`
+	AvgCacheHitRatio  float64               `json:"avg_cache_hit_ratio"`
+	TotalCostSavedPct float64               `json:"total_cost_saved_pct"`
 }

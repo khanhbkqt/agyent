@@ -291,6 +291,9 @@ func TestHarness_TC_CONC_01_50SubprocessWorkersStress(t *testing.T) {
 
 	harness := newTestHarness("success", 10)
 	workers := 50
+	if testing.Short() {
+		workers = 5
+	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, workers)
 

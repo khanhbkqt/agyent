@@ -236,3 +236,43 @@ func TestSnapshotWatcher_ModifiedExistingFile(t *testing.T) {
 	require.Len(t, artifacts, 1)
 	assert.Equal(t, "dynamic_chart.png", artifacts[0].FileName)
 }
+
+func TestSnapshotWatcher_InboundUploadsBaselineDiffing(t *testing.T) {
+	tempDir := t.TempDir()
+	uploadsDir := filepath.Join(tempDir, "uploads")
+	exportsDir := filepath.Join(tempDir, "exports")
+	require.NoError(t, os.MkdirAll(uploadsDir, 0755))
+	require.NoError(t, os.MkdirAll(exportsDir, 0755))
+
+	watcher := agy.NewSnapshotWatcher()
+
+	// 1. Inbound files placed into workspace/uploads/ before execution
+	inboundPhoto := filepath.Join(uploadsDir, "inbound_photo.jpg")
+	inboundCSV := filepath.Join(uploadsDir, "inbound_data.csv")
+	require.NoError(t, os.WriteFile(inboundPhoto, []byte("inbound photo bytes"), 0644))
+	require.NoError(t, os.WriteFile(inboundCSV, []byte("col1,col2\nval1,val2"), 0644))
+
+	// 2. Take pre-execution baseline snapshot
+	beforeSnap, err := watcher.TakeSnapshot(tempDir)
+	require.NoError(t, err)
+	assert.Len(t, beforeSnap, 2)
+
+	time.Sleep(10 * time.Millisecond)
+
+	// 3. Subprocess AGY executes: reads inbound files, generates exports/summary.pdf, leaves inboundPhoto untouched
+	require.NoError(t, os.WriteFile(filepath.Join(exportsDir, "summary.pdf"), []byte("PDF summary report"), 0644))
+
+	// 4. Detect artifacts after execution
+	artifacts, err := watcher.DetectArtifacts(tempDir, beforeSnap)
+	require.NoError(t, err)
+	require.Len(t, artifacts, 1, "only newly generated artifacts should be detected; unmodified inbound uploads must not be re-uploaded")
+	assert.Equal(t, "summary.pdf", artifacts[0].FileName)
+	assert.Equal(t, "document", artifacts[0].Type)
+
+	// 5. If AGY modifies an uploaded file in uploads/ (e.g. image enhancement / resize)
+	require.NoError(t, os.WriteFile(inboundPhoto, []byte("enhanced and resized photo bytes with new size"), 0644))
+
+	artifacts2, err := watcher.DetectArtifacts(tempDir, beforeSnap)
+	require.NoError(t, err)
+	require.Len(t, artifacts2, 2, "both summary.pdf and modified inbound_photo.jpg should now be detected")
+}

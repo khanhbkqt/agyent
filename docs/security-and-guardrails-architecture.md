@@ -88,7 +88,9 @@ flowchart TB
   - Evaluates NTFS Directory Junctions (`mklink /J`) and Hardlinks (`mklink /H`).
   - Resolves 8.3 Short Names (`C:\PROGRA~1` $\to$ `C:\Program Files`) via Win32 `GetLongPathNameW`.
   - Case-Insensitive Path Normalization (enforces lowercase comparison on Windows).
+  - Sanitizes and neutralizes Windows Reserved Device Names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`).
   - Blocks Alternate Data Streams (ADS) (`file.txt:hidden.exe`) and Device/UNC paths (`\\?\`, `\\.\`, `\\127.0.0.1\c$`).
+- **Inbound Media Jail Alignment:** Inbound attachments are safely relocated to `<workspaceDir>/uploads/` with auto-provisioned `.gitignore` (`*`), ensuring legitimate user uploads reside directly inside the active workspace boundary (`DecisionAllow`) without granting access outside the jail.
 - **Absolute Forbidden Blacklist:** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `<workspaceDir>/.agents/hooks.json` (prevents self-tampering), `C:\Windows`, and `/etc`.
 
 ### Checkpoint 3: Synchronous Pre-Execution Tool Interceptor (Native Hook)

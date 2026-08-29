@@ -35,6 +35,7 @@ type Engine struct {
 	evolution          ports.EvolutionOrchestratorPort
 	subagentDispatcher ports.SubagentDispatcherPort
 	securityManager    ports.SecurityManagerPort
+	workspaceManager   ports.WorkspacePort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -133,6 +134,16 @@ func (e *Engine) SetSecurityManager(sec ports.SecurityManagerPort) {
 // GetSecurityManager returns the active security manager instance.
 func (e *Engine) GetSecurityManager() ports.SecurityManagerPort {
 	return e.securityManager
+}
+
+// SetWorkspaceManager injects the workspace manager for handling directory trees and inbound attachments.
+func (e *Engine) SetWorkspaceManager(w ports.WorkspacePort) {
+	e.workspaceManager = w
+}
+
+// GetWorkspaceManager returns the active workspace manager instance.
+func (e *Engine) GetWorkspaceManager() ports.WorkspacePort {
+	return e.workspaceManager
 }
 
 // SetPendingCompactionDigest records a continuity digest for a session to be injected on the next turn.
@@ -498,6 +509,19 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	_ = os.MkdirAll(workspaceDir, 0755)
 	if e.securityManager != nil {
 		_ = e.securityManager.EnsureWorkspaceHooks(workspaceDir)
+	}
+
+	// 5.1. Relocate Inbound Attachments to Active Workspace uploads/
+	if len(msg.Attachments) > 0 && e.workspaceManager != nil {
+		preparedAtts, prepErr := e.workspaceManager.PrepareInboundAttachments(turnCtx, workspaceDir, msg.Attachments)
+		if prepErr == nil && len(preparedAtts) > 0 {
+			msg.Attachments = preparedAtts
+		} else if prepErr != nil {
+			slog.WarnContext(turnCtx, "Failed to relocate inbound attachments to workspace uploads",
+				slog.String("workspace", workspaceDir),
+				slog.String("error", prepErr.Error()),
+			)
+		}
 	}
 
 	// 6. Context Resolution & Plugin Assembly

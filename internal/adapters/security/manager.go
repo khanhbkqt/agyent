@@ -71,9 +71,9 @@ type Manager struct {
 	defaultPreset    domain.SecurityPreset
 	evaluators       map[domain.SecurityPreset]*presetEvaluators
 	hitlPort         ports.HITLApprovalPort
-	sessionGrants    map[string][]sessionGrant                 // sessionKey -> grants
-	activeTurns      map[string]domain.TurnSecurityContext     // convID -> TurnSecurityContext
-	activeWorkspaces map[string]domain.TurnSecurityContext     // workspaceDir -> TurnSecurityContext
+	sessionGrants    map[string][]sessionGrant             // sessionKey -> grants
+	activeTurns      map[string]domain.TurnSecurityContext // convID -> TurnSecurityContext
+	activeWorkspaces map[string]domain.TurnSecurityContext // workspaceDir -> TurnSecurityContext
 	logger           *slog.Logger
 
 	// Metrics (Lock-free atomic counters)
