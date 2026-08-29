@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -405,6 +406,7 @@ func (m *PluginManager) loadPluginFromDir(pluginDir string, scope domain.Context
 			for name, srv := range cfg.MCPServers {
 				srv.ServerName = name
 				srv.Scope = scope
+				srv.Command = resolveCommandPath(srv.Command)
 				// Convert relative script/command paths to absolute paths within pluginDir
 				if len(srv.Args) > 0 {
 					for i, arg := range srv.Args {
@@ -620,4 +622,50 @@ func copyFile(src, dst string) error {
 	_, err = io.Copy(out, in)
 	return err
 }
+
+func resolveCommandPath(cmd string) string {
+	if cmd == "python" || cmd == "python3" {
+		// 1. Check AGYENT_PYTHON environment variable
+		if envPy := os.Getenv("AGYENT_PYTHON"); envPy != "" {
+			if _, err := os.Stat(envPy); err == nil {
+				return envPy
+			}
+		}
+
+		// 2. Check ~/.agyent/venv/bin/python or ~/.agyent/venv/Scripts/python.exe
+		if home, err := os.UserHomeDir(); err == nil {
+			venvPyUnix := filepath.Join(home, ".agyent", "venv", "bin", "python")
+			if _, err := os.Stat(venvPyUnix); err == nil {
+				return venvPyUnix
+			}
+			venvPyWin := filepath.Join(home, ".agyent", "venv", "Scripts", "python.exe")
+			if _, err := os.Stat(venvPyWin); err == nil {
+				return venvPyWin
+			}
+		}
+
+		// 3. Fallback to LookPath
+		if runtime.GOOS == "windows" {
+			if path, err := exec.LookPath("python.exe"); err == nil {
+				return path
+			}
+			if path, err := exec.LookPath("python"); err == nil {
+				return path
+			}
+		} else {
+			if path, err := exec.LookPath("python3"); err == nil {
+				return path
+			}
+			if path, err := exec.LookPath("python"); err == nil {
+				return path
+			}
+		}
+	} else {
+		if path, err := exec.LookPath(cmd); err == nil {
+			return path
+		}
+	}
+	return cmd
+}
+
 

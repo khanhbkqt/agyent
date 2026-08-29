@@ -16,6 +16,10 @@ This skill gives agents full autonomous web capabilities without losing session 
 2. **Persistent Profile Vault (`user_data_dir`)**: When using a named profile (e.g. `profile_name="shopee_vn"`, `profile_name="tiktok_de"`), all cookies (`cookies.sqlite`), IndexedDB, and localStorage are persisted to disk in real time.
 3. **Session Auto-Rehydration & Self-Healing**: If a session was closed or the machine restarted, passing `session_id` or `profile_name` to ANY tool automatically restores the persistent browser context and resumes at the last known URL.
 
+> [!IMPORTANT]
+> **Native Tool Calling Invariant**: All `camoufox_*` tools (`camoufox_session_start`, `camoufox_inspect_dom`, `camoufox_act`, `camoufox_screenshot`, `camoufox_search`, `camoufox_fetch_page`) are native tools provided via Model Context Protocol (MCP). Always call them directly as native tool calls. NEVER execute inline python scripts via `run_command` or shell commands to call `dispatch_tool` or `server.py`.
+
+
 ---
 
 ## 2. Tool Selection Strategy & Workflows
