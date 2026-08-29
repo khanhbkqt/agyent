@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.8] - 2026-08-29
+
+### Added
+- **Embedded Builtin Plugins & Auto-Sync Subsystem:** Builtin plugins (`browser-camoufox`, `database-sqlite`, `subagent-dispatcher`, `system-diagnostics`) are now compiled directly into the `agyent` static binary using `//go:embed all:plugins`. Implemented `PluginManager` (`internal/adapters/plugin/manager.go`) featuring atomic file replacement, SHA-256 provenance verification, downgrade protection, and cross-platform lock safety.
+- **Plugin Management CLI (`agyent plugin`):** Added new CLI suite `agyent plugin` with subcommands: `list`, `update`, `install`, `enable`, and `disable`. Automatic plugin sync is also integrated into `agyent run` daemon bootstrap and `agyent update` self-updater.
+- **Browser Camoufox v1.2.0 Continuous Session Daemon:** Upgraded `browser-camoufox` with a background persistent HTTP daemon (`daemon.py`), persistent profile vault, multi-tab switching, OAuth popup capture, and automatic profile rehydration.
+- **Conversation Wildcard Performance Index:** Added SQLite migration `000009_conversations_wildcard_index` for high-throughput wildcard lookups during multi-conversation search and list operations.
+
+### Fixed
+- **Telegram Long-Polling VPS Stability:** Increased `getUpdates` polling timeout and HTTP client timeout to eliminate intermittent `context deadline exceeded` errors on high-latency VPS networks.
+
+---
+
 ## [1.0.7] - 2026-08-29
 
 ### Added

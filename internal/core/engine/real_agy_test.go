@@ -446,7 +446,7 @@ func TestRealAGY_EndToEnd_EngineTurnContinuation_TokenOptimization(t *testing.T)
 	resolver := contextAdapter.NewContextResolver()
 	syncer, err := mcp.NewMCPSyncer(mcpPath)
 	require.NoError(t, err)
-	pluginMgr := pluginAdapter.NewPluginManager(builtinDir)
+	pluginMgr := pluginAdapter.NewPluginManager(builtinDir, nil)
 
 	var eng *engine.Engine
 
@@ -603,7 +603,7 @@ func TestRealAGY_EndToEnd_CacheHit_Verification(t *testing.T) {
 	resolver := contextAdapter.NewContextResolver()
 	syncer, err := mcp.NewMCPSyncer(mcpPath)
 	require.NoError(t, err)
-	pluginMgr := pluginAdapter.NewPluginManager(builtinDir)
+	pluginMgr := pluginAdapter.NewPluginManager(builtinDir, nil)
 
 	var eng *engine.Engine
 	debouncerHandler := func(ctx context.Context, msg domain.CanonicalMessage) error {
@@ -793,7 +793,7 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 	mcpPath := filepath.Join(tmpDir, "mcp_config.json")
 	syncer, err := mcp.NewMCPSyncer(mcpPath)
 	require.NoError(t, err)
-	pluginMgr := pluginAdapter.NewPluginManager(filepath.Join(tmpDir, "plugins"))
+	pluginMgr := pluginAdapter.NewPluginManager(filepath.Join(tmpDir, "plugins"), nil)
 
 	var eng *engine.Engine
 	deb := debouncer.NewDebouncer(debouncer.Config{

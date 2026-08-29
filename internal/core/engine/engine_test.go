@@ -185,7 +185,7 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 	resolver := contextAdapter.NewContextResolver()
 	syncer, err := mcp.NewMCPSyncer(mcpPath)
 	require.NoError(t, err)
-	pluginMgr := pluginAdapter.NewPluginManager(builtinDir)
+	pluginMgr := pluginAdapter.NewPluginManager(builtinDir, nil)
 
 	var eng *engine.Engine
 
