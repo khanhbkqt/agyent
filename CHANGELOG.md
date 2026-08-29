@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.7] - 2026-08-29
+
+### Added
+- **Workspace Inbound Media Relocation & Git Isolation:** Introduced `WorkspacePort` (`internal/core/ports/workspace.go`) and `WorkspaceManager` adapter (`internal/adapters/workspace/manager.go`). Inbound message attachments (photos, documents, audio, videos) are now automatically relocated into the active workspace directory at `<workspaceDir>/uploads/<safe_name>` during turn execution.
+- **Git Tracking Isolation & Device Name Sanitization:** Automated generation of `uploads/.gitignore` to prevent inbound media from polluting repository git status. Enforced sanitization of Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) and directory traversal sequences.
+- **Frictionless In-Workspace PathJail & Diff Alignment:** Aligned PathJail security evaluation and SnapshotWatcher baseline diffing with `<workspaceDir>/uploads/` for seamless agent tool access without triggering out-of-boundary security violations.
+
+---
+
 ## [1.0.6] - 2026-08-28
 
 ### Fixed
