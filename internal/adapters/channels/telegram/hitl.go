@@ -302,12 +302,16 @@ func (h *HITLCoordinator) formatCardText(req domain.ApprovalRequest) string {
 		target := truncateString(req.TargetFile, 250)
 		sb.WriteString(fmt.Sprintf("📂 **Target File**: `%s`\n", target))
 	}
+	if req.Reason != "" {
+		reason := truncateString(req.Reason, 300)
+		sb.WriteString(fmt.Sprintf("⚠️ **Reason**     : %s\n", reason))
+	}
 	if req.DiffPreview != "" {
 		diff := truncateString(req.DiffPreview, 1200)
 		if strings.Contains(diff, "\n") || len(diff) > 120 {
-			sb.WriteString(fmt.Sprintf("🔍 **Reason/Diff**:\n```\n%s\n```\n", diff))
+			sb.WriteString(fmt.Sprintf("📝 **Diff / Changes**:\n```\n%s\n```\n", diff))
 		} else {
-			sb.WriteString(fmt.Sprintf("🔍 **Reason/Diff**: %s\n", diff))
+			sb.WriteString(fmt.Sprintf("📝 **Diff / Changes**: %s\n", diff))
 		}
 	}
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")

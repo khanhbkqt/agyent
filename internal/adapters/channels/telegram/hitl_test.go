@@ -28,7 +28,7 @@ func TestHITLCoordinator_ApprovalFlow(t *testing.T) {
 		SessionKey:  "telegram:123456789",
 		ToolName:    "run_command",
 		CommandLine: "curl https://example.com",
-		DiffPreview: "Sensitive shell execution",
+		Reason:      "Sensitive shell execution: curl https://example.com",
 		CreatedAt:   time.Now(),
 		ExpiresAt:   time.Now().Add(500 * time.Millisecond),
 	}
@@ -62,6 +62,7 @@ func TestHITLCoordinator_NonAdminDenied(t *testing.T) {
 		SessionKey:  "telegram:123456789",
 		ToolName:    "run_command",
 		CommandLine: "chmod 777 /var/data",
+		Reason:      "Command requires authorization in balanced preset",
 		CreatedAt:   time.Now(),
 		ExpiresAt:   time.Now().Add(100 * time.Millisecond),
 	}
@@ -95,10 +96,11 @@ func TestHITLCoordinator_LargePayloadTruncation(t *testing.T) {
 	req := domain.ApprovalRequest{
 		RequestID:   "hitl-test-large",
 		SessionKey:  "telegram:123456789",
-		ToolName:    "run_command",
+		ToolName:    "write_to_file",
 		AgentName:   "coder",
 		CommandLine: hugeCommand,
 		TargetFile:  hugeFile,
+		Reason:      "Configuration file modification",
 		DiffPreview: hugeDiff,
 		CreatedAt:   time.Now(),
 		ExpiresAt:   time.Now().Add(10 * time.Second),
@@ -111,6 +113,8 @@ func TestHITLCoordinator_LargePayloadTruncation(t *testing.T) {
 	assert.Less(t, len([]rune(formatted)), 3500)
 	assert.Contains(t, cardText, "chars omitted")
 	assert.Contains(t, formatted, "<code>coder</code>")
+	assert.Contains(t, cardText, "Configuration file modification")
+	assert.Contains(t, cardText, "Diff / Changes")
 }
 
 func TestTruncateString(t *testing.T) {

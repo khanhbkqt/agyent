@@ -255,7 +255,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			SessionKey:   sessionKey,
 			AgentName:    agentName,
 			ToolName:     req.ToolName,
-			DiffPreview:  decision.Reason,
+			Reason:       decision.Reason,
 			IsConfigEdit: strings.Contains(decision.Reason, "configuration file"),
 			CreatedAt:    time.Now(),
 			ExpiresAt:    time.Now().Add(time.Duration(timeoutSec) * time.Second),
@@ -266,6 +266,15 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}
 		if target, ok := req.Args["TargetFile"].(string); ok {
 			appReq.TargetFile = target
+		}
+		if repl, ok := req.Args["ReplacementContent"].(string); ok && repl != "" {
+			if targetContent, ok := req.Args["TargetContent"].(string); ok && targetContent != "" {
+				appReq.DiffPreview = fmt.Sprintf("--- Target Content ---\n%s\n+++ Replacement Content +++\n%s", targetContent, repl)
+			} else {
+				appReq.DiffPreview = repl
+			}
+		} else if code, ok := req.Args["CodeContent"].(string); ok && code != "" {
+			appReq.DiffPreview = code
 		}
 
 		m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName)

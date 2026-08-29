@@ -128,6 +128,7 @@ type ApprovalRequest struct {
 	AgentName    string                `json:"agent_name,omitempty"`
 	TaskID       string                `json:"task_id,omitempty"`
 	RiskLevel    string                `json:"risk_level,omitempty"` // "Low", "Medium", "High", "Critical"
+	Reason       string                `json:"reason,omitempty"`
 	DiffPreview  string                `json:"diff_preview,omitempty"`
 	IsConfigEdit bool                  `json:"is_config_edit,omitempty"`
 	CreatedAt    time.Time             `json:"created_at"`
