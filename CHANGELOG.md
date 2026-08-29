@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Onboarding Setup Wizard Polish (`agyent init`):** Upgraded `agyent init` into a multi-step interactive onboarding experience with Security Preset selection (`unrestricted`, `developer`, `balanced`, `strict`, `read_only`), HITL Approval Timeout setup, and automated extraction/enablement of builtin Capability Plugins (`browser-camoufox`, `database-sqlite`, `subagent-dispatcher`, `system-diagnostics`).
 - **Non-Interactive Onboarding Flags:** Added `--security-preset`, `--approval-timeout`, `--plugins`, `--enable-all-plugins`, and `--skip-plugins` flags to `agyent init` for automated server provisioning.
 
+### Fixed
+- **HITL Clean Reason & Diff Formatting:** Separated security policy violation reasons from file diff previews in Telegram Human-In-The-Loop (HITL) approval cards for clean readability.
+- **Session Concurrency & Ghost Lock Prevention:** Fixed ghost lock resurrection in `lock_manager.go`, enforced full process-tree termination on HITL force-kill or session cancel, and wrapped background evolution routines with `SafeGo` panic recovery.
+- **Dynamic Python Interpreter Resolution for MCP:** Dynamically resolves system and virtualenv Python interpreters (`python3`, `python`, etc.) for embedded MCP plugins and enforces native tool calling in agent directives.
+- **Actionable Self-Updater Error Guidance:** Added actionable permission-denied hints and escalation suggestions when running `agyent update` in restricted environments.
+
 ---
 
 ## [1.0.8] - 2026-08-29
