@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.10] - 2026-09-01
+
+### Added
+- **Composite Channel Multiplexer (`CompositeChannelMux`):** Introduced `CompositeChannelMux` in `internal/adapters/channels/composite/mux.go` providing a unified channel routing layer for multi-channel extensibility across Telegram, Discord, and custom webhooks.
+- **Delivery Throttler Panic Protection:** Added per-session panic recovery routines in `DeliveryThrottler` to safeguard streaming message delivery and guarantee graceful worker lifecycle termination.
+- **TargetContext Domain Alignment:** Standardized `ChannelPort` interface across domain and adapter layers using strongly-typed `TargetContext`.
+
+### Fixed
+- **Multi-Bot Concurrent Pool Initialization:** Fixed Telegram adapter initialization loop break bug that prevented secondary bot tokens from launching concurrently.
+- **Dedicated Bot-to-Agent Binding:** Deprecated and removed runtime `/use` slash command in favor of deterministic 1:1 dedicated bot-to-agent binding and strict RBAC ownership.
+
+---
+
 ## [1.0.9] - 2026-08-29
 
 ### Added
