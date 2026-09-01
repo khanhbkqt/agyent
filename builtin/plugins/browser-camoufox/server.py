@@ -516,7 +516,9 @@ TOOL_DEFINITIONS = [
 
 
 def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
-    """Local in-process fallback tool execution."""
+    """Local in-process fallback tool execution with multi-tenant isolation context."""
+    agent_name = os.environ.get("AGYENT_AGENT_NAME", "default")
+    workspace_dir = os.environ.get("AGYENT_AGENT_WORKSPACE")
     if name == "camoufox_search":
         return handle_search(
             query=args.get("query", ""),
@@ -524,12 +526,16 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             locale=args.get("locale", "en-US"),
             max_results=args.get("max_results", 5),
             profile_name=args.get("profile_name"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_discover_trends":
         return handle_discover_trends(
             platform=args.get("platform", "tiktok"),
             country=args.get("country", "US"),
             category=args.get("category"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_fetch_page":
         return handle_fetch_page(
@@ -539,6 +545,8 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             timeout_ms=args.get("timeout_ms", 30000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_extract_json_ld":
         return handle_extract_json_ld(
@@ -546,6 +554,8 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             timeout_ms=args.get("timeout_ms", 30000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_scrape_selector":
         return handle_scrape_selector(
@@ -555,6 +565,8 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             limit=args.get("limit", 20),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_intercept_api":
         return handle_intercept_api(
@@ -563,6 +575,8 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             wait_time_ms=args.get("wait_time_ms", 5000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_session_start":
         return handle_session_start(
@@ -570,12 +584,16 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             headless=args.get("headless", True),
             locale=args.get("locale", "en-US"),
             initial_url=args.get("initial_url"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_inspect_dom":
         return handle_inspect_dom(
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
             mode=args.get("mode", "a11y_tree"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_act":
         return handle_act(
@@ -585,17 +603,23 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             target_id=args.get("target_id"),
             value=args.get("value"),
             expects_popup=args.get("expects_popup", False),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_session_list":
-        return handle_session_list()
+        return handle_session_list(agent_name=agent_name, workspace_dir=workspace_dir)
     elif name == "camoufox_session_save":
         return handle_session_save(
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_session_close":
         return handle_session_close(
             session_id=args.get("session_id", ""),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_screenshot":
         return handle_screenshot(
@@ -605,6 +629,8 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             selector=args.get("selector"),
             full_page=args.get("full_page", False),
             output_path=args.get("output_path"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     elif name == "camoufox_pdf_export":
         return handle_pdf_export(
@@ -612,14 +638,22 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
             output_path=args.get("output_path"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
         )
     else:
         raise ValueError(f"Tool '{name}' not found")
 
 
 def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
-    """Executes tool via background HTTP daemon."""
-    payload = json.dumps({"name": name, "args": args}, ensure_ascii=False).encode("utf-8")
+    """Executes tool via background HTTP daemon using APIS-4D Payload Envelope 2.0."""
+    context = {
+        "agent_name": os.environ.get("AGYENT_AGENT_NAME", "default"),
+        "workspace_dir": os.environ.get("AGYENT_AGENT_WORKSPACE", ""),
+        "session_key": os.environ.get("AGYENT_SESSION_KEY", ""),
+        "user_id": os.environ.get("AGYENT_USER_ID", ""),
+    }
+    payload = json.dumps({"context": context, "name": name, "args": args}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/rpc",
         data=payload,

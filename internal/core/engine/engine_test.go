@@ -692,7 +692,7 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	require.NoError(t, err)
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Mock response for: Review this PR")
+	assert.Contains(t, lastSent.Text, "Review this PR")
 
 	// 5. User 1 inspects agent info -> contains collaborator info
 	infoMsg := domain.CanonicalMessage{

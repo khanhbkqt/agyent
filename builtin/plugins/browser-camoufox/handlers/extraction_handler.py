@@ -4,6 +4,7 @@ Provides clean, structured, and token-optimized extraction from modern websites.
 """
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 from core.browser_manager import BrowserManager
@@ -17,15 +18,19 @@ def handle_fetch_page(
     timeout_ms: int = 30000,
     profile_name: Optional[str] = None,
     session_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches a web page using Camoufox stealth browser and returns cleaned content.
-    Supports persistent profile context or session.
+    Supports persistent profile context or session for a specific agent.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     target_profile = profile_name
     if session_id and not target_profile:
-        sess = mgr.get_session(session_id)
+        sess = mgr.get_session(session_id, agent_name=agent, workspace_dir=ws_dir)
         if sess:
             target_profile = sess.profile_name
 
@@ -75,7 +80,7 @@ def handle_fetch_page(
             }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile, agent_name=agent, workspace_dir=ws_dir)
     except Exception as e:
         return {
             "url": url,
@@ -92,14 +97,18 @@ def handle_extract_json_ld(
     timeout_ms: int = 30000,
     profile_name: Optional[str] = None,
     session_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extracts Schema.org JSON-LD scripts, OpenGraph, and Twitter metadata from a page.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     target_profile = profile_name
     if session_id and not target_profile:
-        sess = mgr.get_session(session_id)
+        sess = mgr.get_session(session_id, agent_name=agent, workspace_dir=ws_dir)
         if sess:
             target_profile = sess.profile_name
 
@@ -154,7 +163,7 @@ def handle_extract_json_ld(
         }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile, agent_name=agent, workspace_dir=ws_dir)
     except Exception as e:
         return {
             "url": url,
@@ -173,14 +182,18 @@ def handle_scrape_selector(
     timeout_ms: int = 30000,
     profile_name: Optional[str] = None,
     session_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extracts structured items from a page using CSS selectors and field mappings.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     target_profile = profile_name
     if session_id and not target_profile:
-        sess = mgr.get_session(session_id)
+        sess = mgr.get_session(session_id, agent_name=agent, workspace_dir=ws_dir)
         if sess:
             target_profile = sess.profile_name
 
@@ -246,7 +259,7 @@ def handle_scrape_selector(
         }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile)
+        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile, agent_name=agent, workspace_dir=ws_dir)
     except Exception as e:
         return {
             "url": url,

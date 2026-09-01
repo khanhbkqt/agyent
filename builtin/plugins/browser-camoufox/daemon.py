@@ -65,8 +65,15 @@ def log(msg: str) -> None:
         pass
 
 
-def execute_tool(name: str, args: Dict[str, Any]) -> Any:
-    """Dispatches tool execution to the appropriate domain handler."""
+def execute_tool(
+    name: str,
+    args: Dict[str, Any],
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
+) -> Any:
+    """Dispatches tool execution to the appropriate domain handler with multi-tenant isolation."""
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     if name == "camoufox_search":
         return handle_search(
             query=args.get("query", ""),
@@ -74,12 +81,16 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             locale=args.get("locale", "en-US"),
             max_results=args.get("max_results", 5),
             profile_name=args.get("profile_name"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_discover_trends":
         return handle_discover_trends(
             platform=args.get("platform", "tiktok"),
             country=args.get("country", "US"),
             category=args.get("category"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_fetch_page":
         return handle_fetch_page(
@@ -89,6 +100,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             timeout_ms=args.get("timeout_ms", 30000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_extract_json_ld":
         return handle_extract_json_ld(
@@ -96,6 +109,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             timeout_ms=args.get("timeout_ms", 30000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_scrape_selector":
         return handle_scrape_selector(
@@ -105,6 +120,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             limit=args.get("limit", 20),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_intercept_api":
         return handle_intercept_api(
@@ -113,6 +130,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             wait_time_ms=args.get("wait_time_ms", 5000),
             profile_name=args.get("profile_name"),
             session_id=args.get("session_id"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_session_start":
         return handle_session_start(
@@ -120,12 +139,16 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             headless=args.get("headless", True),
             locale=args.get("locale", "en-US"),
             initial_url=args.get("initial_url"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_inspect_dom":
         return handle_inspect_dom(
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
             mode=args.get("mode", "a11y_tree"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_act":
         return handle_act(
@@ -135,17 +158,23 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             target_id=args.get("target_id"),
             value=args.get("value"),
             expects_popup=args.get("expects_popup", False),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_session_list":
-        return handle_session_list()
+        return handle_session_list(agent_name=agent, workspace_dir=ws_dir)
     elif name == "camoufox_session_save":
         return handle_session_save(
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_session_close":
         return handle_session_close(
             session_id=args.get("session_id", ""),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_screenshot":
         return handle_screenshot(
@@ -155,6 +184,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             selector=args.get("selector"),
             full_page=args.get("full_page", False),
             output_path=args.get("output_path"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     elif name == "camoufox_pdf_export":
         return handle_pdf_export(
@@ -162,6 +193,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Any:
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
             output_path=args.get("output_path"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
         )
     else:
         raise ValueError(f"Tool '{name}' not found")
@@ -207,9 +240,12 @@ class DaemonHTTPHandler(http.server.BaseHTTPRequestHandler):
 
                 tool_name = req.get("name", "")
                 args = req.get("args", {})
-                log(f"Executing RPC tool: '{tool_name}'")
+                context = req.get("context", {})
+                agent_name = context.get("agent_name") or os.environ.get("AGYENT_AGENT_NAME", "default")
+                workspace_dir = context.get("workspace_dir") or os.environ.get("AGYENT_AGENT_WORKSPACE")
+                log(f"Executing RPC tool: '{tool_name}' for agent: '{agent_name}'")
 
-                res = execute_tool(tool_name, args)
+                res = execute_tool(tool_name, args, agent_name=agent_name, workspace_dir=workspace_dir)
                 self._send_json_response(200, {"result": res, "error": None})
             except Exception as e:
                 log(f"RPC execution error: {e}\n{traceback.format_exc()}")

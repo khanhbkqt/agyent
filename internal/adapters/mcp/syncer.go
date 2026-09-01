@@ -133,6 +133,21 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 		}
 		key := formatEphemeralKey(serverName)
 		s.activeMounts[key]++
+
+		// Ensure fallback environment variables for multi-tenant isolation
+		if srv.Env == nil {
+			srv.Env = make(map[string]string)
+		} else {
+			envCopy := make(map[string]string, len(srv.Env)+2)
+			for k, v := range srv.Env {
+				envCopy[k] = v
+			}
+			srv.Env = envCopy
+		}
+		if _, exists := srv.Env["AGYENT_SESSION_KEY"]; !exists && sessionKey != "" {
+			srv.Env["AGYENT_SESSION_KEY"] = sessionKey
+		}
+
 		cfg.MCPServers[key] = srv
 	}
 

@@ -1,10 +1,13 @@
 """
 Browser lifecycle manager for Camoufox.
 Handles stateful multi-step sessions with native Firefox user_data_dir persistence,
-multi-tab popup tracking, auto-rehydration, thread-safe session locks, and idle garbage collection.
+multi-tenant agent isolation, multi-tab popup tracking, auto-rehydration, thread-safe session locks,
+and idle garbage collection.
 """
 
 import atexit
+import contextlib
+import os
 import sys
 import threading
 import time
@@ -19,7 +22,7 @@ from .profile_vault import ProfileVault
 
 
 class TabSession:
-    """Represents an active stateful browser session with multi-tab support."""
+    """Represents an active stateful browser session with multi-tab support and agent isolation."""
 
     def __init__(
         self,
@@ -28,15 +31,21 @@ class TabSession:
         context: Any,
         browser_cm: Any,
         sniffer: Optional[NetworkSniffer] = None,
+        agent_name: str = "default",
+        workspace_dir: Optional[str] = None,
     ):
         self.session_id = session_id
         self.profile_name = profile_name
+        self.agent_name = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+        self.workspace_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
         self.context = context
         self._browser_cm = browser_cm
         self.sniffer = sniffer
         self.active_page_index = 0
         self.created_at = time.time()
         self.last_active = time.time()
+        self.lock = threading.Lock()
+        self.is_busy = False
 
         # Listen for popup pages / new tabs
         try:
@@ -44,9 +53,21 @@ class TabSession:
         except Exception:
             pass
 
+    @contextlib.contextmanager
+    def busy_guard(self):
+        """Context manager to mark session as busy and protect against concurrent reaping or closing."""
+        with self.lock:
+            self.is_busy = True
+            self.touch()
+            try:
+                yield self
+            finally:
+                self.is_busy = False
+                self.touch()
+
     def _on_new_page_created(self, page: Any) -> None:
         """Callback triggered whenever a new tab or popup window opens."""
-        sys.stderr.write(f"[CAMOUFOX_SESSION] Detected new tab/popup in session {self.session_id}\n")
+        sys.stderr.write(f"[CAMOUFOX_SESSION] Detected new tab/popup in session {self.session_id} (agent: {self.agent_name})\n")
         self.touch()
         # Automatically focus the new popup tab
         try:
@@ -116,23 +137,29 @@ class TabSession:
             tabs_info = self.get_tabs_info()
             curr_url = self.page.url if self.page else ""
             curr_title = self.page.title() if self.page else ""
-            vault.save_session_meta(self.profile_name, {
-                "session_id": self.session_id,
-                "profile_name": self.profile_name,
-                "last_url": curr_url,
-                "page_title": curr_title,
-                "tabs": tabs_info,
-                "active_tab_index": self.active_page_index,
-            })
+            vault.save_session_meta(
+                self.profile_name,
+                {
+                    "session_id": self.session_id,
+                    "profile_name": self.profile_name,
+                    "agent_name": self.agent_name,
+                    "last_url": curr_url,
+                    "page_title": curr_title,
+                    "tabs": tabs_info,
+                    "active_tab_index": self.active_page_index,
+                },
+                agent_name=self.agent_name,
+                workspace_dir=self.workspace_dir,
+            )
             # Also try saving storage_state.json backup
-            state_file = vault.get_storage_state_path(self.profile_name)
+            state_file = vault.get_storage_state_path(self.profile_name, agent_name=self.agent_name, workspace_dir=self.workspace_dir)
             self.context.storage_state(path=state_file)
         except Exception as e:
             sys.stderr.write(f"[CAMOUFOX_SESSION] Warning: State sync error: {e}\n")
 
 
 class BrowserManager:
-    """Central manager for persistent Camoufox browser sessions with auto-rehydration."""
+    """Central manager for persistent Camoufox browser sessions with multi-tenant isolation and auto-rehydration."""
 
     _instance: Optional["BrowserManager"] = None
     _singleton_lock = threading.Lock()
@@ -140,7 +167,7 @@ class BrowserManager:
     def __init__(self, profile_vault: Optional[ProfileVault] = None):
         self.profile_vault = profile_vault or ProfileVault()
         self.sessions: Dict[str, TabSession] = {}
-        self.profile_to_session: Dict[str, str] = {}
+        self.profile_to_session: Dict[str, str] = {}  # key: f"{agent_name}:{profile_name}" -> session_id
         self._lock = threading.Lock()
         atexit.register(self.close_all)
 
@@ -155,20 +182,31 @@ class BrowserManager:
     def reap_idle_sessions(self, idle_timeout_sec: float = 1200.0) -> int:
         """
         Closes sessions that have remained inactive longer than idle_timeout_sec (default: 20 mins).
-        Saves metadata before tearing down memory references.
+        Checks if session is busy and acquires session lock non-blockingly to prevent reaping active sessions mid-execution.
         """
         now = time.time()
         stale_ids = []
         with self._lock:
-            for sid, sess in self.sessions.items():
+            for sid, sess in list(self.sessions.items()):
+                if sess.is_busy:
+                    continue
                 if now - sess.last_active > idle_timeout_sec:
-                    stale_ids.append(sid)
+                    # Attempt non-blocking lock acquisition to ensure no background task is using it
+                    acquired = sess.lock.acquire(blocking=False)
+                    if acquired:
+                        try:
+                            if not sess.is_busy and (now - sess.last_active > idle_timeout_sec):
+                                stale_ids.append(sid)
+                        finally:
+                            sess.lock.release()
 
+        reaped_count = 0
         for sid in stale_ids:
             sys.stderr.write(f"[CAMOUFOX_MANAGER] Reaping idle session {sid}\n")
-            self.close_session(sid)
+            if self.close_session(sid):
+                reaped_count += 1
 
-        return len(stale_ids)
+        return reaped_count
 
     def run_stateless(
         self,
@@ -177,20 +215,28 @@ class BrowserManager:
         locale: str = "en-US",
         timeout_ms: int = 30000,
         profile_name: Optional[str] = None,
+        agent_name: str = "default",
+        workspace_dir: Optional[str] = None,
     ) -> Any:
         """
-        Executes a task either with a temporary context or inside a named persistent profile.
+        Executes a task either with a temporary context or inside a named persistent profile for an agent.
         """
         self.reap_idle_sessions()
         if profile_name:
             # Execute within stateful profile
-            session = self.get_or_create_session(profile_name=profile_name, headless=headless, locale=locale)
-            page = session.page
-            page.set_default_timeout(timeout_ms)
-            session.touch()
-            res = handler(page)
-            session.sync_to_vault(self.profile_vault)
-            return res
+            session = self.get_or_create_session(
+                profile_name=profile_name,
+                agent_name=agent_name,
+                workspace_dir=workspace_dir,
+                headless=headless,
+                locale=locale,
+            )
+            with session.busy_guard():
+                page = session.page
+                page.set_default_timeout(timeout_ms)
+                res = handler(page)
+                session.sync_to_vault(self.profile_vault)
+                return res
 
         # Pure temporary stateless launch
         launch_opts = build_camoufox_launch_options(headless=headless, locale=locale)
@@ -215,6 +261,8 @@ class BrowserManager:
     def get_or_create_session(
         self,
         profile_name: str = "default",
+        agent_name: str = "default",
+        workspace_dir: Optional[str] = None,
         headless: bool = True,
         locale: str = "en-US",
         initial_url: Optional[str] = None,
@@ -222,31 +270,39 @@ class BrowserManager:
         sniffer_pattern: Optional[str] = None,
     ) -> TabSession:
         """
-        Retrieves existing active session for profile_name or creates a new one.
+        Retrieves existing active session for agent_name:profile_name or creates a new one.
         """
+        clean_agent = self.profile_vault.clean_agent_name(agent_name)
+        clean_prof = self.profile_vault.clean_profile_name(profile_name)
+        lookup_key = f"{clean_agent}:{clean_prof}"
+
         with self._lock:
-            existing_sid = self.profile_to_session.get(profile_name)
+            existing_sid = self.profile_to_session.get(lookup_key)
             if existing_sid and existing_sid in self.sessions:
                 sess = self.sessions[existing_sid]
                 sess.touch()
                 if initial_url and sess.page:
                     try:
-                        sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
+                        with sess.busy_guard():
+                            sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
                     except Exception:
                         pass
                 return sess
 
         sid = self.create_session(
-            profile_name=profile_name,
+            profile_name=clean_prof,
+            agent_name=clean_agent,
+            workspace_dir=workspace_dir,
             headless=headless,
             locale=locale,
             enable_sniffer=enable_sniffer,
             sniffer_pattern=sniffer_pattern,
         )
-        sess = self.get_session(sid)
+        sess = self.get_session(sid, agent_name=clean_agent, workspace_dir=workspace_dir)
         if initial_url and sess and sess.page:
             try:
-                sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
+                with sess.busy_guard():
+                    sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
                 pass
         return sess
@@ -254,27 +310,31 @@ class BrowserManager:
     def create_session(
         self,
         profile_name: str = "default",
+        agent_name: str = "default",
+        workspace_dir: Optional[str] = None,
         headless: bool = True,
         locale: str = "en-US",
         enable_sniffer: bool = False,
         sniffer_pattern: Optional[str] = None,
     ) -> str:
         """
-        Starts a persistent browser session with native Firefox user_data_dir.
+        Starts a persistent browser session with native Firefox user_data_dir for a specific agent.
         """
         self.reap_idle_sessions()
+        clean_agent = self.profile_vault.clean_agent_name(agent_name)
         clean_profile = self.profile_vault.clean_profile_name(profile_name)
+        lookup_key = f"{clean_agent}:{clean_profile}"
 
         # Check for profile lock conflict
-        if self.profile_vault.is_profile_locked(clean_profile):
+        if self.profile_vault.is_profile_locked(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir):
             # Check if we own this session already
             with self._lock:
-                if clean_profile in self.profile_to_session:
-                    return self.profile_to_session[clean_profile]
-            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} parent.lock detected\n")
+                if lookup_key in self.profile_to_session:
+                    return self.profile_to_session[lookup_key]
+            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} (agent: {clean_agent}) parent.lock detected\n")
 
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
-        user_data_dir = self.profile_vault.get_user_data_dir(clean_profile)
+        user_data_dir = self.profile_vault.get_user_data_dir(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)
         launch_opts = build_camoufox_launch_options(headless=headless, locale=locale)
         ctx_opts = build_context_options(locale=locale)
 
@@ -306,6 +366,8 @@ class BrowserManager:
         session = TabSession(
             session_id=session_id,
             profile_name=clean_profile,
+            agent_name=clean_agent,
+            workspace_dir=workspace_dir,
             context=context,
             browser_cm=browser_cm,
             sniffer=sniffer,
@@ -313,31 +375,46 @@ class BrowserManager:
 
         with self._lock:
             self.sessions[session_id] = session
-            self.profile_to_session[clean_profile] = session_id
+            self.profile_to_session[lookup_key] = session_id
 
         # Sync initial metadata
         session.sync_to_vault(self.profile_vault)
-        sys.stderr.write(f"[CAMOUFOX_MANAGER] Created persistent session {session_id} for profile {clean_profile}\n")
+        sys.stderr.write(f"[CAMOUFOX_MANAGER] Created persistent session {session_id} for profile {clean_profile} (agent: {clean_agent})\n")
         return session_id
 
-    def get_session(self, session_id_or_profile: str, auto_rehydrate: bool = True) -> Optional[TabSession]:
+    def get_session(
+        self,
+        session_id_or_profile: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+        auto_rehydrate: bool = True,
+    ) -> Optional[TabSession]:
         """
-        Retrieves active session by session_id or profile_name.
+        Retrieves active session by session_id or profile_name enforcing agent ownership.
         If missing in memory, auto-rehydrates from profile vault session_meta.json.
         """
         if not session_id_or_profile:
             return None
 
+        clean_agent = self.profile_vault.clean_agent_name(agent_name) if agent_name else None
+
         with self._lock:
             # 1. Direct session_id match
             if session_id_or_profile in self.sessions:
                 sess = self.sessions[session_id_or_profile]
+                if clean_agent is not None and sess.agent_name != clean_agent:
+                    # Multi-tenant ownership guard: unauthorized agent cannot access another agent's session
+                    sys.stderr.write(f"[CAMOUFOX_MANAGER] Access Denied: Agent '{clean_agent}' attempted to access session '{session_id_or_profile}' owned by '{sess.agent_name}'\n")
+                    return None
                 sess.touch()
                 return sess
 
-            # 2. profile_name match
-            if session_id_or_profile in self.profile_to_session:
-                sid = self.profile_to_session[session_id_or_profile]
+            # 2. profile_name match with agent namespace
+            lookup_agent = clean_agent or "default"
+            clean_profile = self.profile_vault.clean_profile_name(session_id_or_profile)
+            lookup_key = f"{lookup_agent}:{clean_profile}"
+            if lookup_key in self.profile_to_session:
+                sid = self.profile_to_session[lookup_key]
                 if sid in self.sessions:
                     sess = self.sessions[sid]
                     sess.touch()
@@ -346,78 +423,116 @@ class BrowserManager:
         # 3. Auto-Rehydration from disk
         if auto_rehydrate:
             profile_name = session_id_or_profile
-            # Check if this identifier has session metadata
-            meta = self.profile_vault.load_session_meta(profile_name)
+            rehydrate_agent = clean_agent or "default"
+            # Check if this identifier has session metadata in agent's vault
+            meta = self.profile_vault.load_session_meta(profile_name, agent_name=rehydrate_agent, workspace_dir=workspace_dir)
             if not meta:
-                # Try search across all profiles to match session_id
-                for p in self.profile_vault.list_profiles():
-                    p_meta = self.profile_vault.load_session_meta(p["name"])
+                # Search across all profiles for this agent to match session_id
+                for p in self.profile_vault.list_profiles(agent_name=rehydrate_agent, workspace_dir=workspace_dir):
+                    p_meta = self.profile_vault.load_session_meta(p["name"], agent_name=rehydrate_agent, workspace_dir=workspace_dir)
                     if p_meta and p_meta.get("session_id") == session_id_or_profile:
                         profile_name = p["name"]
                         meta = p_meta
                         break
 
-            if meta or self.profile_vault.has_storage_state(profile_name):
-                sys.stderr.write(f"[CAMOUFOX_MANAGER] Auto-rehydrating session for profile {profile_name}...\n")
+            if meta or self.profile_vault.has_storage_state(profile_name, agent_name=rehydrate_agent, workspace_dir=workspace_dir):
+                sys.stderr.write(f"[CAMOUFOX_MANAGER] Auto-rehydrating session for profile {profile_name} (agent: {rehydrate_agent})...\n")
                 last_url = meta.get("last_url") if meta else None
-                sess = self.get_or_create_session(profile_name=profile_name, initial_url=last_url)
+                sess = self.get_or_create_session(
+                    profile_name=profile_name,
+                    agent_name=rehydrate_agent,
+                    workspace_dir=workspace_dir,
+                    initial_url=last_url,
+                )
                 return sess
 
         return None
 
-    def save_session(self, session_id_or_profile: str) -> bool:
+    def save_session(
+        self,
+        session_id_or_profile: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> bool:
         """Explicitly checkpoints session state to disk without closing."""
-        sess = self.get_session(session_id_or_profile, auto_rehydrate=False)
+        sess = self.get_session(session_id_or_profile, agent_name=agent_name, workspace_dir=workspace_dir, auto_rehydrate=False)
         if not sess:
             return False
-        sess.sync_to_vault(self.profile_vault)
+        with sess.busy_guard():
+            sess.sync_to_vault(self.profile_vault)
         return True
 
-    def close_session(self, session_id: str) -> bool:
+    def close_session(
+        self,
+        session_id: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> bool:
         """
         Closes a session, saves storage state and tabs metadata into the profile vault, and frees resources.
+        Enforces agent ownership if agent_name is specified.
         """
+        clean_agent = self.profile_vault.clean_agent_name(agent_name) if agent_name else None
+
         with self._lock:
-            session = self.sessions.pop(session_id, None)
-            if session:
-                self.profile_to_session.pop(session.profile_name, None)
+            if session_id in self.sessions:
+                sess = self.sessions[session_id]
+                if clean_agent is not None and sess.agent_name != clean_agent:
+                    sys.stderr.write(f"[CAMOUFOX_MANAGER] Access Denied: Agent '{clean_agent}' attempted to close session '{session_id}' owned by '{sess.agent_name}'\n")
+                    return False
+                session = self.sessions.pop(session_id, None)
+                if session:
+                    lookup_key = f"{session.agent_name}:{session.profile_name}"
+                    self.profile_to_session.pop(lookup_key, None)
+            else:
+                session = None
 
         if not session:
             return False
 
-        try:
-            # Persist state
-            session.sync_to_vault(self.profile_vault)
-
-            # Teardown context pages
+        with session.lock:
             try:
-                for p in session.pages:
-                    try:
-                        p.close()
-                    except Exception:
-                        pass
-                session.context.close()
-            except Exception:
-                pass
+                # Persist state
+                session.sync_to_vault(self.profile_vault)
 
-            # Exit browser context manager
-            if hasattr(session, "_browser_cm") and session._browser_cm:
+                # Teardown context pages
                 try:
-                    session._browser_cm.__exit__(None, None, None)
+                    for p in session.pages:
+                        try:
+                            p.close()
+                        except Exception:
+                            pass
+                    session.context.close()
                 except Exception:
                     pass
 
-            sys.stderr.write(f"[CAMOUFOX_MANAGER] Closed session {session_id}\n")
-            return True
-        except Exception as e:
-            sys.stderr.write(f"[CAMOUFOX_MANAGER] Error closing session {session_id}: {e}\n")
-            return False
+                # Exit browser context manager
+                if hasattr(session, "_browser_cm") and session._browser_cm:
+                    try:
+                        session._browser_cm.__exit__(None, None, None)
+                    except Exception:
+                        pass
 
-    def list_active_sessions(self) -> List[Dict[str, Any]]:
-        """Lists all currently active in-memory browser sessions."""
+                sys.stderr.write(f"[CAMOUFOX_MANAGER] Closed session {session_id} (agent: {session.agent_name})\n")
+                return True
+            except Exception as e:
+                sys.stderr.write(f"[CAMOUFOX_MANAGER] Error closing session {session_id}: {e}\n")
+                return False
+
+    def list_active_sessions(
+        self,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Lists active in-memory browser sessions, optionally filtered by agent_name and workspace_dir."""
+        clean_agent = self.profile_vault.clean_agent_name(agent_name) if agent_name else None
         res = []
         with self._lock:
             for sid, sess in self.sessions.items():
+                if clean_agent is not None and sess.agent_name != clean_agent:
+                    continue
+                if workspace_dir is not None and sess.workspace_dir != workspace_dir:
+                    continue
                 curr_url = ""
                 curr_title = ""
                 try:
@@ -429,6 +544,8 @@ class BrowserManager:
                 res.append({
                     "session_id": sid,
                     "profile_name": sess.profile_name,
+                    "agent_name": sess.agent_name,
+                    "workspace_dir": sess.workspace_dir,
                     "created_at": sess.created_at,
                     "last_active": sess.last_active,
                     "current_url": curr_url,
@@ -437,6 +554,14 @@ class BrowserManager:
                 })
         return res
 
+    def list_sessions(
+        self,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Alias for list_active_sessions."""
+        return self.list_active_sessions(agent_name=agent_name, workspace_dir=workspace_dir)
+
     def close_all(self) -> None:
         """Closes all active sessions on shutdown."""
         with self._lock:
@@ -444,4 +569,5 @@ class BrowserManager:
 
         for sid in session_ids:
             self.close_session(sid)
+
 

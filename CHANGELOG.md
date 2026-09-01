@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.11] - 2026-09-01
+
+### Added
+- **APIS-4D Multi-Tenant Environment Context Injection:** Subprocesses executed via the AGY process harness and dynamically mounted MCP servers now receive standard execution environment variables (`AGYENT_AGENT_NAME`, `AGYENT_AGENT_WORKSPACE`, `AGYENT_SESSION_KEY`, `AGYENT_USER_ID`) to ensure strict context isolation and multi-tenant security across concurrent sessions.
+- **Plugin Developer & Isolation Standard:** Published comprehensive documentation `docs/plugin-developer-and-isolation-standard.md` detailing multi-tab profile isolation, headless daemon management, and MCP environment contracts.
+- **Browser Camoufox & SQLite Session Hardening:** Upgraded `browser-camoufox` and `database-sqlite` plugins with session-aware tab isolation, continuous profile vault integrity checks, and persistent connection stability.
+
+### Fixed
+- **Multi-Bot Dynamic Agent Resolution in Commands:** Slash commands and turn initializations now dynamically detect and honor `BindAgent` metadata passed from multi-bot channel adapters, automatically bootstrapping agent workspaces upon first contact.
+
+---
+
 ## [1.0.10] - 2026-09-01
 
 ### Added

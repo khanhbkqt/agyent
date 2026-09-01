@@ -8,6 +8,7 @@ Handler for stateful multi-step agent interactions:
 - camoufox_session_close
 """
 
+import os
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -25,14 +26,20 @@ def handle_session_start(
     headless: bool = True,
     locale: str = "en-US",
     initial_url: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Initializes or reuses a stateful browser session connected to the persistent Profile Vault.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     try:
         session = mgr.get_or_create_session(
             profile_name=profile_name,
+            agent_name=agent,
+            workspace_dir=ws_dir,
             headless=headless,
             locale=locale,
             initial_url=initial_url,
@@ -40,13 +47,15 @@ def handle_session_start(
         )
         if session and initial_url and session.page:
             try:
-                dismiss_cookie_banners(session.page)
+                with session.busy_guard():
+                    dismiss_cookie_banners(session.page)
             except Exception:
                 pass
 
         return {
             "session_id": session.session_id if session else "",
             "profile_name": profile_name,
+            "agent_name": session.agent_name if session else agent,
             "status": "active",
             "current_url": session.page.url if session and session.page else "",
             "current_title": session.page.title() if session and session.page else "",
@@ -57,6 +66,7 @@ def handle_session_start(
         return {
             "session_id": "",
             "profile_name": profile_name,
+            "agent_name": agent,
             "status": "error",
             "error": str(e),
         }
@@ -66,42 +76,47 @@ def handle_inspect_dom(
     session_id: Optional[str] = None,
     profile_name: Optional[str] = None,
     mode: str = "a11y_tree",
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extracts the current page's interactive element tree (AOM) or injects visual marks.
-    Supports auto-rehydration by session_id or profile_name.
+    Supports auto-rehydration by session_id or profile_name for a specific agent.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     lookup_key = session_id or profile_name or "default"
-    session = mgr.get_session(lookup_key, auto_rehydrate=True)
+    session = mgr.get_session(lookup_key, agent_name=agent, workspace_dir=ws_dir, auto_rehydrate=True)
     if not session or not session.page:
-        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated."}
+        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated for agent '{agent}'."}
 
     try:
-        page = session.page
-        dismiss_cookie_banners(page)
-        elements = extract_interactive_elements(page)
+        with session.busy_guard():
+            page = session.page
+            dismiss_cookie_banners(page)
+            elements = extract_interactive_elements(page)
 
-        if mode == "visual_marks":
-            inject_visual_marks(page)
-        else:
-            clear_visual_marks(page)
+            if mode == "visual_marks":
+                inject_visual_marks(page)
+            else:
+                clear_visual_marks(page)
 
-        title = page.title()
-        url = page.url
-        tree_text = format_a11y_tree(elements, page_title=title, current_url=url)
+            title = page.title()
+            url = page.url
+            tree_text = format_a11y_tree(elements, page_title=title, current_url=url)
 
-        return {
-            "session_id": session.session_id,
-            "profile_name": session.profile_name,
-            "page_title": title,
-            "current_url": url,
-            "active_tab_index": session.active_page_index,
-            "open_tabs_count": len(session.pages),
-            "element_count": len(elements),
-            "a11y_tree": tree_text,
-            "elements": [e.to_dict() for e in elements],
-        }
+            return {
+                "session_id": session.session_id,
+                "profile_name": session.profile_name,
+                "page_title": title,
+                "current_url": url,
+                "active_tab_index": session.active_page_index,
+                "open_tabs_count": len(session.pages),
+                "element_count": len(elements),
+                "a11y_tree": tree_text,
+                "elements": [e.to_dict() for e in elements],
+            }
     except Exception as e:
         return {
             "session_id": session.session_id if session else "",
@@ -116,21 +131,26 @@ def handle_act(
     target_id: Optional[Union[str, int]] = None,
     value: Optional[str] = None,
     expects_popup: bool = False,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes human-like user actions on interactive page elements.
     Supports clicks with synchronous popup capture, tab switching, select, check, file upload, and auto-rehydration.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     lookup_key = session_id or profile_name or "default"
-    session = mgr.get_session(lookup_key, auto_rehydrate=True)
+    session = mgr.get_session(lookup_key, agent_name=agent, workspace_dir=ws_dir, auto_rehydrate=True)
     if not session or not session.page:
-        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated."}
+        return {"error": f"Session for '{lookup_key}' not found or could not be rehydrated for agent '{agent}'."}
 
-    page = session.page
     action_clean = action.lower().strip()
 
     try:
+        with session.busy_guard():
+            page = session.page
         if action_clean == "navigate":
             if not value:
                 return {"error": "Missing URL 'value' for navigate action"}
@@ -367,13 +387,18 @@ def handle_act(
         }
 
 
-def handle_session_list() -> Dict[str, Any]:
+def handle_session_list(
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Lists all active live sessions and persistent profiles stored in Profile Vault.
+    Lists all active live sessions and persistent profiles stored in Profile Vault for an agent.
     """
     mgr = BrowserManager.get_instance()
-    active_sessions = mgr.list_active_sessions()
-    saved_profiles = mgr.profile_vault.list_profiles()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
+    active_sessions = mgr.list_active_sessions(agent_name=agent, workspace_dir=ws_dir)
+    saved_profiles = mgr.profile_vault.list_profiles(agent_name=agent, workspace_dir=ws_dir)
 
     return {
         "active_sessions_count": len(active_sessions),
@@ -386,25 +411,35 @@ def handle_session_list() -> Dict[str, Any]:
 def handle_session_save(
     session_id: Optional[str] = None,
     profile_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Explicitly saves active session cookies, DOM metadata, and state to disk without closing.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     lookup_key = session_id or profile_name or "default"
-    success = mgr.save_session(lookup_key)
+    success = mgr.save_session(lookup_key, agent_name=agent, workspace_dir=ws_dir)
     return {
         "lookup_key": lookup_key,
         "status": "saved" if success else "not_found",
     }
 
 
-def handle_session_close(session_id: str) -> Dict[str, Any]:
+def handle_session_close(
+    session_id: str,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Closes the active session and persists profile state.
+    Closes the active session and persists profile state enforcing agent ownership.
     """
     mgr = BrowserManager.get_instance()
-    success = mgr.close_session(session_id)
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
+    success = mgr.close_session(session_id, agent_name=agent, workspace_dir=ws_dir)
     return {
         "session_id": session_id,
         "status": "closed" if success else "not_found",

@@ -118,7 +118,7 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if req.WorkspaceDir != "" {
 		cmd.Dir = req.WorkspaceDir
 	}
-	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	cmd.Env = buildCommandEnv(req)
 
 	// STDIN Streaming (Eliminates 32KB/128KB OS CLI argument limits)
 	cmd.Stdin = strings.NewReader(req.Prompt)
@@ -270,7 +270,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if req.WorkspaceDir != "" {
 		cmd.Dir = req.WorkspaceDir
 	}
-	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	cmd.Env = buildCommandEnv(req, sessionKey)
 
 	// STDIN Streaming
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
@@ -435,4 +435,31 @@ func (h *Harness) ListAvailableModels(ctx context.Context) ([]domain.ModelCapabi
 	}
 
 	return domain.ListAvailableModels(), nil
+}
+
+// buildCommandEnv constructs a subprocess environment injecting APIS-4D isolation variables.
+func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []string {
+	envList := append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	if req.AgentName != "" {
+		envList = append(envList, "AGYENT_AGENT_NAME="+req.AgentName)
+	}
+	if req.WorkspaceDir != "" {
+		envList = append(envList, "AGYENT_AGENT_WORKSPACE="+req.WorkspaceDir)
+	}
+	sessKey := req.SessionKey
+	if sessKey == "" && len(sessionKeyOpt) > 0 {
+		sessKey = sessionKeyOpt[0]
+	}
+	if sessKey != "" {
+		envList = append(envList, "AGYENT_SESSION_KEY="+sessKey)
+	}
+	if req.UserID != "" {
+		envList = append(envList, "AGYENT_USER_ID="+req.UserID)
+	}
+	for k, v := range req.Env {
+		if k != "" {
+			envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	return envList
 }

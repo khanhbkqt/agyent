@@ -12,8 +12,12 @@ type ExecutionRequest struct {
 	Model                      string        `json:"model,omitempty"`
 	Mode                       string        `json:"mode,omitempty"`   // e.g. "accept-edits", "plan"
 	Effort                     string        `json:"effort,omitempty"` // e.g. "low", "medium", "high"
-	Timeout                    time.Duration `json:"timeout"`
-	DangerouslySkipPermissions bool          `json:"dangerously_skip_permissions"`
+	Timeout                    time.Duration     `json:"timeout"`
+	DangerouslySkipPermissions bool              `json:"dangerously_skip_permissions"`
+	AgentName                  string            `json:"agent_name,omitempty"`
+	SessionKey                 string            `json:"session_key,omitempty"`
+	UserID                     string            `json:"user_id,omitempty"`
+	Env                        map[string]string `json:"env,omitempty"`
 }
 
 // ExecutionResult contains the outcome of an AGY execution run.

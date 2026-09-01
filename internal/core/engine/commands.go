@@ -21,6 +21,9 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	sessionKey := msg.SessionKey()
 
 	defaultAgent := "agyent"
+	if msg.BindAgent != "" {
+		defaultAgent = msg.BindAgent
+	}
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
 	if err != nil {
 		return &domain.OutboundMessage{
@@ -30,6 +33,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 			Text:             fmt.Sprintf("⚠️ Failed to load session: %v", err),
 			ReplyToMessageID: msg.ID,
 		}, nil
+	}
+
+	if msg.BindAgent != "" && session.ActiveAgent != msg.BindAgent {
+		session.ActiveAgent = msg.BindAgent
+		session.ActiveProject = ""
+		_ = e.storage.SaveSession(ctx, session)
 	}
 
 	var responseText string

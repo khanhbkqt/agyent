@@ -98,6 +98,12 @@ class TestContinuousBrowserSession(unittest.TestCase):
         BrowserManager._instance = None
         shutil.rmtree(cls.test_base_dir, ignore_errors=True)
 
+    def tearDown(self):
+        try:
+            self.mgr.close_all()
+        except Exception:
+            pass
+
     def test_persistent_session_lifecycle(self):
         # 1. Start persistent session
         profile_name = "test_persistence_flow"
@@ -153,8 +159,50 @@ class TestContinuousBrowserSession(unittest.TestCase):
         self.assertIn("Example Domain", res_rehydrate.get("page_title", ""))
 
         # Clean up
-        if "session_id" in res_rehydrate:
+        if "session_id" in res_rehydrate and res_rehydrate["session_id"]:
             handle_session_close(session_id=res_rehydrate["session_id"])
+
+    def test_busy_guard_reap_protection(self):
+        profile_name = "test_busy_reap"
+        res_start = handle_session_start(profile_name=profile_name, headless=True, initial_url="https://example.com")
+        sid = res_start["session_id"]
+        sess = self.mgr.get_session(sid)
+        self.assertIsNotNone(sess)
+
+        # Mark session as busy with busy_guard
+        with sess.busy_guard():
+            self.assertTrue(sess.is_busy)
+            # Reap with timeout 0 should NOT reap because is_busy is True
+            reaped = self.mgr.reap_idle_sessions(idle_timeout_sec=0.0)
+            self.assertEqual(reaped, 0)
+            # Session must still be present
+            self.assertIn(sid, self.mgr.sessions)
+
+        self.assertFalse(sess.is_busy)
+        handle_session_close(session_id=sid)
+
+    def test_workspace_dir_propagation(self):
+        ws_test_dir = tempfile.mkdtemp(prefix="camoufox_ws_test_")
+        try:
+            profile_name = "ws_test_prof"
+            res_start = handle_session_start(
+                profile_name=profile_name,
+                headless=True,
+                initial_url="https://example.com",
+                workspace_dir=ws_test_dir,
+            )
+            sid = res_start["session_id"]
+            sess = self.mgr.get_session(sid)
+            self.assertEqual(sess.workspace_dir, ws_test_dir)
+
+            # Check metadata saved under workspace
+            meta_path = self.vault.get_session_meta_path(profile_name, workspace_dir=ws_test_dir)
+            self.assertTrue(meta_path.startswith(ws_test_dir))
+            self.assertTrue(os.path.exists(meta_path))
+
+            handle_session_close(session_id=sid, workspace_dir=ws_test_dir)
+        finally:
+            shutil.rmtree(ws_test_dir, ignore_errors=True)
 
 
 class TestDaemonHTTPRPC(unittest.TestCase):

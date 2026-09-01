@@ -2,6 +2,7 @@ package agy_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -116,6 +117,27 @@ func runMockAGYHelper() {
 			os.Exit(1)
 		}
 		fmt.Println(`{"conversation_id":"c-iso-success","status":"SUCCESS","response":"Workspace isolation verified","duration_seconds":0.5}`)
+		os.Exit(0)
+
+	case "verify_apis4d_env":
+		agentName := os.Getenv("AGYENT_AGENT_NAME")
+		workspace := os.Getenv("AGYENT_AGENT_WORKSPACE")
+		sessionKey := os.Getenv("AGYENT_SESSION_KEY")
+		userID := os.Getenv("AGYENT_USER_ID")
+		customVar := os.Getenv("CUSTOM_INJECTED_VAR")
+		if agentName == "" || workspace == "" || sessionKey == "" || userID == "" || customVar != "apis4d_val" {
+			fmt.Fprintf(os.Stderr, "missing APIS-4D env vars: agentName=%s, ws=%s, sess=%s, user=%s, custom=%s\n",
+				agentName, workspace, sessionKey, userID, customVar)
+			os.Exit(1)
+		}
+		respMap := map[string]any{
+			"conversation_id":  "c-apis4d",
+			"status":           "SUCCESS",
+			"response":         fmt.Sprintf("APIS-4D env verified: %s|%s|%s|%s|%s", agentName, workspace, sessionKey, userID, customVar),
+			"duration_seconds": 0.2,
+		}
+		data, _ := json.Marshal(respMap)
+		fmt.Println(string(data))
 		os.Exit(0)
 
 	default: // "success" or standard
@@ -415,6 +437,30 @@ func findRealAGYBinary() string {
 	}
 
 	return ""
+}
+
+func TestHarness_APIS4D_EnvironmentInjection(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "verify_apis4d_env")
+
+	h := newTestHarness("verify_apis4d_env", 10)
+	req := domain.ExecutionRequest{
+		Prompt:       "test apis4d environment",
+		WorkspaceDir: t.TempDir(),
+		AgentName:    "cyber_agent",
+		SessionKey:   "telegram:chat-sec-99",
+		UserID:       "user-tenant-888",
+		Env: map[string]string{
+			"CUSTOM_INJECTED_VAR": "apis4d_val",
+		},
+	}
+
+	res, err := h.Execute(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+	assert.Contains(t, res.ResponseText, "APIS-4D env verified: cyber_agent|")
+	assert.Contains(t, res.ResponseText, "telegram:chat-sec-99|user-tenant-888|apis4d_val")
 }
 
 func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {

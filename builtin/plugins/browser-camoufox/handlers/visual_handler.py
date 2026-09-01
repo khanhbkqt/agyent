@@ -27,11 +27,15 @@ def handle_screenshot(
     selector: Optional[str] = None,
     full_page: bool = False,
     output_path: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Captures a screenshot of the specified URL, active session, or profile.
+    Captures a screenshot of the specified URL, active session, or profile for an agent.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     dest = output_path or _get_default_output_file("png")
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
 
@@ -58,10 +62,11 @@ def handle_screenshot(
     try:
         lookup = session_id or profile_name
         if lookup:
-            session = mgr.get_session(lookup, auto_rehydrate=True)
+            session = mgr.get_session(lookup, agent_name=agent, workspace_dir=ws_dir, auto_rehydrate=True)
             if not session or not session.page:
-                return {"error": f"Session '{lookup}' not found."}
-            return capture(session.page)
+                return {"error": f"Session '{lookup}' not found for agent '{agent}'."}
+            with session.busy_guard():
+                return capture(session.page)
         elif url:
             def run(page: Any) -> Dict[str, Any]:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -69,7 +74,7 @@ def handle_screenshot(
                 page.wait_for_timeout(1000)
                 return capture(page)
 
-            return mgr.run_stateless(run, headless=True)
+            return mgr.run_stateless(run, headless=True, agent_name=agent, workspace_dir=ws_dir)
         else:
             return {"error": "Either 'url', 'session_id', or 'profile_name' must be provided."}
     except Exception as e:
@@ -81,11 +86,15 @@ def handle_pdf_export(
     session_id: Optional[str] = None,
     profile_name: Optional[str] = None,
     output_path: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Exports a page as a PDF document.
+    Exports a page as a PDF document for an agent.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     dest = output_path or _get_default_output_file("pdf")
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
 
@@ -101,10 +110,11 @@ def handle_pdf_export(
     try:
         lookup = session_id or profile_name
         if lookup:
-            session = mgr.get_session(lookup, auto_rehydrate=True)
+            session = mgr.get_session(lookup, agent_name=agent, workspace_dir=ws_dir, auto_rehydrate=True)
             if not session or not session.page:
-                return {"error": f"Session '{lookup}' not found."}
-            return export(session.page)
+                return {"error": f"Session '{lookup}' not found for agent '{agent}'."}
+            with session.busy_guard():
+                return export(session.page)
         elif url:
             def run(page: Any) -> Dict[str, Any]:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -112,7 +122,7 @@ def handle_pdf_export(
                 page.wait_for_timeout(1000)
                 return export(page)
 
-            return mgr.run_stateless(run, headless=True)
+            return mgr.run_stateless(run, headless=True, agent_name=agent, workspace_dir=ws_dir)
         else:
             return {"error": "Either 'url', 'session_id', or 'profile_name' must be provided."}
     except Exception as e:

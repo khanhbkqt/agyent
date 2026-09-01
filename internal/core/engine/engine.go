@@ -487,12 +487,19 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		_ = e.storage.SaveAgent(turnCtx, agent)
 	}
 
-	if agent.SecurityPreset == "" {
-		agent.SecurityPreset = domain.SecurityPreset(e.cfg.ResolveAgentPreset(agent.Name))
-	}
-
-	if agent.WorkspacePath == "" {
-		agent.WorkspacePath = config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, agent.Name)
+	if agent.WorkspacePath == "" || agent.SecurityPreset == "" || (agent.Status == domain.StatusUninitialized && agent.OwnerID == "" && agent.Name != "agyent") {
+		if e.cfg != nil {
+			if agent.WorkspacePath == "" {
+				agent.WorkspacePath = config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, agent.Name)
+			}
+			if agent.SecurityPreset == "" || agent.Status == domain.StatusUninitialized {
+				agent.SecurityPreset = domain.SecurityPreset(e.cfg.ResolveAgentPreset(agent.Name))
+			}
+			if agent.OwnerID == "" && agent.Name != "agyent" {
+				agent.OwnerID = msg.Sender.ID
+			}
+			_ = e.storage.SaveAgent(turnCtx, agent)
+		}
 	}
 
 	// RBAC Checkpoint: Check if caller is authorized to interact with this agent
@@ -618,6 +625,23 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	// 7. Dynamic MCP Mounting (with deferred unmount for Zero Context Leakage)
 	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
+		for i := range activeMCPServers {
+			if activeMCPServers[i].Env == nil {
+				activeMCPServers[i].Env = make(map[string]string)
+			}
+			if _, exists := activeMCPServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
+				activeMCPServers[i].Env["AGYENT_AGENT_NAME"] = agent.Name
+			}
+			if _, exists := activeMCPServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
+				activeMCPServers[i].Env["AGYENT_AGENT_WORKSPACE"] = workspaceDir
+			}
+			if _, exists := activeMCPServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
+				activeMCPServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+			}
+			if _, exists := activeMCPServers[i].Env["AGYENT_USER_ID"]; !exists {
+				activeMCPServers[i].Env["AGYENT_USER_ID"] = msg.Sender.ID
+			}
+		}
 		_ = e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers)
 		defer func() {
 			_ = e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeMCPServers)
@@ -642,6 +666,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		Effort:                     resolvedEffort,
 		Mode:                       e.cfg.AGY.DefaultMode,
 		DangerouslySkipPermissions: e.cfg.AGY.DangerouslySkipPermissions,
+		AgentName:                  agent.Name,
+		SessionKey:                 sessionKey,
+		UserID:                     msg.Sender.ID,
 	}
 
 	isStream := e.IsStreamingEnabled()

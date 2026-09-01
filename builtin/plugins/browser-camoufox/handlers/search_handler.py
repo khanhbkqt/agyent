@@ -3,6 +3,7 @@ Handler for camoufox_search and camoufox_discover_trends.
 Provides stealth search and trend discovery without relying on legacy web_search.
 """
 
+import os
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
@@ -137,11 +138,15 @@ def handle_search(
     max_results: int = 5,
     timeout_ms: int = 30000,
     profile_name: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Performs a stealth search query and returns cleaned search items.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     engine_clean = engine.lower().strip()
 
     def run(page: Any) -> List[Dict[str, Any]]:
@@ -154,7 +159,15 @@ def handle_search(
             return _search_duckduckgo(page, query, max_results)
 
     try:
-        results = mgr.run_stateless(run, headless=True, locale=locale, timeout_ms=timeout_ms, profile_name=profile_name)
+        results = mgr.run_stateless(
+            run,
+            headless=True,
+            locale=locale,
+            timeout_ms=timeout_ms,
+            profile_name=profile_name,
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
         return {
             "query": query,
             "engine": engine_clean,
@@ -176,11 +189,15 @@ def handle_discover_trends(
     country: str = "US",
     category: Optional[str] = None,
     timeout_ms: int = 35000,
+    agent_name: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches trending topics, hashtags, and keywords from major creative and search platforms.
     """
     mgr = BrowserManager.get_instance()
+    agent = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
+    ws_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
     platform_clean = platform.lower().strip()
 
     def run(page: Any) -> Dict[str, Any]:
@@ -286,7 +303,21 @@ def handle_discover_trends(
             return {"platform": platform, "country": country, "trends": [], "error": f"Unsupported platform: {platform}"}
 
     try:
-        return mgr.run_stateless(run, headless=True, locale=f"en-{country.upper()}", timeout_ms=timeout_ms)
+        return mgr.run_stateless(
+            run,
+            headless=True,
+            locale=f"en-{country.upper()}",
+            timeout_ms=timeout_ms,
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
+    except Exception as e:
+        return {
+            "platform": platform,
+            "country": country,
+            "trends": [],
+            "error": str(e),
+        }
     except Exception as e:
         return {
             "platform": platform,

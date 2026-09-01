@@ -1,13 +1,58 @@
-import sys
 import json
-import sqlite3
 import os
+import pathlib
+import sqlite3
+import sys
+from typing import Optional
 
-def query_sqlite(db_path, query):
-    if not os.path.exists(db_path):
+
+def is_safe_path(target_path: str, workspace_root: Optional[str] = None) -> bool:
+    """
+    Validates that target_path is strictly contained within the active workspace root jail.
+    Prevents path traversal, symlink escaping, and access to out-of-bounds filesystem locations.
+    """
+    if not target_path:
+        return False
+    if not workspace_root:
+        workspace_root = os.environ.get("AGYENT_AGENT_WORKSPACE") or os.getcwd()
+    try:
+        ws_real = os.path.realpath(os.path.abspath(workspace_root))
+        if not os.path.isabs(target_path):
+            resolved_target = os.path.join(ws_real, target_path)
+        else:
+            resolved_target = target_path
+        target_real = os.path.realpath(os.path.abspath(resolved_target))
+        # Case-folding for case-insensitive OS filesystems (Windows and macOS/Darwin)
+        if sys.platform in ("win32", "darwin"):
+            ws_real = ws_real.lower()
+            target_real = target_real.lower()
+        common = os.path.commonpath([ws_real, target_real])
+        return common == ws_real
+    except Exception:
+        return False
+
+
+def query_sqlite(db_path: str, query: str, workspace_root: Optional[str] = None) -> dict:
+    """Executes read-only query against SQLite file guarded by workspace jail."""
+    if not db_path:
+        return {"error": "Missing database path"}
+
+    ws_root = workspace_root or os.environ.get("AGYENT_AGENT_WORKSPACE") or os.getcwd()
+    if not os.path.isabs(db_path):
+        full_db_path = os.path.abspath(os.path.join(ws_root, db_path))
+    else:
+        full_db_path = os.path.abspath(db_path)
+
+    if not is_safe_path(full_db_path, ws_root):
+        return {
+            "error": f"Security Violation: Database path '{db_path}' is outside the authorized workspace jail ({ws_root}). Access denied under APIS-4D standard."
+        }
+
+    if not os.path.exists(full_db_path):
         return {"error": f"Database file not found: {db_path}"}
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        db_uri = pathlib.Path(full_db_path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True)
         cursor = conn.cursor()
         cursor.execute(query)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
