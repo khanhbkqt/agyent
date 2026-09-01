@@ -56,6 +56,9 @@ type WizardOptions struct {
 	DBPath             string
 	BotToken           string
 	AdminUserIDs       []int64
+	ZaloBotToken       string
+	ZaloGroupID        string
+	ZaloAdminUserIDs   []string
 	AgentsDir          string
 	AGYPath            string
 	DebounceSeconds    float64
@@ -181,6 +184,15 @@ func runNonInteractive(ctx context.Context, cfg *config.Config, opts WizardOptio
 	}
 	if len(opts.AdminUserIDs) > 0 {
 		cfg.Telegram.AdminUserIDs = opts.AdminUserIDs
+	}
+	if opts.ZaloBotToken != "" {
+		cfg.Zalo.BotToken = opts.ZaloBotToken
+	}
+	if opts.ZaloGroupID != "" {
+		cfg.Zalo.GroupID = opts.ZaloGroupID
+	}
+	if len(opts.ZaloAdminUserIDs) > 0 {
+		cfg.Zalo.AdminUserIDs = opts.ZaloAdminUserIDs
 	}
 	if opts.AgentsDir != "" {
 		cfg.Storage.AgentsDir = opts.AgentsDir

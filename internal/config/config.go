@@ -51,6 +51,36 @@ func (t TelegramConfig) GetNormalizedBots() []BotConfig {
 	return nil
 }
 
+// ZaloConfig contains Zalo bot platform and access control configuration.
+type ZaloConfig struct {
+	BotToken        string      `yaml:"bot_token" json:"bot_token"` // Bot Token from Zalo Bot Platform
+	Bots            []BotConfig `yaml:"bots" json:"bots"`           // Multi-bot lifecycle pool
+	GroupID         string      `yaml:"group_id" json:"group_id"`   // Target Group Chat ID
+	AdminUserIDs    []string    `yaml:"admin_user_ids" json:"admin_user_ids"`
+	AllowedGroupIDs []string    `yaml:"allowed_group_ids" json:"allowed_group_ids"`
+	APIURL          string      `yaml:"api_url" json:"api_url"` // Defaults to https://bot-api.zaloplatforms.com if empty
+	Mode            string      `yaml:"mode" json:"mode"`       // "polling" or "webhook"
+	WebhookURL      string      `yaml:"webhook_url" json:"webhook_url"`
+	SecretToken     string      `yaml:"secret_token" json:"secret_token"` // Webhook header verification
+}
+
+// GetNormalizedBots returns the full list of bot configurations.
+// If Bots is empty but BotToken is set, it synthesizes a single BotConfig from BotToken.
+func (z ZaloConfig) GetNormalizedBots() []BotConfig {
+	if len(z.Bots) > 0 {
+		return z.Bots
+	}
+	if strings.TrimSpace(z.BotToken) != "" {
+		return []BotConfig{
+			{
+				Name:     "default",
+				BotToken: strings.TrimSpace(z.BotToken),
+			},
+		}
+	}
+	return nil
+}
+
 // AGYConfig contains Antigravity CLI execution parameters.
 type AGYConfig struct {
 	BinaryPath                       string            `yaml:"binary_path" json:"binary_path"`
@@ -177,6 +207,7 @@ type AgentProfileConfig struct {
 type Config struct {
 	Server    ServerConfig                  `yaml:"server" json:"server"`
 	Telegram  TelegramConfig                `yaml:"telegram" json:"telegram"`
+	Zalo      ZaloConfig                    `yaml:"zalo" json:"zalo"`
 	AGY       AGYConfig                     `yaml:"agy" json:"agy"`
 	Storage   StorageConfig                 `yaml:"storage" json:"storage"`
 	Logging   LoggingConfig                 `yaml:"logging" json:"logging"`
@@ -199,6 +230,16 @@ func DefaultConfig() *Config {
 			WebhookURL:      "",
 			AdminUserIDs:    []int64{},
 			AllowedGroupIDs: []string{},
+		},
+		Zalo: ZaloConfig{
+			BotToken:        "",
+			GroupID:         "",
+			AdminUserIDs:    []string{},
+			AllowedGroupIDs: []string{},
+			APIURL:          "https://bot-api.zaloplatforms.com",
+			Mode:            "polling",
+			WebhookURL:      "",
+			SecretToken:     "",
 		},
 		AGY: AGYConfig{
 			BinaryPath:                       "agy",
@@ -581,29 +622,78 @@ func (t TelegramConfig) String() string {
 	return fmt.Sprintf("{BotToken: %s, Bots: %v, Mode: %s, AdminUserIDs: %v, AllowedGroupIDs: %v}", maskedToken, maskedBots, t.Mode, t.AdminUserIDs, t.AllowedGroupIDs)
 }
 
+// String returns a redacted string representation of ZaloConfig for safe logging.
+func (z ZaloConfig) String() string {
+	maskedToken := "***"
+	if len(z.BotToken) > 8 {
+		maskedToken = z.BotToken[:6] + ":***"
+	}
+	var maskedBots []string
+	for _, b := range z.Bots {
+		bMasked := "***"
+		if len(b.BotToken) > 8 {
+			bMasked = b.BotToken[:6] + ":***"
+		}
+		maskedBots = append(maskedBots, fmt.Sprintf("{Name: %s, Token: %s, Bind: %s}", b.Name, bMasked, b.BindAgent))
+	}
+	return fmt.Sprintf("{BotToken: %s, Bots: %v, GroupID: %s, Mode: %s, AdminUserIDs: %v, AllowedGroupIDs: %v}", maskedToken, maskedBots, z.GroupID, z.Mode, z.AdminUserIDs, z.AllowedGroupIDs)
+}
+
 // String returns a redacted string representation of Config for safe logging.
 func (c *Config) String() string {
 	if c == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("Config{Server: %+v, Telegram: %s, AGY: %+v, Storage: %+v, Logging: %+v, Evolution: %+v, Subagent: %+v}",
-		c.Server, c.Telegram.String(), c.AGY, c.Storage, c.Logging, c.Evolution, c.Subagent)
+	return fmt.Sprintf("Config{Server: %+v, Telegram: %s, Zalo: %s, AGY: %+v, Storage: %+v, Logging: %+v, Evolution: %+v, Subagent: %+v}",
+		c.Server, c.Telegram.String(), c.Zalo.String(), c.AGY, c.Storage, c.Logging, c.Evolution, c.Subagent)
 }
 
 // Validate checks required fields and configuration constraints.
 func (c *Config) Validate() error {
-	normalizedBots := c.Telegram.GetNormalizedBots()
-	if len(normalizedBots) == 0 {
-		return errors.New("telegram bot token is required")
+	normalizedTgBots := c.Telegram.GetNormalizedBots()
+	normalizedZaloBots := c.Zalo.GetNormalizedBots()
+
+	hasTelegram := len(normalizedTgBots) > 0 && strings.TrimSpace(normalizedTgBots[0].BotToken) != ""
+	hasZalo := len(normalizedZaloBots) > 0 && strings.TrimSpace(normalizedZaloBots[0].BotToken) != ""
+
+	if !hasTelegram && !hasZalo {
+		return errors.New("at least one communication channel (telegram or zalo) must be configured with a valid bot token")
 	}
-	for _, b := range normalizedBots {
-		if strings.TrimSpace(b.BotToken) == "" {
-			return errors.New("telegram bot token cannot be empty")
+
+	if hasTelegram {
+		for _, b := range normalizedTgBots {
+			if strings.TrimSpace(b.BotToken) == "" {
+				return errors.New("telegram bot token cannot be empty")
+			}
+		}
+		if len(c.Telegram.AdminUserIDs) == 0 {
+			return errors.New("at least one telegram admin user ID is required when telegram is configured")
+		}
+		if c.Telegram.Mode != "polling" && c.Telegram.Mode != "webhook" {
+			return fmt.Errorf("invalid telegram mode %q: must be 'polling' or 'webhook'", c.Telegram.Mode)
+		}
+		if c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.WebhookURL) == "" {
+			return errors.New("telegram webhook_url is required when mode is 'webhook'")
 		}
 	}
-	if len(c.Telegram.AdminUserIDs) == 0 {
-		return errors.New("at least one telegram admin user ID is required")
+
+	if hasZalo {
+		for _, b := range normalizedZaloBots {
+			if strings.TrimSpace(b.BotToken) == "" {
+				return errors.New("zalo bot token cannot be empty")
+			}
+		}
+		if c.Zalo.Mode == "" {
+			c.Zalo.Mode = "polling"
+		}
+		if c.Zalo.Mode != "polling" && c.Zalo.Mode != "webhook" {
+			return fmt.Errorf("invalid zalo mode %q: must be 'polling' or 'webhook'", c.Zalo.Mode)
+		}
+		if c.Zalo.Mode == "webhook" && strings.TrimSpace(c.Zalo.WebhookURL) == "" {
+			return errors.New("zalo webhook_url is required when mode is 'webhook'")
+		}
 	}
+
 	if strings.TrimSpace(c.Storage.DBPath) == "" {
 		return errors.New("storage db_path is required")
 	}
@@ -619,12 +709,7 @@ func (c *Config) Validate() error {
 	if c.Storage.HeartbeatIntervalSeconds < 0 {
 		return errors.New("storage heartbeat_interval_seconds cannot be negative")
 	}
-	if c.Telegram.Mode != "polling" && c.Telegram.Mode != "webhook" {
-		return fmt.Errorf("invalid telegram mode %q: must be 'polling' or 'webhook'", c.Telegram.Mode)
-	}
-	if c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.WebhookURL) == "" {
-		return errors.New("telegram webhook_url is required when mode is 'webhook'")
-	}
+
 	if c.Logging.Level != "" {
 		lvl := strings.ToLower(strings.TrimSpace(c.Logging.Level))
 		if lvl != "debug" && lvl != "info" && lvl != "warn" && lvl != "warning" && lvl != "error" {
@@ -749,6 +834,39 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("AGYENT_TELEGRAM_ALLOWED_GROUP_IDS"); v != "" {
 		cfg.Telegram.AllowedGroupIDs = parseStringSlice(v)
+	}
+
+	if v := os.Getenv("ZALO_BOT_TOKEN"); v != "" {
+		cfg.Zalo.BotToken = v
+	} else if v := os.Getenv("AGYENT_ZALO_BOT_TOKEN"); v != "" {
+		cfg.Zalo.BotToken = v
+	}
+	if v := os.Getenv("ZALO_GROUP_ID"); v != "" {
+		cfg.Zalo.GroupID = v
+	} else if v := os.Getenv("AGYENT_ZALO_GROUP_ID"); v != "" {
+		cfg.Zalo.GroupID = v
+	}
+	if v := os.Getenv("ZALO_BOT_ADMIN_ID"); v != "" {
+		cfg.Zalo.AdminUserIDs = parseStringSlice(v)
+	} else if v := os.Getenv("AGYENT_ZALO_ADMIN_USER_IDS"); v != "" {
+		cfg.Zalo.AdminUserIDs = parseStringSlice(v)
+	}
+	if v := os.Getenv("ZALO_BOT_API_URL"); v != "" {
+		cfg.Zalo.APIURL = v
+	} else if v := os.Getenv("AGYENT_ZALO_API_URL"); v != "" {
+		cfg.Zalo.APIURL = v
+	}
+	if v := os.Getenv("AGYENT_ZALO_MODE"); v != "" {
+		cfg.Zalo.Mode = v
+	}
+	if v := os.Getenv("AGYENT_ZALO_WEBHOOK_URL"); v != "" {
+		cfg.Zalo.WebhookURL = v
+	}
+	if v := os.Getenv("AGYENT_ZALO_SECRET_TOKEN"); v != "" {
+		cfg.Zalo.SecretToken = v
+	}
+	if v := os.Getenv("AGYENT_ZALO_ALLOWED_GROUP_IDS"); v != "" {
+		cfg.Zalo.AllowedGroupIDs = parseStringSlice(v)
 	}
 
 	if v := os.Getenv("AGYENT_AGY_BINARY_PATH"); v != "" {

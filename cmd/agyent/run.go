@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"agyent/builtin"
+	"agyent/internal/adapters/channels/composite"
 	"agyent/internal/adapters/channels/telegram"
+	"agyent/internal/adapters/channels/zalo"
 	contextAdapter "agyent/internal/adapters/context"
 	evolutionAdapter "agyent/internal/adapters/evolution"
 	"agyent/internal/adapters/harness/agy"
@@ -42,9 +45,11 @@ const banner = `
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Start the agyent core gateway daemon",
-	Long:  `Launches the agyent background gateway daemon, listening for inbound messages and dispatching tasks to AGY CLI agents.`,
+	Short: "Start the agyent gateway daemon",
+	Long: `Starts the agyent daemon, connects to Telegram and Zalo bot gateways,
+and begins processing inbound turns through the local Antigravity (AGY) harness.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		// Load and validate configuration
 		cfg, err := config.Load(cfgFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading configuration from %s: %v\n", cfgFile, err)
@@ -57,7 +62,6 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Re-initialize structured logger with resolved config & verbose override
 		logLevel := cfg.Logging.Level
 		if verbose {
 			logLevel = "debug"
@@ -73,7 +77,12 @@ var runCmd = &cobra.Command{
 		fmt.Println("------------------------------------------------------------")
 		fmt.Printf("📦 Version:       %s (commit: %s, built: %s)\n", Version, GitCommit, BuildDate)
 		fmt.Printf("📄 Config File:   %s\n", cfgFile)
-		fmt.Printf("🌐 Telegram Mode: %s\n", cfg.Telegram.Mode)
+		if len(cfg.Telegram.GetNormalizedBots()) > 0 {
+			fmt.Printf("🌐 Telegram Mode: %s\n", cfg.Telegram.Mode)
+		}
+		if len(cfg.Zalo.GetNormalizedBots()) > 0 {
+			fmt.Printf("🌐 Zalo Mode:     %s (API: %s)\n", cfg.Zalo.Mode, cfg.Zalo.APIURL)
+		}
 		fmt.Printf("🤖 AGY Binary:    %s (Streaming: %t)\n", cfg.AGY.BinaryPath, cfg.AGY.StreamingEnabled)
 		fmt.Printf("🛡️ Security:      Preset '%s' (HITL Timeout: %ds)\n", cfg.Security.Preset, cfg.Security.ApprovalTimeoutSeconds)
 		fmt.Printf("📁 Agents Dir:    %s\n", cfg.Storage.AgentsDir)
@@ -102,12 +111,31 @@ var runCmd = &cobra.Command{
 		// 4. Initialize AGY Subprocess Harness
 		runner := agy.NewHarness(cfg.AGY, bus)
 
-		// 5. Initialize Telegram Channel Adapter
-		channel := telegram.NewAdapter(cfg, bus)
+		// 5. Initialize Channel Multiplexer & Channel Adapters
+		channelMux := composite.NewChannelMux()
+
+		// Register Telegram adapter if configured
+		if len(cfg.Telegram.GetNormalizedBots()) > 0 && strings.TrimSpace(cfg.Telegram.GetNormalizedBots()[0].BotToken) != "" {
+			tgAdapter := telegram.NewAdapter(cfg, bus)
+			channelMux.RegisterAdapter(tgAdapter)
+			mainLogger.Info("Registered Telegram channel adapter")
+		}
+
+		// Register Zalo adapter if configured
+		if len(cfg.Zalo.GetNormalizedBots()) > 0 && strings.TrimSpace(cfg.Zalo.GetNormalizedBots()[0].BotToken) != "" {
+			if zaloAdapter, err := zalo.NewAdapter(cfg, bus); err == nil {
+				channelMux.RegisterAdapter(zaloAdapter)
+				mainLogger.Info("Registered Zalo channel adapter", "api_url", cfg.Zalo.APIURL)
+			} else {
+				mainLogger.Warn("Failed to initialize Zalo channel adapter", "error", err)
+			}
+		}
+
+		channel := channelMux
 
 		// 6. Initialize Universal Security Gateway & IPC Host
 		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
-		secMgr := securityAdapter.NewManager(cfg.Security, channel.HITLCoordinator(), mainLogger)
+		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
 

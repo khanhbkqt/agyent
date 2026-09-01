@@ -72,6 +72,8 @@ type InlineKeyboard []InlineKeyboardRow
 
 // OutboundMessage represents a standardized response to be sent to a channel.
 type OutboundMessage struct {
+	Channel          string               `json:"channel,omitempty"` // Destination channel ("telegram", "zalo", etc.)
+	SessionKey       string               `json:"session_key,omitempty"`
 	BotID            int64                `json:"bot_id,omitempty"` // Originating bot ID for multi-bot outbound routing
 	ChatID           string               `json:"chat_id"`
 	ThreadID         int64                `json:"thread_id,omitempty"`

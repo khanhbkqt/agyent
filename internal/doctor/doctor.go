@@ -26,6 +26,7 @@ const (
 	CategoryAGY      Category = "Antigravity (AGY) CLI & Quota"
 	CategoryStorage  Category = "SQLite Database & Sessions"
 	CategoryTelegram Category = "Telegram Gateway & Auth"
+	CategoryZalo     Category = "Zalo Bot Gateway & Auth"
 	CategorySecurity Category = "Security Gateway & Hooks"
 	CategoryPlugins  Category = "Plugins & MCP Syncer"
 )
@@ -117,15 +118,16 @@ func (d *DoctorRunner) Run(ctx context.Context) (*DiagnosticReport, error) {
 	// 4. SQLite Storage & Session checks
 	report.Results = append(report.Results, d.CheckStorage(ctx)...)
 
-	// 5. Telegram Gateway & Live Auth checks
+	// 5. Telegram & Zalo Gateway & Live Auth checks
 	if !d.opts.SkipNetwork {
 		report.Results = append(report.Results, d.CheckTelegram(ctx)...)
+		report.Results = append(report.Results, d.CheckZalo(ctx)...)
 	} else {
 		report.Results = append(report.Results, CheckResult{
-			Name:     "Telegram Bot Connectivity",
+			Name:     "Channel Bot Connectivity",
 			Category: CategoryTelegram,
 			Status:   StatusInfo,
-			Message:  "Skipped live Telegram API check (--skip-network enabled)",
+			Message:  "Skipped live Bot API checks (--skip-network enabled)",
 		})
 	}
 

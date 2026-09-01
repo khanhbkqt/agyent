@@ -1049,12 +1049,16 @@ func (e *Engine) subscribeSubagentEvents() {
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
 		}
+		channelName := parsedKey.Channel
+		if channelName == "" {
+			channelName = "telegram"
+		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
-				Channel:   "telegram",
+				Channel:   channelName,
 				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
 					ID:       chatID,
@@ -1070,9 +1074,11 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				BotID:    parsedKey.BotID,
-				ChatID:   chatID,
-				ThreadID: parsedKey.ThreadID,
+				Channel:    channelName,
+				SessionKey: task.ParentSessionKey,
+				BotID:      parsedKey.BotID,
+				ChatID:     chatID,
+				ThreadID:   parsedKey.ThreadID,
 				Text: fmt.Sprintf("⏸️ **Sub-Agent @%s requires clarification:**\n📌 **Task:** %s (`%s`)\n\n❓ **Question:** %s\n\n_Use_ `/task reply %s <your response>` _to continue._",
 					task.AgentName, task.Title, task.ID, task.PendingQuestion, task.ID),
 				ParseMode: "Markdown",
@@ -1092,12 +1098,16 @@ func (e *Engine) subscribeSubagentEvents() {
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
 		}
+		channelName := parsedKey.Channel
+		if channelName == "" {
+			channelName = "telegram"
+		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
-				Channel:   "telegram",
+				Channel:   channelName,
 				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
 					ID:       chatID,
@@ -1113,9 +1123,11 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				BotID:    parsedKey.BotID,
-				ChatID:   chatID,
-				ThreadID: parsedKey.ThreadID,
+				Channel:    channelName,
+				SessionKey: task.ParentSessionKey,
+				BotID:      parsedKey.BotID,
+				ChatID:     chatID,
+				ThreadID:   parsedKey.ThreadID,
 				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
 				ParseMode: "HTML",
