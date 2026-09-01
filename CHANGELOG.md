@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.12] - 2026-09-01
+
+### Fixed
+- **Outbound Media & Carousel Album Delivery:** Added `ExtractAndCleanOutboundMedia` in Telegram adapter to parse markdown images, resolve relative and absolute brain directory paths (`~/.gemini/antigravity/brain/<conv_id>/...`), and clean carousel HTML comments (`<!-- slide -->`).
+- **Native Telegram Photo Album Groups:** Added `SendMediaGroup` to package multiple outbound images generated within a turn response into native Telegram photo albums.
+- **Brain Artifact Detection & HTML Formatting:** Extended `SnapshotWatcher` and AGY harness runner to detect newly created media artifacts in the AGY brain directory during turn execution and sanitized image tags in Telegram HTML formatting.
+
+---
+
 ## [1.0.11] - 2026-09-01
 
 ### Added
