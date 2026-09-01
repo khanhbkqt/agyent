@@ -134,8 +134,9 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	}
 	cmd.WaitDelay = 3 * time.Second
 
-	// 1. Take workspace snapshot before execution
+	// 1. Take workspace and brain snapshots before execution
 	beforeSnapshot, _ := h.watcher.TakeSnapshot(req.WorkspaceDir)
+	beforeBrainSnapshot := h.watcher.TakeBrainSnapshot(req.ConversationID)
 
 	slog.DebugContext(ctx, "Executing AGY CLI subprocess",
 		slog.String("binary", h.binaryPath),
@@ -181,6 +182,10 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		if err == nil {
 			res.Artifacts = artifacts
 		}
+	}
+	if req.ConversationID != "" {
+		brainArts := h.watcher.DetectBrainArtifacts(req.ConversationID, beforeBrainSnapshot)
+		res.Artifacts = append(res.Artifacts, brainArts...)
 	}
 
 	return res, nil
@@ -289,8 +294,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 	cmd.WaitDelay = 3 * time.Second
 
-	// Take workspace snapshot before execution
+	// Take workspace and brain snapshot before execution
 	beforeSnapshot, _ := h.watcher.TakeSnapshot(req.WorkspaceDir)
+	beforeBrainSnapshot := h.watcher.TakeBrainSnapshot(req.ConversationID)
 
 	slog.DebugContext(ctx, "Starting AGY CLI stream subprocess",
 		slog.String("binary", h.binaryPath),
@@ -307,15 +313,20 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 
 	parser := NewStreamParser(h.eventBus)
 	parser.SetOnMilestone(resetWatchdog)
-	if req.WorkspaceDir != "" {
-		parser.SetArtifactDetector(func() []domain.Attachment {
-			artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
-			if err != nil {
-				return nil
+	parser.SetArtifactDetector(func() []domain.Attachment {
+		var arts []domain.Attachment
+		if req.WorkspaceDir != "" {
+			wsArts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
+			if err == nil {
+				arts = append(arts, wsArts...)
 			}
-			return artifacts
-		})
-	}
+		}
+		if req.ConversationID != "" {
+			brainArts := h.watcher.DetectBrainArtifacts(req.ConversationID, beforeBrainSnapshot)
+			arts = append(arts, brainArts...)
+		}
+		return arts
+	})
 	streamRes, parseErr := parser.ParseAndEmitStream(execCtx, sessionKey, stdoutPipe)
 
 	// Ensure stdoutPipe is closed so subprocess unblocks if still writing, preventing cmd.Wait() deadlock
@@ -375,10 +386,16 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	// Fallback detect artifacts if not captured during stream
-	if len(res.Artifacts) == 0 && req.WorkspaceDir != "" {
-		artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
-		if err == nil {
-			res.Artifacts = artifacts
+	if len(res.Artifacts) == 0 {
+		if req.WorkspaceDir != "" {
+			artifacts, err := h.watcher.DetectArtifacts(req.WorkspaceDir, beforeSnapshot)
+			if err == nil {
+				res.Artifacts = append(res.Artifacts, artifacts...)
+			}
+		}
+		if req.ConversationID != "" {
+			brainArts := h.watcher.DetectBrainArtifacts(req.ConversationID, beforeBrainSnapshot)
+			res.Artifacts = append(res.Artifacts, brainArts...)
 		}
 	}
 

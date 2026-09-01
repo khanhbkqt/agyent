@@ -276,3 +276,30 @@ func TestSnapshotWatcher_InboundUploadsBaselineDiffing(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, artifacts2, 2, "both summary.pdf and modified inbound_photo.jpg should now be detected")
 }
+
+func TestSnapshotWatcher_BrainArtifactsDiffing(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	convID := "test_conv_watcher_brain"
+	brainDir := filepath.Join(homeDir, ".gemini", "antigravity", "brain", convID)
+	err = os.MkdirAll(brainDir, 0755)
+	require.NoError(t, err)
+	defer os.RemoveAll(brainDir)
+
+	watcher := agy.NewSnapshotWatcher()
+
+	// Pre-execution snapshot
+	beforeSnap := watcher.TakeBrainSnapshot(convID)
+
+	// Create new brain image
+	imgPath := filepath.Join(brainDir, "generated_diagram.png")
+	require.NoError(t, os.WriteFile(imgPath, []byte("pngdata"), 0644))
+
+	// Detect new brain artifacts
+	artifacts := watcher.DetectBrainArtifacts(convID, beforeSnap)
+	require.Len(t, artifacts, 1)
+	assert.Equal(t, "generated_diagram.png", artifacts[0].FileName)
+	assert.Equal(t, "image", artifacts[0].Type)
+	assert.Equal(t, imgPath, artifacts[0].FilePath)
+}

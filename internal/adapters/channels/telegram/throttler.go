@@ -239,6 +239,12 @@ func (dt *DeliveryThrottler) OnStreamTool(ctx context.Context, evt domain.Event)
 			if p.Parameters != nil {
 				if in, ok := p.Parameters["ImageName"].(string); ok {
 					imageName = in
+				} else if in, ok := p.Parameters["image_name"].(string); ok {
+					imageName = in
+				} else if in, ok := p.Parameters["imageName"].(string); ok {
+					imageName = in
+				} else if in, ok := p.Parameters["name"].(string); ok {
+					imageName = in
 				}
 			}
 			go func(chatID, threadID int64, convID, imgName string) {
@@ -267,22 +273,40 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 
 	sess.Mu.Lock()
 	sess.State = StateFinalizing
-	if p.Response != "" && (sess.Buffer.Len() == 0 || len(p.Response) > sess.Buffer.Len()) {
-		sess.Buffer.Reset()
-		sess.Buffer.WriteString(p.Response)
-		sess.Dirty = true
+	responseText := p.Response
+	if responseText == "" || len(sess.Buffer.String()) > len(responseText) {
+		responseText = sess.Buffer.String()
 	}
+
+	// Extract outbound media from markdown response and clean the text
+	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(responseText, "", sess.ConversationID)
+	sess.Buffer.Reset()
+	sess.Buffer.WriteString(cleanedText)
+	sess.Dirty = true
 	sess.Mu.Unlock()
 
 	// Trigger worker to finalize
 	sess.closeWorker()
 	<-sess.WorkerDone
 
+	// Combine artifacts from watcher and extracted markdown media
+	allArtifacts := append([]domain.Attachment{}, p.Artifacts...)
+	seenPaths := make(map[string]bool)
+	for _, a := range allArtifacts {
+		seenPaths[a.FilePath] = true
+	}
+	for _, em := range extractedMedia {
+		if !seenPaths[em.FilePath] {
+			allArtifacts = append(allArtifacts, em)
+			seenPaths[em.FilePath] = true
+		}
+	}
+
 	// Outbound turn artifacts auto-upload (async non-blocking)
-	if len(p.Artifacts) > 0 && dt.mediaMgr != nil {
+	if len(allArtifacts) > 0 && dt.mediaMgr != nil {
 		go func(chatID, threadID int64, arts []domain.Attachment) {
 			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts)
-		}(sess.ChatID, sess.ThreadID, p.Artifacts)
+		}(sess.ChatID, sess.ThreadID, allArtifacts)
 	}
 
 	// Zero-idle cleanup
@@ -521,6 +545,7 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	msgID := sess.CurrentMsgID
 	chatID := sess.ChatID
 	threadID := sess.ThreadID
+	convID := sess.ConversationID
 	sess.State = StateCompleted
 	sess.Mu.Unlock()
 
@@ -528,7 +553,15 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 		return
 	}
 
-	chunks := SplitMarkdownPreservingCodeBlocks(text, 4000)
+	// Clean any remaining markdown image references or comments before final dispatch
+	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, "", convID)
+	if len(extractedMedia) > 0 && dt.mediaMgr != nil {
+		go func(cID, tID int64, arts []domain.Attachment) {
+			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts)
+		}(chatID, threadID, extractedMedia)
+	}
+
+	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, 4000)
 	if len(chunks) == 0 {
 		return
 	}

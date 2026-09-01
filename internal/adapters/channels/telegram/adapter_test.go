@@ -199,4 +199,3 @@ func TestAdapter_MultiBotPoolInitialization(t *testing.T) {
 	assert.Equal(t, "dev_architect", adapter.bindAgents[bot1.Id])
 	assert.Equal(t, "wife_assistant", adapter.bindAgents[bot2.Id])
 }
-

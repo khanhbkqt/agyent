@@ -401,18 +401,34 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 
 	// 1. Send outbound attachments if present
 	if len(msg.Attachments) > 0 && mediaMgr != nil {
-		target := msg.TargetContext()
+		var domainAtts []domain.Attachment
 		for _, att := range msg.Attachments {
-			_ = a.SendFile(ctx, target, att.FilePath, att.Caption)
+			domainAtts = append(domainAtts, domain.Attachment{
+				FileName: att.FileName,
+				FilePath: att.FilePath,
+				MIMEType: att.MIMEType,
+				Type:     att.Type,
+				Caption:  att.Caption,
+			})
 		}
+		_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts)
 	}
 
-	// 2. Send text message chunks
-	if msg.Text == "" {
+	// 2. Extract any embedded media from text and clean text
+	textToSend := msg.Text
+	if textToSend != "" {
+		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, "", "")
+		if len(extraMedia) > 0 && mediaMgr != nil {
+			_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, extraMedia)
+		}
+		textToSend = cleanedText
+	}
+
+	if textToSend == "" {
 		return nil
 	}
 
-	chunks := SplitMarkdownPreservingCodeBlocks(msg.Text, 4000)
+	chunks := SplitMarkdownPreservingCodeBlocks(textToSend, 4000)
 	for i, chunk := range chunks {
 		parseMode := msg.ParseMode
 		if parseMode == "" {

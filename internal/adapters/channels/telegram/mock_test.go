@@ -444,6 +444,56 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 			},
 		})
 
+	case "sendMediaGroup":
+		m.msgSeq++
+		msgID := m.msgSeq
+		chatID := getInt64FromMap(params, "chat_id")
+		threadID := getInt64FromMap(params, "message_thread_id")
+
+		var resultMsgs []map[string]any
+
+		if r.MultipartForm != nil {
+			for _, fileHeaders := range r.MultipartForm.File {
+				for _, fh := range fileHeaders {
+					f, err := fh.Open()
+					var fileBytes []byte
+					if err == nil {
+						fileBytes, _ = io.ReadAll(f)
+						f.Close()
+					}
+					m.SentMedia = append(m.SentMedia, SentMediaRecord{
+						ChatID:   chatID,
+						ThreadID: threadID,
+						Type:     "photo",
+						FileName: fh.Filename,
+						Caption:  fh.Filename,
+						Bytes:    fileBytes,
+					})
+					resultMsgs = append(resultMsgs, map[string]any{
+						"message_id": msgID,
+						"chat": map[string]any{
+							"id": chatID,
+						},
+					})
+				}
+			}
+		}
+
+		if len(resultMsgs) == 0 {
+			resultMsgs = append(resultMsgs, map[string]any{
+				"message_id": msgID,
+				"chat": map[string]any{
+					"id": chatID,
+				},
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":     true,
+			"result": resultMsgs,
+		})
+
 	case "getFile":
 		fileID, _ := params["file_id"].(string)
 		filePath := fmt.Sprintf("mock_files/%s.bin", fileID)

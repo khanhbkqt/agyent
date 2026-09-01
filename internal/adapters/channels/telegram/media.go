@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +16,11 @@ import (
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+)
+
+var (
+	markdownImageRegex = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
+	multiNewlineRegex  = regexp.MustCompile(`\n{3,}`)
 )
 
 // Allowed artifact extensions for automatic outbound upload
@@ -222,6 +229,154 @@ func (m *MediaManager) downloadFile(ctx context.Context, fileID, fileName, mimeT
 	}, nil
 }
 
+// ExtractAndCleanOutboundMedia parses markdown text to find embedded local images/files,
+// resolves their filesystem paths, removes raw markdown image tags and carousel HTML comments,
+// and returns the cleaned text along with extracted domain.Attachment objects.
+func ExtractAndCleanOutboundMedia(text string, workspaceDir string, convID string) (string, []domain.Attachment) {
+	if strings.TrimSpace(text) == "" {
+		return text, nil
+	}
+
+	var attachments []domain.Attachment
+	homeDir, _ := os.UserHomeDir()
+
+	// Find all markdown images: ![caption](path)
+	matches := markdownImageRegex.FindAllStringSubmatch(text, -1)
+	seenPaths := make(map[string]bool)
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		caption := strings.TrimSpace(match[1])
+		rawPath := strings.TrimSpace(match[2])
+
+		// Strip query parameters or URL anchors if any (e.g. image.png#123)
+		if idx := strings.IndexAny(rawPath, "?#"); idx != -1 {
+			rawPath = rawPath[:idx]
+		}
+		if rawPath == "" {
+			continue
+		}
+
+		resolvedPath := resolveLocalMediaPath(rawPath, workspaceDir, convID, homeDir)
+		if resolvedPath == "" || seenPaths[resolvedPath] {
+			continue
+		}
+
+		stat, err := os.Stat(resolvedPath)
+		if err != nil || stat.IsDir() || stat.Size() == 0 || stat.Size() > 50*1024*1024 {
+			continue
+		}
+
+		ext := strings.ToLower(filepath.Ext(resolvedPath))
+		if !allowedArtifactExts[ext] {
+			continue
+		}
+
+		seenPaths[resolvedPath] = true
+		attType := "document"
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || ext == ".svg" {
+			attType = "image"
+		} else if ext == ".mp4" {
+			attType = "video"
+		} else if ext == ".mp3" || ext == ".wav" || ext == ".ogg" {
+			attType = "audio"
+		}
+
+		mimeType := mime.TypeByExtension(ext)
+		if mimeType == "" {
+			switch ext {
+			case ".png":
+				mimeType = "image/png"
+			case ".jpg", ".jpeg":
+				mimeType = "image/jpeg"
+			case ".webp":
+				mimeType = "image/webp"
+			case ".gif":
+				mimeType = "image/gif"
+			default:
+				mimeType = "application/octet-stream"
+			}
+		}
+
+		attachments = append(attachments, domain.Attachment{
+			ID:       resolvedPath,
+			FileName: filepath.Base(resolvedPath),
+			FilePath: resolvedPath,
+			MIMEType: mimeType,
+			Size:     stat.Size(),
+			Type:     attType,
+			Caption:  caption,
+		})
+	}
+
+	// Clean text:
+	// 1. Remove markdown image references
+	cleaned := markdownImageRegex.ReplaceAllString(text, "")
+	// 2. Remove HTML comments (<!-- slide -->, <!-- carousel -->, etc.)
+	cleaned = htmlCommentRegex.ReplaceAllString(cleaned, "")
+	// 3. Normalize multiple blank lines
+	cleaned = multiNewlineRegex.ReplaceAllString(cleaned, "\n\n")
+	cleaned = strings.TrimSpace(cleaned)
+
+	return cleaned, attachments
+}
+
+func resolveLocalMediaPath(rawPath, workspaceDir, convID, homeDir string) string {
+	rawPath = strings.TrimSpace(rawPath)
+	if strings.HasPrefix(rawPath, "file://") {
+		rawPath = strings.TrimPrefix(rawPath, "file://")
+		// On Windows, file:///C:/path -> C:/path
+		if len(rawPath) > 2 && rawPath[0] == '/' && (rawPath[2] == ':' || rawPath[2] == '|') {
+			rawPath = rawPath[1:]
+			if rawPath[1] == '|' {
+				rawPath = rawPath[:1] + ":" + rawPath[2:]
+			}
+		}
+	}
+
+	// Expand ~ / ~/
+	if strings.HasPrefix(rawPath, "~/") || strings.HasPrefix(rawPath, "~\\") {
+		if homeDir != "" {
+			rawPath = filepath.Join(homeDir, rawPath[2:])
+		}
+	} else if rawPath == "~" {
+		rawPath = homeDir
+	}
+
+	// If absolute and exists
+	if filepath.IsAbs(rawPath) {
+		if _, err := os.Stat(rawPath); err == nil {
+			return rawPath
+		}
+	}
+
+	// Check workspaceDir
+	if workspaceDir != "" {
+		wsPath := filepath.Join(workspaceDir, rawPath)
+		if _, err := os.Stat(wsPath); err == nil {
+			return wsPath
+		}
+	}
+
+	// Check brain candidate locations if convID or basename
+	if convID != "" && homeDir != "" {
+		baseName := filepath.Base(rawPath)
+		brainCandidates := []string{
+			filepath.Join(homeDir, ".gemini", "antigravity", "brain", convID, baseName),
+			filepath.Join(homeDir, ".gemini", "antigravity-cli", "brain", convID, baseName),
+		}
+		for _, bc := range brainCandidates {
+			if _, err := os.Stat(bc); err == nil {
+				return bc
+			}
+		}
+	}
+
+	return ""
+}
+
 // FindBrainImage searches for images produced by generate_image in the brain directory.
 func FindBrainImage(convID string, imageName string) (string, error) {
 	if convID == "" {
@@ -255,7 +410,7 @@ func FindBrainImage(convID string, imageName string) (string, error) {
 					}
 					name := strings.ToLower(entry.Name())
 					if (strings.HasPrefix(name, lowerName) || strings.Contains(name, lowerName)) &&
-						(strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".jpeg")) {
+						(strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".jpeg") || strings.HasSuffix(name, ".webp") || strings.HasSuffix(name, ".gif")) {
 						return filepath.Join(brainDir, entry.Name()), nil
 					}
 				}
@@ -269,7 +424,7 @@ func FindBrainImage(convID string, imageName string) (string, error) {
 					continue
 				}
 				name := strings.ToLower(entry.Name())
-				if strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".jpeg") {
+				if strings.HasSuffix(name, ".jpg") || strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".jpeg") || strings.HasSuffix(name, ".webp") || strings.HasSuffix(name, ".gif") {
 					info, err := entry.Info()
 					if err == nil && info.ModTime().After(newestTime) {
 						newestTime = info.ModTime()
@@ -310,46 +465,136 @@ func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadI
 	return err
 }
 
+// SendMediaGroup sends up to 10 photos as a native Telegram Album / Media Group.
+func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadID int64, mediaList []domain.Attachment) error {
+	if len(mediaList) == 0 || m.bot == nil {
+		return nil
+	}
+
+	var photos []domain.Attachment
+	for _, att := range mediaList {
+		ext := strings.ToLower(filepath.Ext(att.FilePath))
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
+			photos = append(photos, att)
+		}
+	}
+
+	if len(photos) == 0 {
+		return nil
+	}
+
+	for i := 0; i < len(photos); i += 10 {
+		end := i + 10
+		if end > len(photos) {
+			end = len(photos)
+		}
+		chunk := photos[i:end]
+
+		if len(chunk) == 1 {
+			caption := chunk[0].Caption
+			if caption == "" {
+				caption = chunk[0].FileName
+			}
+			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption)
+			continue
+		}
+
+		var inputMedias gotgbot.InputMedias
+		var openFiles []*os.File
+
+		for _, p := range chunk {
+			f, err := os.Open(p.FilePath)
+			if err != nil {
+				continue
+			}
+			openFiles = append(openFiles, f)
+			caption := p.Caption
+			if caption == "" {
+				caption = p.FileName
+			}
+			inputMedias = append(inputMedias, gotgbot.InputMediaPhoto{
+				Media:   &gotgbot.FileReader{Name: filepath.Base(p.FilePath), Data: f},
+				Caption: caption,
+			})
+		}
+
+		if len(inputMedias) >= 2 {
+			opts := &gotgbot.SendMediaGroupOpts{}
+			if threadID != 0 {
+				opts.MessageThreadId = threadID
+			}
+			_, _ = m.bot.SendMediaGroup(chatID, inputMedias, opts)
+		} else if len(inputMedias) == 1 {
+			caption := chunk[0].Caption
+			if caption == "" {
+				caption = chunk[0].FileName
+			}
+			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption)
+		}
+
+		for _, f := range openFiles {
+			_ = f.Close()
+		}
+	}
+
+	return nil
+}
+
 // UploadTurnArtifacts sends whitelisted outbound artifacts after turn completion.
+// If multiple photos are present, it sends them as an album (SendMediaGroup).
 func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, threadID int64, artifacts []domain.Attachment) error {
 	if len(artifacts) == 0 || m.bot == nil {
 		return nil
 	}
 
+	var photos []domain.Attachment
+	var docs []domain.Attachment
+
 	for _, att := range artifacts {
 		if att.FilePath == "" {
 			continue
 		}
-
 		ext := strings.ToLower(filepath.Ext(att.FilePath))
 		if !allowedArtifactExts[ext] {
 			continue
 		}
 
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
+			photos = append(photos, att)
+		} else {
+			docs = append(docs, att)
+		}
+	}
+
+	// 1. Send photos (grouped as MediaGroup if >= 2)
+	if len(photos) >= 2 {
+		_ = m.SendMediaGroup(ctx, chatID, threadID, photos)
+	} else if len(photos) == 1 {
+		caption := photos[0].Caption
+		if caption == "" {
+			caption = photos[0].FileName
+		}
+		_ = m.SendBrainImage(ctx, chatID, threadID, photos[0].FilePath, caption)
+	}
+
+	// 2. Send non-photo documents
+	for _, att := range docs {
 		file, err := os.Open(att.FilePath)
 		if err != nil {
 			continue
 		}
-
 		inputFile := &gotgbot.FileReader{Name: att.FileName, Data: file}
-
-		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
-			opts := &gotgbot.SendPhotoOpts{
-				Caption: att.FileName,
-			}
-			if threadID != 0 {
-				opts.MessageThreadId = threadID
-			}
-			_, _ = m.bot.SendPhoto(chatID, inputFile, opts)
-		} else {
-			opts := &gotgbot.SendDocumentOpts{
-				Caption: att.FileName,
-			}
-			if threadID != 0 {
-				opts.MessageThreadId = threadID
-			}
-			_, _ = m.bot.SendDocument(chatID, inputFile, opts)
+		caption := att.Caption
+		if caption == "" {
+			caption = att.FileName
 		}
+		opts := &gotgbot.SendDocumentOpts{
+			Caption: caption,
+		}
+		if threadID != 0 {
+			opts.MessageThreadId = threadID
+		}
+		_, _ = m.bot.SendDocument(chatID, inputFile, opts)
 		file.Close()
 	}
 

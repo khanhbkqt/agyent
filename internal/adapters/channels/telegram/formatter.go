@@ -15,6 +15,7 @@ var (
 	unixUserPathRegex     = regexp.MustCompile(`/(home|Users)/[^/\\\s"'\)\]]+[/\\]?`)
 	validTelegramTagRegex = regexp.MustCompile(`^(?i)</?(b|strong|i|em|code|s|strike|del|u|pre|blockquote|tg-spoiler|a|tg-emoji)(\s+[a-zA-Z0-9_-]+(=("[^"]*"|'[^']*'|[^\s>]+))?)*\s*/?>`)
 	validHTMLEntityRegex  = regexp.MustCompile(`^&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);`)
+	htmlCommentRegex      = regexp.MustCompile(`(?s)<!--.*?-->`)
 )
 
 // SanitizePrivacyLeaks masks host user directory paths (e.g. C:\Users\username\ -> ~/)
@@ -89,6 +90,7 @@ func FormatMarkdownToTelegramHTML(md string) string {
 		return md
 	}
 
+	md = htmlCommentRegex.ReplaceAllString(md, "")
 	md = SanitizePrivacyLeaks(md)
 
 	sb := builderPool.Get().(*strings.Builder)
@@ -432,7 +434,47 @@ func formatInlineMarkdown(text string) string {
 			}
 		}
 
-		// 7. Links ([label](url))
+		// 7. Images (![alt](url))
+		if r == '!' && i+1 < n && runes[i+1] == '[' {
+			closeBracket := -1
+			for j := i + 2; j < n; j++ {
+				if runes[j] == ']' {
+					closeBracket = j
+					break
+				}
+			}
+
+			if closeBracket != -1 && closeBracket+1 < n && runes[closeBracket+1] == '(' {
+				closeParen := -1
+				for k := closeBracket + 2; k < n; k++ {
+					if runes[k] == ')' {
+						closeParen = k
+						break
+					}
+				}
+
+				if closeParen != -1 {
+					alt := string(runes[i+2 : closeBracket])
+					rawURL := strings.TrimSpace(string(runes[closeBracket+2 : closeParen]))
+					if isValidURL(rawURL) {
+						if alt == "" {
+							alt = "Photo"
+						}
+						sb.WriteString(fmt.Sprintf("<a href=\"%s\">[🖼️ %s]</a>", EscapeHTML(rawURL), formatInlineMarkdown(alt)))
+					} else {
+						if alt != "" {
+							sb.WriteString("<code>")
+							sb.WriteString(formatInlineMarkdown(alt))
+							sb.WriteString("</code>")
+						}
+					}
+					i = closeParen + 1
+					continue
+				}
+			}
+		}
+
+		// 8. Links ([label](url))
 		if r == '[' {
 			closeBracket := -1
 			for j := i + 1; j < n; j++ {

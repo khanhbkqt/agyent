@@ -3,6 +3,7 @@ package agy
 import (
 	"io/fs"
 	"mime"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -213,4 +214,101 @@ func (w *SnapshotWatcher) DetectArtifacts(rootDir string, before Snapshot) ([]do
 	})
 
 	return artifacts, nil
+}
+
+// TakeBrainSnapshot records files in the brain directory for convID before execution.
+func (w *SnapshotWatcher) TakeBrainSnapshot(convID string) Snapshot {
+	snap := make(Snapshot)
+	if convID == "" {
+		return snap
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return snap
+	}
+	candidates := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", convID),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID),
+	}
+	for _, brainDir := range candidates {
+		if entries, err := os.ReadDir(brainDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				if info, err := entry.Info(); err == nil {
+					snap[filepath.Join(brainDir, entry.Name())] = fileEntry{
+						ModTimeUnixMs: info.ModTime().UnixMilli(),
+						Size:          info.Size(),
+					}
+				}
+			}
+		}
+	}
+	return snap
+}
+
+// DetectBrainArtifacts finds newly created or modified artifacts in the brain folder for convID.
+func (w *SnapshotWatcher) DetectBrainArtifacts(convID string, before Snapshot) []domain.Attachment {
+	if convID == "" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	candidates := []string{
+		filepath.Join(home, ".gemini", "antigravity", "brain", convID),
+		filepath.Join(home, ".gemini", "antigravity-cli", "brain", convID),
+	}
+
+	var artifacts []domain.Attachment
+	for _, brainDir := range candidates {
+		entries, err := os.ReadDir(brainDir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			fullPath := filepath.Join(brainDir, entry.Name())
+			info, err := entry.Info()
+			if err != nil || info.Size() <= 0 || info.Size() > MaxArtifactSizeBytes {
+				continue
+			}
+
+			oldMeta, exists := before[fullPath]
+			isNew := !exists
+			isModified := exists && (info.ModTime().UnixMilli() > oldMeta.ModTimeUnixMs || info.Size() != oldMeta.Size)
+
+			if !isNew && !isModified {
+				continue
+			}
+
+			ext := getFileExtension(entry.Name())
+			mediaCategory, isAllowedExt := allowedExtMap[ext]
+			if !isAllowedExt {
+				continue
+			}
+			if mediaCategory == "" {
+				mediaCategory = "document"
+			}
+
+			mimeType := mime.TypeByExtension(ext)
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+
+			artifacts = append(artifacts, domain.Attachment{
+				ID:       fullPath,
+				FileName: entry.Name(),
+				FilePath: fullPath,
+				MIMEType: mimeType,
+				Size:     info.Size(),
+				Type:     mediaCategory,
+			})
+		}
+	}
+	return artifacts
 }
