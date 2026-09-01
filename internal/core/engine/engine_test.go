@@ -106,18 +106,18 @@ func (m *mockChannel) Send(ctx context.Context, msg domain.OutboundMessage) erro
 	return nil
 }
 
-func (m *mockChannel) SendTyping(ctx context.Context, chatID string, threadID int64) error {
+func (m *mockChannel) SendTyping(ctx context.Context, target domain.TargetContext) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.typingCalls++
 	return nil
 }
 
-func (m *mockChannel) SendChatAction(ctx context.Context, chatID string, threadID int64, action string) error {
+func (m *mockChannel) SendChatAction(ctx context.Context, target domain.TargetContext, action string) error {
 	return nil
 }
 
-func (m *mockChannel) SendFile(ctx context.Context, chatID string, threadID int64, filePath string, caption string) error {
+func (m *mockChannel) SendFile(ctx context.Context, target domain.TargetContext, filePath string, caption string) error {
 	return nil
 }
 
@@ -449,6 +449,7 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 	tests := []struct {
 		name       string
 		command    string
+		bindAgent  string
 		expectSub  string
 		validateFn func(t *testing.T)
 	}{
@@ -507,11 +508,6 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "cloud_sec", agent.Name)
 			},
-		},
-		{
-			name:      "Switch Agent",
-			command:   "/use cloud_sec",
-			expectSub: "Switched active agent to **cloud_sec**",
 		},
 		{
 			name:      "Project New",
@@ -576,6 +572,7 @@ func TestEngine_SlashCommandsSuite(t *testing.T) {
 				ID:        fmt.Sprintf("cmd-%d", time.Now().UnixNano()),
 				Timestamp: time.Now(),
 				Channel:   "telegram",
+				BindAgent: tt.bindAgent,
 				Sender:    sender,
 				Chat:      chat,
 				Text:      tt.command,
@@ -658,16 +655,17 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	assert.Equal(t, "111", agent.OwnerID)
 	assert.False(t, agent.IsPublic)
 
-	// 2. User 2 (unauthorized) tries to switch to 'alice_sec' -> 403
-	switchMsg := domain.CanonicalMessage{
-		ID:        "msg-switch-2",
+	// 2. User 2 (unauthorized) sends message to 'alice_sec' dedicated bot -> 403 Access Denied
+	user2Msg := domain.CanonicalMessage{
+		ID:        "msg-user2-turn-1",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "alice_sec",
 		Sender:    user2,
 		Chat:      chat2,
-		Text:      "/use alice_sec",
+		Text:      "Review this PR",
 	}
-	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	err = eng.HandleDebouncedMessage(ctx, user2Msg)
 	require.NoError(t, err)
 	sent := channel.GetSentMessages()
 	lastSent := sent[len(sent)-1]
@@ -688,12 +686,13 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Access granted")
 
-	// 4. User 2 switches to 'alice_sec' -> Succeeded
-	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	// 4. User 2 sends message to 'alice_sec' -> Succeeded turn execution
+	user2Msg.ID = "msg-user2-turn-2"
+	err = eng.HandleDebouncedMessage(ctx, user2Msg)
 	require.NoError(t, err)
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Switched active agent to **alice_sec**")
+	assert.Contains(t, lastSent.Text, "Mock response for: Review this PR")
 
 	// 5. User 1 inspects agent info -> contains collaborator info
 	infoMsg := domain.CanonicalMessage{
@@ -726,8 +725,9 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Access revoked")
 
-	// 7. User 2 tries to switch again -> Access Denied
-	err = eng.HandleDebouncedMessage(ctx, switchMsg)
+	// 7. User 2 tries again -> Access Denied
+	user2Msg.ID = "msg-user2-turn-3"
+	err = eng.HandleDebouncedMessage(ctx, user2Msg)
 	require.NoError(t, err)
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
@@ -1053,22 +1053,12 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	adminUser := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-sec-1", Type: "private"}
 
-	// 1. Initialize admin_agent via message
-	adminMsg := domain.CanonicalMessage{
-		ID:        "msg-admin-1",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Sender:    adminUser,
-		Chat:      chat,
-		Text:      "/use admin_agent",
-	}
-	require.NoError(t, eng.HandleDebouncedMessage(ctx, adminMsg))
-
-	// Send a turn to trigger agent creation and verification
+	// 1. Initialize admin_agent via turn message on dedicated bot
 	turnMsg1 := domain.CanonicalMessage{
 		ID:        "msg-admin-turn",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "admin_agent",
 		Sender:    adminUser,
 		Chat:      chat,
 		Text:      "Run deployment tasks",
@@ -1084,6 +1074,7 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 		ID:        "msg-admin-sec",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "admin_agent",
 		Sender:    adminUser,
 		Chat:      chat,
 		Text:      "/security",
@@ -1095,21 +1086,12 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	assert.Contains(t, lastSent.Text, "Active Agent</b>      : <code>admin_agent</code>")
 	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>unrestricted</code>")
 
-	// 2. Initialize auditor_agent via /use
-	auditMsg := domain.CanonicalMessage{
-		ID:        "msg-audit-1",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Sender:    adminUser,
-		Chat:      chat,
-		Text:      "/use auditor_agent",
-	}
-	require.NoError(t, eng.HandleDebouncedMessage(ctx, auditMsg))
-
+	// 2. Initialize auditor_agent via turn message
 	turnMsg2 := domain.CanonicalMessage{
 		ID:        "msg-audit-turn",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "auditor_agent",
 		Sender:    adminUser,
 		Chat:      chat,
 		Text:      "Inspect codebase vulnerabilities",
@@ -1125,6 +1107,7 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 		ID:        "msg-audit-sec",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "auditor_agent",
 		Sender:    adminUser,
 		Chat:      chat,
 		Text:      "/security",
@@ -1136,20 +1119,11 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>strict</code>")
 
 	// 3. Initialize unlisted agent -> falls back to balanced
-	fallbackMsg := domain.CanonicalMessage{
-		ID:        "msg-fall-1",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Sender:    adminUser,
-		Chat:      chat,
-		Text:      "/use generic_assistant",
-	}
-	require.NoError(t, eng.HandleDebouncedMessage(ctx, fallbackMsg))
-
 	turnMsg3 := domain.CanonicalMessage{
 		ID:        "msg-fall-turn",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		BindAgent: "generic_assistant",
 		Sender:    adminUser,
 		Chat:      chat,
 		Text:      "Help me summarize notes",

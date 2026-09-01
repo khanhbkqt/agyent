@@ -121,8 +121,13 @@ func TestAdapter_SendAndSendFile(t *testing.T) {
 	assert.Equal(t, "Hello from agyent core!", mockServer.SentMessages[0].Text)
 	mockServer.mu.Unlock()
 
+	target := domain.TargetContext{
+		Channel: "telegram",
+		ChatID:  "123456",
+	}
+
 	// 2. SendTyping
-	err = adapter.SendTyping(context.Background(), "123456", 0)
+	err = adapter.SendTyping(context.Background(), target)
 	require.NoError(t, err)
 
 	// 3. SendFile (photo)
@@ -130,17 +135,68 @@ func TestAdapter_SendAndSendFile(t *testing.T) {
 	imgFile := filepath.Join(tmpDir, "photo.jpg")
 	_ = os.WriteFile(imgFile, []byte("fake image data"), 0644)
 
-	err = adapter.SendFile(context.Background(), "123456", 0, imgFile, "Preview")
+	err = adapter.SendFile(context.Background(), target, imgFile, "Preview")
 	require.NoError(t, err)
 
 	// 4. SendFile (document)
 	docFile := filepath.Join(tmpDir, "report.pdf")
 	_ = os.WriteFile(docFile, []byte("fake pdf data"), 0644)
 
-	err = adapter.SendFile(context.Background(), "123456", 0, docFile, "Specification")
+	err = adapter.SendFile(context.Background(), target, docFile, "Specification")
 	require.NoError(t, err)
 
 	mockServer.mu.Lock()
 	assert.GreaterOrEqual(t, len(mockServer.SentMedia), 2)
 	mockServer.mu.Unlock()
 }
+
+// TC-LFC-03: Multi-Bot Lifecycle Pool Initialization & Dedicated Binding Integrity
+func TestAdapter_MultiBotPoolInitialization(t *testing.T) {
+	mockServer1 := NewMockTelegramServer("token_bot_1", 1001)
+	defer mockServer1.Close()
+
+	mockServer2 := NewMockTelegramServer("token_bot_2", 2002)
+	defer mockServer2.Close()
+
+	bot1, err := mockServer1.NewBot()
+	require.NoError(t, err)
+
+	bot2, err := mockServer2.NewBot()
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	cfg.Telegram.Bots = []config.BotConfig{
+		{
+			Name:      "dev_bot",
+			BotToken:  "token_bot_1",
+			BindAgent: "dev_architect",
+		},
+		{
+			Name:      "wife_bot",
+			BotToken:  "token_bot_2",
+			BindAgent: "wife_assistant",
+		},
+	}
+	cfg.Telegram.AdminUserIDs = []int64{12345}
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	adapter := NewAdapter(cfg, bus, WithBots(bot1, bot2))
+
+	inbound := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = adapter.Start(ctx, inbound)
+	require.NoError(t, err)
+	defer adapter.Stop()
+
+	// Verify both bots exist and are mapped to distinct agents
+	assert.Equal(t, 2, len(adapter.bots))
+	assert.Equal(t, bot1, adapter.getBot(bot1.Id))
+	assert.Equal(t, bot2, adapter.getBot(bot2.Id))
+	assert.Equal(t, "dev_architect", adapter.bindAgents[bot1.Id])
+	assert.Equal(t, "wife_assistant", adapter.bindAgents[bot2.Id])
+}
+

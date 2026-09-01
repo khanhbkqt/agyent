@@ -18,13 +18,13 @@ type ChannelPort interface {
 	Send(ctx context.Context, msg domain.OutboundMessage) error
 
 	// SendTyping broadcasts a typing indicator to keep the user engaged during execution.
-	SendTyping(ctx context.Context, chatID string, threadID int64) error
+	SendTyping(ctx context.Context, target domain.TargetContext) error
 
 	// SendChatAction broadcasts a specific action indicator (e.g. "typing", "upload_photo", "upload_document").
-	SendChatAction(ctx context.Context, chatID string, threadID int64, action string) error
+	SendChatAction(ctx context.Context, target domain.TargetContext, action string) error
 
 	// SendFile uploads and sends a file attachment (image, document, archive) to the chat/thread.
-	SendFile(ctx context.Context, chatID string, threadID int64, filePath string, caption string) error
+	SendFile(ctx context.Context, target domain.TargetContext, filePath string, caption string) error
 
 	// Stop gracefully shuts down network connections and listeners.
 	Stop() error

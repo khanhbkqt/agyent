@@ -52,7 +52,7 @@ func TestRegisterCommands_Success(t *testing.T) {
 	assert.Contains(t, cmdNames, "plugins")
 	assert.Contains(t, cmdNames, "stream")
 	assert.Contains(t, cmdNames, "agents")
-	assert.Contains(t, cmdNames, "use")
+	assert.NotContains(t, cmdNames, "use")
 	assert.Contains(t, cmdNames, "projects")
 	assert.Contains(t, cmdNames, "reset")
 	assert.Contains(t, cmdNames, "bootstrap")

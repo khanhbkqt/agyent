@@ -67,6 +67,23 @@ func WithBot(bot *gotgbot.Bot) Option {
 	}
 }
 
+// WithBots sets multiple existing gotgbot.Bot instances directly (e.g. for multi-bot testing).
+func WithBots(bots ...*gotgbot.Bot) Option {
+	return func(a *Adapter) {
+		for _, b := range bots {
+			if b != nil {
+				if a.bots == nil {
+					a.bots = make(map[int64]*gotgbot.Bot)
+				}
+				a.bots[b.Id] = b
+				if a.bot == nil {
+					a.bot = b
+				}
+			}
+		}
+	}
+}
+
 // NewAdapter constructs a new Telegram channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Adapter {
 	a := &Adapter{
@@ -125,32 +142,47 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	// 1. Initialize gotgbot.Bot pool from normalized bot configurations
 	if a.cfg != nil {
 		normalizedBots := a.cfg.Telegram.GetNormalizedBots()
-		for _, bCfg := range normalizedBots {
-			if a.bot != nil && len(a.bots) == 1 && a.bots[a.bot.Id] != nil {
-				// Single custom bot injected
-				a.botConfigs[a.bot.Id] = bCfg
-				if bCfg.BindAgent != "" {
-					a.bindAgents[a.bot.Id] = bCfg.BindAgent
+		if len(a.bots) > 0 {
+			// Mock bots injected via WithBot/WithBots for testing
+			for i, bCfg := range normalizedBots {
+				var matchedBot *gotgbot.Bot
+				for _, b := range a.bots {
+					if b.Token == bCfg.BotToken {
+						matchedBot = b
+						break
+					}
 				}
-				break
+				if matchedBot != nil {
+					a.botConfigs[matchedBot.Id] = bCfg
+					if bCfg.BindAgent != "" {
+						a.bindAgents[matchedBot.Id] = bCfg.BindAgent
+					}
+				} else if i == 0 && a.bot != nil {
+					a.botConfigs[a.bot.Id] = bCfg
+					if bCfg.BindAgent != "" {
+						a.bindAgents[a.bot.Id] = bCfg.BindAgent
+					}
+				}
 			}
+		} else {
+			for _, bCfg := range normalizedBots {
+				bot, err := gotgbot.NewBot(bCfg.BotToken, a.botOpts)
+				if err != nil {
+					slog.ErrorContext(ctx, "Failed to initialize telegram bot token",
+						slog.String("name", bCfg.Name),
+						slog.String("error", err.Error()),
+					)
+					continue // Fault isolation: failed bot token does not fail other healthy bots
+				}
 
-			bot, err := gotgbot.NewBot(bCfg.BotToken, a.botOpts)
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to initialize telegram bot token",
-					slog.String("name", bCfg.Name),
-					slog.String("error", err.Error()),
-				)
-				continue // Fault isolation: failed bot token does not fail other healthy bots
-			}
-
-			a.bots[bot.Id] = bot
-			a.botConfigs[bot.Id] = bCfg
-			if bCfg.BindAgent != "" {
-				a.bindAgents[bot.Id] = bCfg.BindAgent
-			}
-			if a.bot == nil {
-				a.bot = bot
+				a.bots[bot.Id] = bot
+				a.botConfigs[bot.Id] = bCfg
+				if bCfg.BindAgent != "" {
+					a.bindAgents[bot.Id] = bCfg.BindAgent
+				}
+				if a.bot == nil {
+					a.bot = bot
+				}
 			}
 		}
 	}
@@ -339,9 +371,21 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 	return nil
 }
 
+func (a *Adapter) parseBotID(botIDStr string) int64 {
+	if botIDStr == "" {
+		return 0
+	}
+	id, _ := strconv.ParseInt(botIDStr, 10, 64)
+	return id
+}
+
 // Send dispatches an outbound text message to the target chat/thread.
 func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
-	bot := a.getBot(msg.BotID)
+	botID := msg.BotID
+	if botID == 0 && msg.BotIDStr != "" {
+		botID = a.parseBotID(msg.BotIDStr)
+	}
+	bot := a.getBot(botID)
 	a.mu.RLock()
 	mediaMgr := a.mediaMgr
 	a.mu.RUnlock()
@@ -357,8 +401,9 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 
 	// 1. Send outbound attachments if present
 	if len(msg.Attachments) > 0 && mediaMgr != nil {
+		target := msg.TargetContext()
 		for _, att := range msg.Attachments {
-			_ = a.SendFile(ctx, msg.ChatID, msg.ThreadID, att.FilePath, att.Caption)
+			_ = a.SendFile(ctx, target, att.FilePath, att.Caption)
 		}
 	}
 
@@ -442,28 +487,26 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 }
 
 // SendTyping broadcasts a typing indicator.
-func (a *Adapter) SendTyping(ctx context.Context, chatID string, threadID int64) error {
-	return a.SendChatAction(ctx, chatID, threadID, "typing")
+func (a *Adapter) SendTyping(ctx context.Context, target domain.TargetContext) error {
+	return a.SendChatAction(ctx, target, "typing")
 }
 
 // SendChatAction broadcasts a specific action indicator.
-func (a *Adapter) SendChatAction(ctx context.Context, chatID string, threadID int64, action string) error {
-	a.mu.RLock()
-	bot := a.bot
-	a.mu.RUnlock()
-
+func (a *Adapter) SendChatAction(ctx context.Context, target domain.TargetContext, action string) error {
+	botID := a.parseBotID(target.BotID)
+	bot := a.getBot(botID)
 	if bot == nil {
 		return errors.New("bot client not initialized")
 	}
 
-	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	chatIDInt, err := strconv.ParseInt(target.ChatID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid chat_id %q: %w", chatID, err)
+		return fmt.Errorf("invalid chat_id %q: %w", target.ChatID, err)
 	}
 
 	opts := &gotgbot.SendChatActionOpts{}
-	if threadID != 0 {
-		opts.MessageThreadId = threadID
+	if target.ThreadID != 0 {
+		opts.MessageThreadId = target.ThreadID
 	}
 
 	_, err = bot.SendChatAction(chatIDInt, action, opts)
@@ -471,18 +514,16 @@ func (a *Adapter) SendChatAction(ctx context.Context, chatID string, threadID in
 }
 
 // SendFile uploads and sends a file attachment to the chat/thread.
-func (a *Adapter) SendFile(ctx context.Context, chatID string, threadID int64, filePath string, caption string) error {
-	a.mu.RLock()
-	bot := a.bot
-	a.mu.RUnlock()
-
+func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, filePath string, caption string) error {
+	botID := a.parseBotID(target.BotID)
+	bot := a.getBot(botID)
 	if bot == nil {
 		return errors.New("bot client not initialized")
 	}
 
-	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	chatIDInt, err := strconv.ParseInt(target.ChatID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid chat_id %q: %w", chatID, err)
+		return fmt.Errorf("invalid chat_id %q: %w", target.ChatID, err)
 	}
 
 	file, err := os.Open(filePath)
@@ -498,8 +539,8 @@ func (a *Adapter) SendFile(ctx context.Context, chatID string, threadID int64, f
 		opts := &gotgbot.SendPhotoOpts{
 			Caption: caption,
 		}
-		if threadID != 0 {
-			opts.MessageThreadId = threadID
+		if target.ThreadID != 0 {
+			opts.MessageThreadId = target.ThreadID
 		}
 		_, err = bot.SendPhoto(chatIDInt, inputFile, opts)
 		return err
@@ -508,8 +549,8 @@ func (a *Adapter) SendFile(ctx context.Context, chatID string, threadID int64, f
 	opts := &gotgbot.SendDocumentOpts{
 		Caption: caption,
 	}
-	if threadID != 0 {
-		opts.MessageThreadId = threadID
+	if target.ThreadID != 0 {
+		opts.MessageThreadId = target.ThreadID
 	}
 	_, err = bot.SendDocument(chatIDInt, inputFile, opts)
 	return err

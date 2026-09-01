@@ -13,7 +13,8 @@ This document provides a comprehensive technical architecture and engineering sp
 4. **Adapter-Coupled Access Control (Hexagonal Violation):** Hardcoding authorization checks inside channel adapters (e.g., `telegram/router.go`) violates Clean Architecture and forces duplicate ACL logic for future channels (Discord, Slack, REST).
 
 ### 1.2. Core Architectural Objectives
-- **1-to-1 & 1-to-N Bot-Agent Binding:** Support binding a dedicated Telegram bot to a specific agent (e.g., Bot A strictly serves `@dev_architect`) as well as shared router bots serving multiple agents via access-controlled switching (`/use`).
+- **1-to-1 Dedicated Bot-Agent Binding:** Every bot instance is permanently and exclusively bound to a specific agent persona (`bind_agent`), eliminating persona conflicts, context bleed, and confusing persona switching commands (`/use`).
+- **Multi-Channel Scalability (Composite Mux):** 1 Agent persona and persistent memory (`MEMORY.md`, `SOUL.md`) can be seamlessly bound across multiple channels (Telegram, Zalo, Slack, Discord) via `CompositeChannelMux` and `domain.TargetContext`.
 - **Granular Agent Ownership (RBAC):** Every agent has a verified `OwnerID` (the creator's User ID). Access is governed by strict roles: `Owner/Admin`, `Operator`, `Viewer`, or `Public`.
 - **Fault-Isolated Multi-Bot Pool:** Each bot instance runs within an isolated Go goroutine with automatic panic recovery and error isolation.
 - **Session Key Namespacing (`channel:bot_id:chat_id[:thread_id]`):** Fully disambiguates concurrent sessions across different bots while maintaining 100% backward compatibility for legacy session keys.
@@ -26,18 +27,18 @@ This document provides a comprehensive technical architecture and engineering sp
 
 ```mermaid
 flowchart TB
-    subgraph MessagingTier ["Tier 1: Multi-Bot Messaging Surface"]
+    subgraph MessagingTier ["Tier 1: Multi-Bot & Multi-Channel Surface"]
         Bot1["🤖 Bot 1: @dev_coder_bot\n(Dedicated: dev_architect)"]
-        Bot2["🤖 Bot 2: @assistant_bot\n(Dedicated: personal_assistant)"]
-        Bot3["🤖 Bot 3: @shared_hub_bot\n(Multi-Agent Shared Router)"]
-        DiscordPort["🔌 Discord / Slack / Webhook (Future)"]
+        Bot2["🤖 Bot 2: @wife_bot\n(Dedicated: wife_assistant)"]
+        ZaloPort["💬 Zalo Official Account"]
+        SlackPort["💼 Slack Bot App"]
     end
 
-    subgraph ChannelAdapterTier ["Tier 2: Fault-Isolated Channel Pool (internal/adapters/channels/telegram/)"]
+    subgraph ChannelAdapterTier ["Tier 2: Fault-Isolated Channel Pool (internal/adapters/channels/)"]
+        CompositeMux["CompositeChannelMux\n(ports.ChannelPort)"]
         BotPool["Multi-Bot Lifecycle Pool\nmap[int64]*gotgbot.Bot"]
         Worker1["Bot 1 Polling Goroutine\n(Recover on Panic)"]
         Worker2["Bot 2 Polling Goroutine\n(Recover on Panic)"]
-        Worker3["Bot 3 Polling Goroutine\n(Recover on Panic)"]
         Normalizer["Canonical Normalizer\nFormatSessionKey(channel, bot_id, chat_id, thread_id)"]
         Throttler["Delivery Throttler & Outbound Multiplexer"]
     end
@@ -47,7 +48,7 @@ flowchart TB
         Debouncer["Sliding Window Debouncer (2.0s)"]
         LockMgr["SessionLockManager (FIFO Mutex)"]
         RBACGate{"[Inbound RBAC Checkpoint]\nCheckAccess(agent, sender_id)"}
-        CommandRouter["Slash Command Router\n(/use, /a share, /a revoke, /a info)"]
+        CommandRouter["Slash Command Router\n(/a share, /a revoke, /a info)"]
         TurnExec["Turn Executor & Prompt Assembler"]
     end
 

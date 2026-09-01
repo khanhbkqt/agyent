@@ -358,6 +358,14 @@ func sleepCancellable(ctx context.Context, doneChan <-chan struct{}, d time.Dura
 func (dt *DeliveryThrottler) runSessionWorker(ctx context.Context, sess *StreamSession) {
 	defer close(sess.WorkerDone)
 	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "Recovered from panic in stream session worker",
+				slog.String("session_key", sess.SessionKey),
+				slog.Any("panic", r),
+			)
+		}
+	}()
+	defer func() {
 		if sess.CancelHeartbeat != nil {
 			sess.CancelHeartbeat()
 		}

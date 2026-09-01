@@ -236,8 +236,8 @@ func TestBoost_AdapterOptionsAndMethods(t *testing.T) {
 
 	// Methods with uninitialized adapter
 	assert.Error(t, emptyAdapter.Send(context.Background(), domain.OutboundMessage{ChatID: "123"}))
-	assert.Error(t, emptyAdapter.SendChatAction(context.Background(), "123", 0, "typing"))
-	assert.Error(t, emptyAdapter.SendFile(context.Background(), "123", 0, "file.txt", "cap"))
+	assert.Error(t, emptyAdapter.SendChatAction(context.Background(), domain.TargetContext{ChatID: "123"}, "typing"))
+	assert.Error(t, emptyAdapter.SendFile(context.Background(), domain.TargetContext{ChatID: "123"}, "file.txt", "cap"))
 
 	cfg := config.DefaultConfig()
 	cfg.Telegram.BotToken = "token_boost_adapter"
@@ -274,8 +274,8 @@ func TestBoost_AdapterOptionsAndMethods(t *testing.T) {
 
 	// Invalid chat IDs
 	assert.Error(t, adapter.Send(context.Background(), domain.OutboundMessage{ChatID: "invalid_id", Text: "hi"}))
-	assert.Error(t, adapter.SendTyping(context.Background(), "invalid_id", 0))
-	assert.Error(t, adapter.SendFile(context.Background(), "invalid_id", 0, "nonexistent.jpg", "cap"))
+	assert.Error(t, adapter.SendTyping(context.Background(), domain.TargetContext{ChatID: "invalid_id"}))
+	assert.Error(t, adapter.SendFile(context.Background(), domain.TargetContext{ChatID: "invalid_id"}, "nonexistent.jpg", "cap"))
 }
 
 // Boost coverage for throttler.go edge cases

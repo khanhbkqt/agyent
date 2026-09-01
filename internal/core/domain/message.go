@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,9 +71,19 @@ type InlineKeyboardRow []InlineButton
 // InlineKeyboard represents a multi-row interactive keyboard.
 type InlineKeyboard []InlineKeyboardRow
 
+// TargetContext specifies the destination channel, bot, and chat context for message delivery.
+type TargetContext struct {
+	Channel  string `json:"channel"`             // e.g. "telegram", "zalo", "slack"
+	BotID    string `json:"bot_id,omitempty"`    // Unique platform-agnostic bot identifier
+	ChatID   string `json:"chat_id"`             // Target chat / conversation ID
+	ThreadID int64  `json:"thread_id,omitempty"` // Optional forum topic / message thread ID
+}
+
 // OutboundMessage represents a standardized response to be sent to a channel.
 type OutboundMessage struct {
-	BotID            int64                `json:"bot_id,omitempty"` // Originating bot ID for multi-bot outbound routing
+	Channel          string               `json:"channel,omitempty"` // Originating channel identifier (e.g. "telegram", "zalo")
+	BotID            int64                `json:"bot_id,omitempty"`  // Originating bot ID for multi-bot outbound routing
+	BotIDStr         string               `json:"bot_id_str,omitempty"` // String representation of BotID
 	ChatID           string               `json:"chat_id"`
 	ThreadID         int64                `json:"thread_id,omitempty"`
 	Text             string               `json:"text"`
@@ -80,6 +91,38 @@ type OutboundMessage struct {
 	Attachments      []OutboundAttachment `json:"attachments,omitempty"`
 	ReplyToMessageID string               `json:"reply_to_message_id,omitempty"`
 	InlineKeyboard   InlineKeyboard       `json:"inline_keyboard,omitempty"`
+}
+
+// TargetContext returns the TargetContext corresponding to this outbound message.
+func (o *OutboundMessage) TargetContext() TargetContext {
+	botID := o.BotIDStr
+	if botID == "" && o.BotID > 0 {
+		botID = strconv.FormatInt(o.BotID, 10)
+	}
+	channel := o.Channel
+	if channel == "" {
+		channel = "telegram"
+	}
+	return TargetContext{
+		Channel:  channel,
+		BotID:    botID,
+		ChatID:   o.ChatID,
+		ThreadID: o.ThreadID,
+	}
+}
+
+// TargetContext returns the TargetContext for this canonical inbound message.
+func (m *CanonicalMessage) TargetContext() TargetContext {
+	botID := ""
+	if m.BotID > 0 {
+		botID = strconv.FormatInt(m.BotID, 10)
+	}
+	return TargetContext{
+		Channel:  m.Channel,
+		BotID:    botID,
+		ChatID:   m.Chat.ID,
+		ThreadID: m.Chat.ThreadID,
+	}
 }
 
 // SessionKey returns the unique session key for this message's chat and thread context.

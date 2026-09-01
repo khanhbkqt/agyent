@@ -22,7 +22,6 @@ var DefaultBotCommands = []gotgbot.BotCommand{
 	{Command: "plugins", Description: "Manage capability plugins"},
 	{Command: "stream", Description: "Toggle real-time streaming mode (on/off)"},
 	{Command: "agents", Description: "List and manage active agent profiles"},
-	{Command: "use", Description: "Switch active agent profile"},
 	{Command: "projects", Description: "List and manage project workspaces"},
 	{Command: "conversations", Description: "Manage multi-conversation contexts"},
 	{Command: "new", Description: "Start a fresh new conversation"},

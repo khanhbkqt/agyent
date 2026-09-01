@@ -63,11 +63,17 @@ type MockTelegramServer struct {
 	FilesMap           map[string][]byte
 	GetMeCount         int64
 	RegisteredCommands []gotgbot.BotCommand
+	BotID              int64
 }
 
-func NewMockTelegramServer(token string) *MockTelegramServer {
+func NewMockTelegramServer(token string, customBotID ...int64) *MockTelegramServer {
+	id := int64(123456789)
+	if len(customBotID) > 0 && customBotID[0] > 0 {
+		id = customBotID[0]
+	}
 	mock := &MockTelegramServer{
 		Token:         token,
+		BotID:         id,
 		msgSeq:        100,
 		FilesMap:      make(map[string][]byte),
 		RetryAfterSec: 1,
@@ -172,7 +178,7 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
 			"result": map[string]any{
-				"id":         123456789,
+				"id":         m.BotID,
 				"is_bot":     true,
 				"first_name": "AgyentBot",
 				"username":   "agyent_test_bot",

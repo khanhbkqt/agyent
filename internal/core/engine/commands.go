@@ -69,13 +69,6 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/bootstrap":
 		responseText = e.handleBootstrapCommand(ctx, msg.Sender, session, args)
 
-	case "/use":
-		if len(args) == 0 {
-			responseText = "⚠️ Usage: `/use <agent_name>`\nExample: `/use agyent`"
-		} else {
-			responseText = e.switchAgent(ctx, msg.Sender, session, args[0])
-		}
-
 	case "/projects", "/project", "/p":
 		responseText = e.handleProjectsCommand(ctx, session, args)
 
@@ -178,7 +171,6 @@ func (e *Engine) handleHelpCommand() string {
 
 **🤖 Agent Management & RBAC:**
 • ` + "`/agents`" + ` (or ` + "`/a list`" + `) — List all agents accessible to your user.
-• ` + "`/use <name>`" + ` (or ` + "`/a <name>`" + `) — Switch active agent profile (validates permissions).
 • ` + "`/a new <name> [description]`" + ` — Register a new private agent persona with verified ownership.
 • ` + "`/a share <agent> <user_id> [role]`" + ` — Grant collaborator access (` + "`admin`" + `, ` + "`operator`" + `, ` + "`viewer`" + `).
 • ` + "`/a revoke <agent> <user_id>`" + ` — Revoke collaborator access.
@@ -793,7 +785,7 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 
 			sb.WriteString(fmt.Sprintf("%s• *%s*%s — %s _[%s]_\n", marker, a.Name, badge, a.Description, statusTag))
 		}
-		sb.WriteString("\nUse `/use <name>` to switch active agent.")
+		sb.WriteString("\n💡 Mỗi Agent được gắn với một Bot chuyên trách riêng biệt.")
 		return sb.String()
 	}
 
@@ -951,7 +943,7 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		return sb.String()
 
 	default:
-		return e.switchAgent(ctx, sender, session, args[0])
+		return fmt.Sprintf("⚠️ Unknown agent subcommand `%s`. Use `/agents` to list, or `/agents new <name>` to create.", args[0])
 	}
 }
 
@@ -981,70 +973,6 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.Sende
 	_ = e.storage.SaveSession(ctx, session)
 
 	return fmt.Sprintf("🔄 **Agent `%s` reset for Genesis Bootstrap.**\nWorkspace: `%s`\nYour next message will initiate the bootstrap protocol and generate identity files (`AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`).", agent.Name, agent.WorkspacePath)
-}
-
-func (e *Engine) switchAgent(ctx context.Context, sender domain.SenderUser, session *domain.Session, agentName string) string {
-	if e.HasActiveTurn(session.SessionKey) {
-		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before switching agent."
-	}
-
-	agent, err := e.storage.GetAgent(ctx, agentName)
-	if err != nil {
-		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, agentName)
-		_ = os.MkdirAll(agentPath, 0755)
-		isPublic := (agentName == "agyent")
-		ownerID := ""
-		if !isPublic {
-			ownerID = sender.ID
-		}
-		defaultPreset := domain.SecurityPreset(e.cfg.ResolveAgentPreset(agentName))
-		if defaultPreset == "" {
-			defaultPreset = domain.PresetBalanced
-		}
-		agent = &domain.Agent{
-			Name:           agentName,
-			Description:    "Agyent - Trợ lý AI cá nhân đa năng",
-			Status:         domain.StatusUninitialized,
-			WorkspacePath:  agentPath,
-			SecurityPreset: defaultPreset,
-			OwnerID:        ownerID,
-			IsPublic:       isPublic,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if saveErr := e.storage.SaveAgent(ctx, agent); saveErr == nil {
-			err = nil
-		}
-	}
-	if err != nil {
-		return fmt.Sprintf("⚠️ Agent `%s` not found. Use `/agents` to view available agents.", agentName)
-	}
-
-	allowed, _, err := e.CheckAccess(ctx, agent, sender.ID)
-	if err != nil || !allowed {
-		ownerDesc := agent.OwnerID
-		if ownerDesc == "" {
-			ownerDesc = "admin"
-		}
-		return fmt.Sprintf("⛔ <b>Access Denied (403):</b> You do not have permission to switch to agent <code>@%s</code>.\nAsk the agent owner (User ID: <code>%s</code>) to grant you access via:\n<code>/a share %s %s [role]</code>", agent.Name, ownerDesc, agent.Name, sender.ID)
-	}
-
-	session.ActiveAgent = agent.Name
-	session.ActiveProject = ""
-
-	// Restore latest conversation for the target agent in global mode to prevent context bleed
-	latest, _, err := e.storage.ListRecentConversations(ctx, session.SessionKey, agent.Name, "", 1, 0)
-	if err == nil && len(latest) > 0 {
-		session.GlobalConversationID = latest[0].ID
-	} else {
-		session.GlobalConversationID = ""
-	}
-
-	if err := e.storage.SaveSession(ctx, session); err != nil {
-		return fmt.Sprintf("⚠️ Failed to update session: %v", err)
-	}
-
-	return fmt.Sprintf("🔄 Switched active agent to **%s** (%s).\nContext returned to Global Mode.", agent.Name, agent.Description)
 }
 
 func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Session, args []string) string {

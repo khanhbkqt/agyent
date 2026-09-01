@@ -427,7 +427,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	defer e.unregisterActiveTurn(sessionKey, turnID)
 
 	// Refresh typing indicator while resolving session and context
-	_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
+	_ = e.channel.SendTyping(turnCtx, msg.TargetContext())
 
 	// 3. Load Session from Storage
 	defaultAgent := "agyent"
@@ -699,7 +699,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		defer stopHeartbeat()
 
 		concurrency.SafeGo(func() {
-			_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
+			_ = e.channel.SendTyping(turnCtx, msg.TargetContext())
 			ticker := time.NewTicker(4 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -709,7 +709,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				case <-turnCtx.Done():
 					return
 				case <-ticker.C:
-					_ = e.channel.SendTyping(turnCtx, msg.Chat.ID, msg.Chat.ThreadID)
+					_ = e.channel.SendTyping(turnCtx, msg.TargetContext())
 				}
 			}
 		})
