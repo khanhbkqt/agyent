@@ -20,29 +20,33 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from core.browser_manager import BrowserManager
-from handlers.extraction_handler import (
-    handle_extract_json_ld,
-    handle_fetch_page,
-    handle_scrape_selector,
-)
-from handlers.interactive_handler import (
-    handle_act,
-    handle_inspect_dom,
-    handle_session_close,
-    handle_session_list,
-    handle_session_save,
-    handle_session_start,
-)
-from handlers.network_handler import handle_intercept_api
-from handlers.search_handler import (
-    handle_discover_trends,
-    handle_search,
-)
-from handlers.visual_handler import (
-    handle_pdf_export,
-    handle_screenshot,
-)
+try:
+    from core.browser_manager import BrowserManager
+    from handlers.extraction_handler import (
+        handle_extract_json_ld,
+        handle_fetch_page,
+        handle_scrape_selector,
+    )
+    from handlers.interactive_handler import (
+        handle_act,
+        handle_inspect_dom,
+        handle_session_close,
+        handle_session_list,
+        handle_session_save,
+        handle_session_start,
+    )
+    from handlers.network_handler import handle_intercept_api
+    from handlers.search_handler import (
+        handle_discover_trends,
+        handle_search,
+    )
+    from handlers.visual_handler import (
+        handle_pdf_export,
+        handle_screenshot,
+    )
+    CAMOUFOX_AVAILABLE = True
+except Exception as e:
+    CAMOUFOX_AVAILABLE = False
 
 START_TIME = time.time()
 DAEMON_DIR = os.path.join(os.path.expanduser("~"), ".agyent", "camoufox")

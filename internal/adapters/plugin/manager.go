@@ -630,7 +630,25 @@ func (m *PluginManager) AssembleActivePlugins(ctx context.Context, globalHome st
 			continue
 		}
 		activePlugins = append(activePlugins, p)
-		resolved.ActiveMCPServers = append(resolved.ActiveMCPServers, p.MCPServers...)
+		for _, srv := range p.MCPServers {
+			if srv.Command == "" {
+				continue
+			}
+			if len(srv.Args) > 0 {
+				scriptPath := srv.Args[0]
+				if filepath.IsAbs(scriptPath) {
+					if _, statErr := os.Stat(scriptPath); statErr != nil {
+						slog.WarnContext(ctx, "Skipping MCP server with missing script file",
+							slog.String("plugin", p.Manifest.Name),
+							slog.String("server", srv.ServerName),
+							slog.String("script", scriptPath),
+						)
+						continue
+					}
+				}
+			}
+			resolved.ActiveMCPServers = append(resolved.ActiveMCPServers, srv)
+		}
 		resolved.SkillHeaders = append(resolved.SkillHeaders, p.Skills...)
 
 		if p.Rules != "" {

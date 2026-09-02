@@ -12,9 +12,10 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
-
-from camoufox.sync_api import Camoufox
+try:
+    from camoufox.sync_api import Camoufox
+except Exception:
+    Camoufox = None
 
 from .fingerprint import build_camoufox_launch_options, build_context_options
 from .network_sniffer import NetworkSniffer

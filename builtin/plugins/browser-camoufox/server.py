@@ -21,28 +21,34 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from handlers.extraction_handler import (
-    handle_extract_json_ld,
-    handle_fetch_page,
-    handle_scrape_selector,
-)
-from handlers.interactive_handler import (
-    handle_act,
-    handle_inspect_dom,
-    handle_session_close,
-    handle_session_list,
-    handle_session_save,
-    handle_session_start,
-)
-from handlers.network_handler import handle_intercept_api
-from handlers.search_handler import (
-    handle_discover_trends,
-    handle_search,
-)
-from handlers.visual_handler import (
-    handle_pdf_export,
-    handle_screenshot,
-)
+try:
+    from handlers.extraction_handler import (
+        handle_extract_json_ld,
+        handle_fetch_page,
+        handle_scrape_selector,
+    )
+    from handlers.interactive_handler import (
+        handle_act,
+        handle_inspect_dom,
+        handle_session_close,
+        handle_session_list,
+        handle_session_save,
+        handle_session_start,
+    )
+    from handlers.network_handler import handle_intercept_api
+    from handlers.search_handler import (
+        handle_discover_trends,
+        handle_search,
+    )
+    from handlers.visual_handler import (
+        handle_pdf_export,
+        handle_screenshot,
+    )
+    CAMOUFOX_AVAILABLE = True
+    CAMOUFOX_IMPORT_ERROR = None
+except Exception as e:
+    CAMOUFOX_AVAILABLE = False
+    CAMOUFOX_IMPORT_ERROR = str(e)
 
 DAEMON_DIR = os.path.join(os.path.expanduser("~"), ".agyent", "camoufox")
 PORT_FILE = os.path.join(DAEMON_DIR, "daemon.port")
@@ -517,6 +523,13 @@ TOOL_DEFINITIONS = [
 
 def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
     """Local in-process fallback tool execution with multi-tenant isolation context."""
+    if not CAMOUFOX_AVAILABLE:
+        err_detail = f": {CAMOUFOX_IMPORT_ERROR}" if CAMOUFOX_IMPORT_ERROR else ""
+        return {
+            "error": f"Camoufox stealth browser dependencies are not available on this host{err_detail}. "
+                     f"Please install via: pip install camoufox playwright && camoufox fetch"
+        }
+
     agent_name = os.environ.get("AGYENT_AGENT_NAME", "default")
     workspace_dir = os.environ.get("AGYENT_AGENT_WORKSPACE")
     if name == "camoufox_search":
@@ -670,6 +683,9 @@ def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
 
 def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
     """Dispatches tool to daemon or in-process fallback."""
+    if not CAMOUFOX_AVAILABLE:
+        return execute_tool_local(name, args)
+
     port = ensure_daemon_running()
     if port:
         try:
@@ -685,8 +701,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     method = msg.get("method")
 
     if method == "initialize":
-        # Proactively ensure daemon is running
-        ensure_daemon_running()
+        # Return initialize immediately without blocking on background daemon
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -697,7 +712,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
                 "serverInfo": {
                     "name": "camoufox-browser-plugin",
-                    "version": "1.2.0"
+                    "version": "1.2.2"
                 }
             }
         }
