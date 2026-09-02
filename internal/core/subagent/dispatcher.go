@@ -218,12 +218,19 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 		return "", fmt.Errorf("failed to persist subagent task: %w", err)
 	}
 
-	// 2. Emit Dispatched Event
+	// 2. Pre-register in task registry to prevent pollerLoop double-enqueue race
+	tCtx := &taskRuntimeContext{
+		task:      task,
+		startedAt: time.Now(),
+	}
+	d.registry.Register(tCtx)
+
+	// 3. Emit Dispatched Event
 	if d.eventBus != nil {
 		d.eventBus.AsyncEmit(ctx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
 	}
 
-	// 3. Enqueue to Worker Pool
+	// 4. Enqueue to Worker Pool
 	select {
 	case d.taskQueue <- task:
 		slog.Info("subagent task enqueued",
@@ -320,11 +327,14 @@ func (d *SubagentDispatcher) workerLoop(workerID int) {
 }
 
 func (d *SubagentDispatcher) runTask(task domain.SubagentTask) {
-	tCtx := &taskRuntimeContext{
-		task:      task,
-		startedAt: time.Now(),
+	tCtx, ok := d.registry.Get(task.ID)
+	if !ok {
+		tCtx = &taskRuntimeContext{
+			task:      task,
+			startedAt: time.Now(),
+		}
+		d.registry.Register(tCtx)
 	}
-	d.registry.Register(tCtx)
 	defer d.registry.Delete(task.ID)
 
 	// Update status to RUNNING

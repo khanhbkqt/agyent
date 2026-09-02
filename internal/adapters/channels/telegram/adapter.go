@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -346,7 +347,14 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		// Dispatch incoming update to router
+		var u gotgbot.Update
+		if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+			return
+		}
+		if a.router != nil {
+			_ = a.router.HandleUpdate(r.Context(), a.getBot(0), &u)
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 

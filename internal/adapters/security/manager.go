@@ -191,10 +191,19 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		cmd, _ := req.Args["CommandLine"].(string)
 		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, bundle)
 
-	case "view_file", "write_to_file", "replace_file_content":
+	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
 		targetPath, _ := req.Args["TargetFile"].(string)
 		if targetPath == "" {
 			targetPath, _ = req.Args["AbsolutePath"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["DirectoryPath"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["SearchPath"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["SearchDirectory"].(string)
 		}
 		isWrite := req.ToolName == "write_to_file" || req.ToolName == "replace_file_content"
 		if isWrite && preset == domain.PresetReadOnly {
@@ -213,9 +222,19 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}
 		decision, err = bundle.pathjailEval.EvaluatePath(ws, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
 
-	case "read_url_content", "web_search":
+	case "read_url_content":
 		urlStr, _ := req.Args["Url"].(string)
 		decision, err = bundle.networkEval.EvaluateURL(urlStr)
+
+	case "web_search":
+		if domainStr, ok := req.Args["domain"].(string); ok && domainStr != "" {
+			decision, err = bundle.networkEval.EvaluateURL("https://" + domainStr)
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Web search query permitted",
+			}
+		}
 
 	case "invoke_subagent", "define_subagent":
 		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)

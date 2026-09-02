@@ -809,6 +809,9 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return "⚠️ Usage: `/a new <agent_name> [description]`\nExample: `/a new dev_architect Cloud & Go Systems Architect`"
 		}
 		name := strings.TrimSpace(args[1])
+		if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+			return "⚠️ Invalid agent name. Agent name cannot contain path separators ('/', '\\') or '..'."
+		}
 		desc := "AI Assistant"
 		if len(args) > 2 {
 			desc = strings.Join(args[2:], " ")
@@ -1054,10 +1057,13 @@ func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Sess
 		if len(args) < 2 {
 			return "⚠️ Usage: `/p new <project_name> [path]`\nExample: `/p new ecommerce /home/ubuntu/projects/ecommerce`"
 		}
-		projName := args[1]
+		projName := strings.TrimSpace(args[1])
+		if projName == "" || strings.Contains(projName, "..") || strings.Contains(projName, "/") || strings.Contains(projName, "\\") {
+			return "⚠️ Invalid project name. Project name cannot contain path separators ('/', '\\') or '..'."
+		}
 		projPath := ""
 		if len(args) > 2 {
-			projPath = args[2]
+			projPath = strings.TrimSpace(args[2])
 		} else {
 			agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
 			if agent, err := e.storage.GetAgent(ctx, session.ActiveAgent); err == nil && agent != nil && agent.WorkspacePath != "" {

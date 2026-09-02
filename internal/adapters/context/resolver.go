@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -212,6 +213,11 @@ func (r *ContextResolver) DiscoverSkills(ctx context.Context, globalHome string,
 	for _, s := range skillMap {
 		result = append(result, s)
 	}
+
+	// Deterministic sorting to preserve Gemini Prefix KV-Cache invariant across turns
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
 
 	return result, nil
 }

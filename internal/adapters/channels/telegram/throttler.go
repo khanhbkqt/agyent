@@ -278,6 +278,15 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 		responseText = sess.Buffer.String()
 	}
 
+	// If result status is ERROR or error message is present, ensure error is displayed to user
+	if (p.Status == "ERROR" || p.Error != "") && p.Error != "" && !strings.Contains(responseText, p.Error) {
+		if strings.TrimSpace(responseText) != "" {
+			responseText += "\n\n⚠️ [Execution Error: " + p.Error + "]"
+		} else {
+			responseText = "⚠️ [Execution Error: " + p.Error + "]"
+		}
+	}
+
 	// Extract outbound media from markdown response and clean the text
 	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(responseText, "", sess.ConversationID)
 	sess.Buffer.Reset()

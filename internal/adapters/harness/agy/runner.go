@@ -146,8 +146,20 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		slog.String("effort", effort),
 	)
 
-	// 2. Execute process
-	runErr := cmd.Run()
+	// 2. Execute process with JobGuard process tree isolation
+	jobGuard, _ := CreateProcessJobGuard()
+	if jobGuard != nil {
+		defer jobGuard.Close()
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%w: failed to start agy process: %v", ports.ErrProcessExecution, err)
+	}
+	if jobGuard != nil && cmd.Process != nil {
+		_ = jobGuard.AttachProcess(cmd.Process)
+	}
+
+	runErr := cmd.Wait()
 
 	// 3. Handle Context Timeout or Cancellation
 	if execCtx.Err() != nil {
@@ -305,10 +317,18 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		slog.String("conversation_id", req.ConversationID),
 	)
 
-	// Start subprocess
+	// Start subprocess with JobGuard process tree isolation
+	jobGuard, _ := CreateProcessJobGuard()
+	if jobGuard != nil {
+		defer jobGuard.Close()
+	}
+
 	if err := cmd.Start(); err != nil {
 		slog.ErrorContext(ctx, "Failed to start AGY stream subprocess", slog.String("error", err.Error()))
 		return nil, fmt.Errorf("%w: failed to start agy process: %v", ports.ErrProcessExecution, err)
+	}
+	if jobGuard != nil && cmd.Process != nil {
+		_ = jobGuard.AttachProcess(cmd.Process)
 	}
 
 	parser := NewStreamParser(h.eventBus)

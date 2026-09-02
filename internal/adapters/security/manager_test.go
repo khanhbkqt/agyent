@@ -210,6 +210,31 @@ func TestSecurityManager_PathJailAndDashboard(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionDeny, dec.Decision)
 
+	// Denied directory tools outside workspace
+	for _, tool := range []string{"list_dir", "grep_search", "find_by_name"} {
+		argKey := "DirectoryPath"
+		if tool == "grep_search" {
+			argKey = "SearchPath"
+		} else if tool == "find_by_name" {
+			argKey = "SearchDirectory"
+		}
+		decTool, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			ToolName:     tool,
+			Args:         map[string]interface{}{argKey: filepath.Join(tempDir, "outside_folder")},
+			WorkspaceDir: workspaceDir,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, decTool.Decision, "Tool %s should be blocked outside workspace", tool)
+	}
+
+	// Web search without Url should be allowed
+	decSearch, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "web_search",
+		Args:     map[string]interface{}{"query": "golang 1.27"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, decSearch.Decision)
+
 	// Dashboard summary check
 	summary := mgr.GetDashboardSummary("session-1")
 	assert.Equal(t, domain.PresetBalanced, summary.Preset)
