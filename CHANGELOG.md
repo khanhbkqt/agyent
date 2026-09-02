@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.14] - 2026-09-02
+
+### Added
+- **Smart Abort & Real-Time Steering (`queue_mode: "append"`):** Implemented seamless real-time turn steering allowing inbound user messages to gracefully interrupt active streaming turns via `runner.InterruptStream(sessionKey)` (streaming `{"event": "interrupt"}\n` over STDIN). In-flight atomic tool calls complete safely (`state: "DONE"`) before exit without corrupting workspace files.
+- **Graceful Fallback & Process Tree Watchdog:** Added configurable `grace_timeout_seconds` (default 3.0s) watchdog to ensure clean process termination before escalating to hard process tree kills.
+- **Session Queue Mode Management (`/mode`):** Added `/mode` slash command allowing users to inspect and toggle active session queue mode between sequential FIFO (`/mode fifo`) and real-time append steering (`/mode append`).
+- **Interrupted Turn UI Finalization & Audit Metrics:** Emitted `EventStreamInterrupted` across the event bus, appending clean interruption indicators `[Turn Interrupted by User]` to Telegram messages and recording `StatusInterrupted` in SQLite audit logs.
+
+---
+
 ## [1.0.13] - 2026-09-02
 
 ### Fixed
