@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.17] - 2026-09-03
+
+### Fixed
+- **AGY Stream Pipe Deadlock & Turn Timeout Elimination:** Resolved an issue where streaming turns could block indefinitely until a 5-minute timeout occurred if child AGY processes kept stdin pipes open. `StreamParser` now returns immediately upon receiving the final `result` JSON-RPC event.
+- **Active Child Process Termination:** Actively closes `stdinPipe` upon streaming completion, ensuring child AGY process trees terminate cleanly and release operating system resources.
+- **Thread-Safe Real-Time Steering Control:** Protected `stdinWriter` invocations with a mutex to eliminate race conditions during concurrent real-time steering interrupts.
+- **Interrupted Audit Status Mapping:** Mapped `INTERRUPTED` stream status to `ExecutionResult` error for accurate SQLite audit logging.
+
+---
+
 ## [1.0.16] - 2026-09-02
 
 ### Fixed
