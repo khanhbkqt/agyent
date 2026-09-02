@@ -289,6 +289,22 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 		return nil
 	}
 
+	sessionKey := msg.SessionKey()
+	isAppendMode := false
+	if e.cfg != nil && strings.ToLower(e.cfg.AGY.QueueMode) == "append" {
+		isAppendMode = true
+	}
+
+	if isAppendMode && e.HasActiveTurn(sessionKey) {
+		slog.InfoContext(ctx, "Active turn detected in append mode, signaling soft interrupt",
+			slog.String("session_key", sessionKey),
+			slog.String("sender", msg.Sender.Username),
+		)
+		if e.runner != nil {
+			_ = e.runner.InterruptStream(ctx, sessionKey)
+		}
+	}
+
 	return e.executeTurn(ctx, msg, false)
 }
 
@@ -817,14 +833,30 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	// 9. Record Audit Log & Update State
-	auditStatus := "SUCCESS"
+	auditStatus := domain.StatusSuccess
 	var errMsg string
+	isInterrupted := false
+	if errors.Is(turnCtx.Err(), context.Canceled) || (execErr != nil && strings.Contains(strings.ToLower(execErr.Error()), "cancelled")) {
+		isInterrupted = true
+	}
+
 	if execErr != nil {
-		auditStatus = "ERROR"
-		errMsg = execErr.Error()
+		if isInterrupted {
+			auditStatus = domain.StatusInterrupted
+			errMsg = "Turn execution gracefully interrupted by incoming user message"
+		} else {
+			auditStatus = domain.StatusError
+			errMsg = execErr.Error()
+		}
 	} else if execResult != nil && !execResult.Success {
-		auditStatus = "ERROR"
-		errMsg = execResult.Error
+		if execResult.Error == "INTERRUPTED" {
+			auditStatus = domain.StatusInterrupted
+			errMsg = "Turn execution interrupted by user"
+			isInterrupted = true
+		} else {
+			auditStatus = domain.StatusError
+			errMsg = execResult.Error
+		}
 	}
 
 	audit := &domain.AuditLog{
@@ -854,12 +886,19 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	_ = e.storage.LogAudit(turnCtx, audit)
 
-	if auditStatus == "ERROR" {
+	if auditStatus == domain.StatusError {
 		slog.ErrorContext(ctx, "Turn execution failed",
 			slog.String("session_key", sessionKey),
 			slog.String("agent", agent.Name),
 			slog.String("project", session.ActiveProject),
 			slog.String("error", errMsg),
+			slog.Float64("duration_sec", audit.DurationSeconds),
+		)
+	} else if auditStatus == domain.StatusInterrupted {
+		slog.InfoContext(ctx, "Turn execution interrupted",
+			slog.String("session_key", sessionKey),
+			slog.String("agent", agent.Name),
+			slog.String("project", session.ActiveProject),
 			slog.Float64("duration_sec", audit.DurationSeconds),
 		)
 	} else {
@@ -872,14 +911,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		)
 	}
 
-	if isBootstrap && auditStatus == "SUCCESS" {
+	if isBootstrap && auditStatus == domain.StatusSuccess {
 		agent.Status = domain.StatusInitialized
 		agent.UpdatedAt = time.Now()
 		_ = e.storage.SaveAgent(turnCtx, agent)
 	}
 
 	// Auto-Compact Watchdog Trigger: Check if input_tokens reached threshold
-	if auditStatus == "SUCCESS" && !isEphemeral && e.cfg != nil && e.cfg.AGY.AutoCompact && audit.Usage.InputTokens > 0 {
+	if auditStatus == domain.StatusSuccess && !isEphemeral && e.cfg != nil && e.cfg.AGY.AutoCompact && audit.Usage.InputTokens > 0 {
 		customAliases := make(map[string]string)
 		if e.cfg != nil {
 			customAliases = e.cfg.AGY.ModelAliases
@@ -917,7 +956,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if execErr != nil {
-		if !isStream {
+		if !isStream && !isInterrupted {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
 				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,

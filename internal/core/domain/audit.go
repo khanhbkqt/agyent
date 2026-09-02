@@ -60,6 +60,15 @@ func (t TokenUsage) EffectiveTotalTokens() int {
 	return t.GrossInputTokens() + t.OutputTokens
 }
 
+const (
+	// StatusSuccess indicates normal execution turn completion.
+	StatusSuccess = "SUCCESS"
+	// StatusError indicates execution failure or process crash.
+	StatusError = "ERROR"
+	// StatusInterrupted indicates execution was preempted and gracefully interrupted by a new user message.
+	StatusInterrupted = "INTERRUPTED"
+)
+
 // AuditLog tracks execution history, latency, token metrics, and operational status.
 type AuditLog struct {
 	ID              int64      `json:"id"`
@@ -73,7 +82,7 @@ type AuditLog struct {
 	ResponseLength  int        `json:"response_length"`
 	DurationSeconds float64    `json:"duration_seconds"`
 	Usage           TokenUsage `json:"usage"`
-	Status          string     `json:"status"` // "SUCCESS" | "ERROR"
+	Status          string     `json:"status"` // "SUCCESS" | "ERROR" | "INTERRUPTED"
 	ErrorMessage    string     `json:"error_message,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 }

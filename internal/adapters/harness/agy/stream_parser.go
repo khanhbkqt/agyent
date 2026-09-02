@@ -225,7 +225,16 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					Artifacts:       artifacts,
 				}
 				if p.eventBus != nil {
-					_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
+					if res.Status == "INTERRUPTED" {
+						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
+							SessionKey:     sessionKey,
+							ConversationID: conversationID,
+							Reason:         "Preempted by incoming user message",
+							Timestamp:      time.Now(),
+						}))
+					} else {
+						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
+					}
 				}
 			}
 

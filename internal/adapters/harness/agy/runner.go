@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,6 +20,12 @@ import (
 	"agyent/internal/core/ports"
 )
 
+type streamControlEntry struct {
+	stdinWriter io.WriteCloser
+	cancelFunc  context.CancelFunc
+	interrupted atomic.Bool
+}
+
 // Harness implements ports.RunnerPort to execute AGY CLI subprocesses with STDIN streaming,
 // cross-platform process tree cleanup, JSON boundary extraction, and artifacts detection.
 type Harness struct {
@@ -27,8 +34,10 @@ type Harness struct {
 	defaultEffort              string
 	defaultMode                string
 	dangerouslySkipPermissions bool
+	graceTimeout               time.Duration
 	watcher                    *SnapshotWatcher
 	eventBus                   ports.EventBusPort
+	activeStreams              sync.Map // map[string]*streamControlEntry
 }
 
 // NewHarness constructs a new Harness runner adapter from AGYConfig.
@@ -45,6 +54,10 @@ func NewHarness(cfg config.AGYConfig, bus ...ports.EventBusPort) *Harness {
 	if mode == "" {
 		mode = "accept-edits"
 	}
+	graceTimeout := time.Duration(cfg.GraceTimeoutSeconds * float64(time.Second))
+	if graceTimeout <= 0 {
+		graceTimeout = 3 * time.Second
+	}
 
 	var eb ports.EventBusPort
 	if len(bus) > 0 {
@@ -57,6 +70,7 @@ func NewHarness(cfg config.AGYConfig, bus ...ports.EventBusPort) *Harness {
 		defaultEffort:              effort,
 		defaultMode:                mode,
 		dangerouslySkipPermissions: cfg.DangerouslySkipPermissions,
+		graceTimeout:               graceTimeout,
 		watcher:                    NewSnapshotWatcher(),
 		eventBus:                   eb,
 	}
@@ -289,8 +303,12 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 	cmd.Env = buildCommandEnv(req, sessionKey)
 
-	// STDIN Streaming
-	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
+	// STDIN Streaming via dynamic pipe
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+	defer stdinPipe.Close()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -317,6 +335,16 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		slog.String("conversation_id", req.ConversationID),
 	)
 
+	// Register active stream for soft interrupt
+	if sessionKey != "" {
+		entry := &streamControlEntry{
+			stdinWriter: stdinPipe,
+			cancelFunc:  cancel,
+		}
+		h.activeStreams.Store(sessionKey, entry)
+		defer h.activeStreams.Delete(sessionKey)
+	}
+
 	// Start subprocess with JobGuard process tree isolation
 	jobGuard, _ := CreateProcessJobGuard()
 	if jobGuard != nil {
@@ -330,6 +358,11 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if jobGuard != nil && cmd.Process != nil {
 		_ = jobGuard.AttachProcess(cmd.Process)
 	}
+
+	// Write initial turn payload to stdin pipe
+	go func() {
+		_, _ = stdinPipe.Write(append(inboundJSON, '\n'))
+	}()
 
 	parser := NewStreamParser(h.eventBus)
 	parser.SetOnMilestone(resetWatchdog)
@@ -420,6 +453,55 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	return res, nil
+}
+
+// InterruptStream signals an active streaming turn to gracefully finish its current tool/sub-turn and exit.
+func (h *Harness) InterruptStream(ctx context.Context, sessionKey string) error {
+	val, ok := h.activeStreams.Load(sessionKey)
+	if !ok {
+		return nil // No active stream for this session
+	}
+	entry, ok := val.(*streamControlEntry)
+	if !ok || entry == nil {
+		return nil
+	}
+
+	if !entry.interrupted.CompareAndSwap(false, true) {
+		return nil // Already interrupted
+	}
+
+	slog.InfoContext(ctx, "Sending soft interrupt signal to active stream",
+		slog.String("session_key", sessionKey),
+		slog.Duration("grace_timeout", h.graceTimeout),
+	)
+
+	// 1. Write {"event": "interrupt"}\n to stdin pipe (safely ignoring closed pipe race conditions)
+	if entry.stdinWriter != nil {
+		_, err := entry.stdinWriter.Write([]byte("{\"event\":\"interrupt\"}\n"))
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrClosed) {
+			slog.WarnContext(ctx, "Failed to write interrupt payload to stdin pipe", "error", err)
+		}
+	}
+
+	// 2. Schedule fallback hard kill if process doesn't exit within GraceTimeout
+	graceTimeout := h.graceTimeout
+	if graceTimeout <= 0 {
+		graceTimeout = 3 * time.Second
+	}
+
+	time.AfterFunc(graceTimeout, func() {
+		if curVal, stillActive := h.activeStreams.Load(sessionKey); stillActive && curVal == entry {
+			slog.WarnContext(context.Background(), "Stream did not exit gracefully within grace period, triggering fallback hard-kill",
+				slog.String("session_key", sessionKey),
+				slog.Duration("grace_timeout", graceTimeout),
+			)
+			if entry.cancelFunc != nil {
+				entry.cancelFunc()
+			}
+		}
+	})
+
+	return nil
 }
 
 // HealthCheck verifies that the AGY CLI binary is accessible and executable.

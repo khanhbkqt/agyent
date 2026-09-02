@@ -408,3 +408,51 @@ func TestThrottler_LargeMessageResultOverflow(t *testing.T) {
 	assert.GreaterOrEqual(t, len(mockServer.EditMessages), 1, "Must edit initial message with chunk 0")
 	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Must clean up session")
 }
+
+// TC-THR-10: Stream Interrupted Graceful UI Finalization
+func TestThrottler_StreamInterrupted(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_10")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:112233:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_10",
+	}))
+
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey: sessionKey,
+		TextDelta:  "Processing turn 1...",
+	}))
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	// Emit EventStreamInterrupted
+	err = throttler.OnStreamInterrupted(ctx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_10",
+		Reason:         "Preempted by incoming user message",
+		Timestamp:      time.Now(),
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Session must be cleaned up on interrupt")
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	require.NotEmpty(t, mockServer.EditMessages)
+	lastEdit := mockServer.EditMessages[len(mockServer.EditMessages)-1]
+	assert.Contains(t, lastEdit.Text, "Đã tạm dừng lượt này để nhận chỉ dẫn mới")
+}

@@ -27,6 +27,9 @@ type RunnerPort interface {
 	// ExecuteStream runs an Antigravity prompt in streaming mode, emitting stream events to EventBus and returning the final result.
 	ExecuteStream(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error)
 
+	// InterruptStream signals an active streaming turn to gracefully finish its current tool/sub-turn and exit.
+	InterruptStream(ctx context.Context, sessionKey string) error
+
 	// HealthCheck checks if the underlying CLI binary is accessible and operational.
 	HealthCheck(ctx context.Context) error
 

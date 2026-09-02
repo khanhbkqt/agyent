@@ -617,3 +617,16 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 		}
 	})
 }
+
+func TestHarness_InterruptStream(t *testing.T) {
+	cfg := config.AGYConfig{
+		BinaryPath:          mockBinaryPath,
+		GraceTimeoutSeconds: 0.2,
+	}
+	harness := agy.NewHarness(cfg)
+
+	t.Run("NoActiveStreamReturnsNil", func(t *testing.T) {
+		err := harness.InterruptStream(context.Background(), "non-existent-session")
+		assert.NoError(t, err)
+	})
+}

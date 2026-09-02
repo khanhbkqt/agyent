@@ -220,6 +220,7 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 			a.eventBus.SubscribeSync(domain.EventStreamTool, a.throttler.OnStreamTool),
 			a.eventBus.SubscribeSync(domain.EventStreamResult, a.throttler.OnStreamResult),
 			a.eventBus.SubscribeSync(domain.EventStreamError, a.throttler.OnStreamError),
+			a.eventBus.SubscribeSync(domain.EventStreamInterrupted, a.throttler.OnStreamInterrupted),
 		)
 	}
 

@@ -32,11 +32,13 @@ import (
 // --- MOCK ADAPTERS FOR ENGINE TESTING ---
 
 type mockRunner struct {
-	mu           sync.Mutex
-	executeCalls []domain.ExecutionRequest
-	streamCalls  []domain.ExecutionRequest
-	executeFunc  func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error)
-	streamFunc   func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error)
+	mu             sync.Mutex
+	executeCalls   []domain.ExecutionRequest
+	streamCalls    []domain.ExecutionRequest
+	interruptCalls []string
+	executeFunc    func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error)
+	streamFunc     func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error)
+	interruptFunc  func(ctx context.Context, sessionKey string) error
 }
 
 func (m *mockRunner) Name() string { return "mock-runner" }
@@ -75,6 +77,16 @@ func (m *mockRunner) ExecuteStream(ctx context.Context, req domain.ExecutionRequ
 		DurationSec:    0.3,
 		Usage:          domain.TokenUsage{InputTokens: 12, OutputTokens: 24, TotalTokens: 36},
 	}, nil
+}
+
+func (m *mockRunner) InterruptStream(ctx context.Context, sessionKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.interruptCalls = append(m.interruptCalls, sessionKey)
+	if m.interruptFunc != nil {
+		return m.interruptFunc(ctx, sessionKey)
+	}
+	return nil
 }
 
 func (m *mockRunner) HealthCheck(ctx context.Context) error { return nil }
@@ -1431,4 +1443,116 @@ func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {
 	}
 	err = eng.HandleDebouncedMessage(ctx, newMsg)
 	require.NoError(t, err)
+}
+
+func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {
+	eng, runner, _, _, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+	cfg.AGY.QueueMode = "append"
+	eng.SetStreamingEnabled(true)
+
+	ctx := context.Background()
+	sender := domain.SenderUser{ID: "user-123", Username: "steve"}
+	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
+	sessionKey := "telegram:chat-123"
+
+	// 1. Start long-running turn
+	turn1Started := make(chan struct{})
+	turn1Blocked := make(chan struct{})
+	var startOnce sync.Once
+
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		startOnce.Do(func() {
+			close(turn1Started)
+		})
+		select {
+		case <-turn1Blocked:
+			return &domain.ExecutionResult{
+				Success:        true,
+				ConversationID: "conv-append-1",
+				ResponseText:   "Finished naturally",
+			}, nil
+		default:
+			return &domain.ExecutionResult{
+				Success:        true,
+				ConversationID: "conv-append-2",
+				ResponseText:   "Turn 2 executed successfully",
+			}, nil
+		}
+	}
+
+	go func() {
+		msg1 := domain.CanonicalMessage{
+			ID:        "msg-1",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "First prompt",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg1)
+	}()
+
+	<-turn1Started
+	require.True(t, eng.HasActiveTurn(sessionKey))
+
+	// 2. Incoming steering message in append mode
+	runner.interruptFunc = func(ctx context.Context, sessionKey string) error {
+		// Mock interrupt signal by releasing turn 1 blocked chan
+		close(turn1Blocked)
+		return nil
+	}
+
+	msg2 := domain.CanonicalMessage{
+		ID:        "msg-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "Second steering prompt",
+		Sender:    sender,
+		Chat:      chat,
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg2)
+	require.NoError(t, err)
+
+	runner.mu.Lock()
+	require.Contains(t, runner.interruptCalls, sessionKey, "should call InterruptStream on active turn in append mode")
+	runner.mu.Unlock()
+}
+
+func TestEngine_ModeSlashCommand(t *testing.T) {
+	eng, _, _, _, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	msg := domain.CanonicalMessage{
+		ID:        "cmd-mode",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/mode",
+		Sender:    domain.SenderUser{ID: "123", Username: "user"},
+		Chat:      domain.ChatContext{ID: "123", Type: "private"},
+	}
+
+	// 1. Query current mode
+	out, err := eng.HandleCommand(ctx, msg)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Contains(t, out.Text, "fifo")
+
+	// 2. Switch to append mode
+	msg.Text = "/mode append"
+	out, err = eng.HandleCommand(ctx, msg)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Contains(t, out.Text, "append")
+	assert.Equal(t, "append", cfg.AGY.QueueMode)
+
+	// 3. Switch back to fifo mode
+	msg.Text = "/mode fifo"
+	out, err = eng.HandleCommand(ctx, msg)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Contains(t, out.Text, "fifo")
+	assert.Equal(t, "fifo", cfg.AGY.QueueMode)
 }

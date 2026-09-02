@@ -77,8 +77,20 @@ Uses `time.Timer` and a buffer queue to coalesce rapid fragmented user messages 
 
 ---
 
+### Stage 3.1: Real-Time Steering & Smart Abort (Append Mode)
+When `queue_mode: "append"` is configured (or toggled via `/mode append`), incoming messages do not wait blindly in the FIFO lock queue if a turn is actively executing:
+1. **Debouncer Shield:** Inbound messages still pass through the debouncer window (1.5s–2.0s) to prevent process thrashing when a user rapidly sends multiple fragmented messages.
+2. **Soft Interrupt Signal:** `Engine` issues `runner.InterruptStream(sessionKey)`, which streams `{"event": "interrupt"}\n` over STDIN to `agy.exe`.
+3. **Safe Checkpoint Boundary:** `agy` CLI finishes its active atomic sub-turn/tool (e.g. `write_to_file`, `git commit`), flushes its `transcript.jsonl` cleanly, emits `status: "INTERRUPTED"`, and exits.
+4. **GraceTimeout Fallback:** If a long-running tool (e.g. heavy compilation) does not exit within `grace_timeout_seconds` (default 3.0s), the engine automatically falls back to controlled OS process tree termination (`JobGuard` / `killProcessTree`).
+5. **UI Stream Finalization:** `DeliveryThrottler` appends a pause indicator (`⏸️ Đã tạm dừng lượt này để nhận chỉ dẫn mới...`), drains background workers, and cleanly finalizes the message.
+6. **Continuation Handover:** Turn 2 acquires the `SessionLockManager` lock without race conditions and seamlessly continues using the established `--conversation <id>`, preserving Level 0–3 KV-cache prefix invariance (85–95% cache hit rates).
+
+---
+
 ### Stage 4: Per-Session Concurrency Locking
-- Each `SessionKey` is protected by a dedicated `sync.Mutex`.
+- Each `SessionKey` is protected by a dedicated `sync.Mutex` and reference-counted `lockEntry`.
+- In `fifo` mode (default), subsequent turns wait sequentially on `sem`. In `append` mode, the active turn drains at its safe checkpoint before the waiting turn acquires the lock.
 - If an execution exceeds 300s, the timeout watchdog automatically terminates the subprocess and releases the lock. The `/force_unlock` slash command is supported for emergency releases.
 
 ---

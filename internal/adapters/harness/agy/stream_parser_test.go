@@ -175,4 +175,33 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		// Notice 4 deltas were ignored and did NOT trigger milestone!
 		assert.Equal(t, 4, count, "should only trigger milestone on init, tools, and result (ignoring text deltas)")
 	})
+
+	t.Run("TC-BRG-06_StreamInterruptedStatusHandling", func(t *testing.T) {
+		var interruptedEvt *domain.StreamInterruptedPayload
+		var mu sync.Mutex
+
+		bus.SubscribeSync(domain.EventStreamInterrupted, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			p := evt.Payload.(domain.StreamInterruptedPayload)
+			interruptedEvt = &p
+			mu.Unlock()
+			return nil
+		})
+
+		ndjson := `
+{"event":"init","conversation_id":"c-interrupted"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"starting..."}}
+{"event":"result","result":{"conversation_id":"c-interrupted","status":"INTERRUPTED","response":"partial"}}
+`
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:interrupted", strings.NewReader(ndjson))
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.Equal(t, "INTERRUPTED", res.Status)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.NotNil(t, interruptedEvt)
+		assert.Equal(t, "telegram:interrupted", interruptedEvt.SessionKey)
+		assert.Equal(t, "c-interrupted", interruptedEvt.ConversationID)
+	})
 }

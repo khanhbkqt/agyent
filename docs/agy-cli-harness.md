@@ -160,3 +160,20 @@ In addition to batch execution, the `agy` Harness supports **Real-Time Streaming
 - **Live Tool Status Dispatching:** Emits `ToolExecutingEvent` when tools transition to `ACTIVE` state (e.g. `generate_image`, `list_dir`, `run_command`).
 - **Interactive Multi-turn STDIN Session:** Keeps a persistent `agy` process alive and pipes subsequent messages via STDIN JSON format `{"event":"user","message":{"content":"..."}}`.
 - **Detailed Specification:** See [AGY Streaming Protocol](agy-streaming-protocol.md).
+
+---
+
+## 7. Smart Abort & Real-time Steering Protocol
+
+When running in streaming mode with `queue_mode: "append"`, `Harness` implements a 2-stage graceful interrupt mechanism:
+
+1. **Soft Interrupt via STDIN Pipe:**
+   - Active streams are registered in `h.activeStreams sync.Map`.
+   - `InterruptStream(sessionKey)` writes `{"event": "interrupt"}\n` directly to the stdin pipe.
+   - `agy.exe` detects the interrupt event at its active sub-turn/tool boundary, flushes `transcript.jsonl`, emits `status: "INTERRUPTED"`, and exits cleanly.
+2. **GraceTimeout Watchdog & Fallback Hard-Kill:**
+   - If `agy.exe` is blocked on a long-running external process (e.g. `npm install`), `Harness` arms a fallback timer `time.AfterFunc(graceTimeout, ...)`.
+   - If the process fails to exit within `graceTimeout` (default 3.0s), the context cancellation handler invokes `killProcessTree` via Windows Kernel Job Objects or Unix PGID.
+3. **Lossless Conversation Handover:**
+   - Because `agy.exe` checkpoints its state before exit, subsequent turns continue seamlessly with `--conversation <id>`, preserving Level 0–3 Gemini KV-cache hit rates.
+

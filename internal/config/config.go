@@ -64,6 +64,9 @@ type AGYConfig struct {
 	StreamingThrottleIntervalSeconds float64           `yaml:"streaming_throttle_interval_seconds" json:"streaming_throttle_interval_seconds"`
 	AutoCompact                      bool              `yaml:"auto_compact" json:"auto_compact"`
 	CompactThresholdRatio            float64           `yaml:"compact_threshold_ratio" json:"compact_threshold_ratio"`
+	QueueMode                        string            `yaml:"queue_mode" json:"queue_mode"`           // "fifo" | "append"
+	AppendStrategy                   string            `yaml:"append_strategy" json:"append_strategy"` // "coalesce" | "replace"
+	GraceTimeoutSeconds              float64           `yaml:"grace_timeout_seconds" json:"grace_timeout_seconds"`
 }
 
 // StorageConfig contains SQLite and filesystem workspace storage configuration.
@@ -212,6 +215,9 @@ func DefaultConfig() *Config {
 			StreamingThrottleIntervalSeconds: 1.5,
 			AutoCompact:                      true,
 			CompactThresholdRatio:            0.70,
+			QueueMode:                        "fifo",
+			AppendStrategy:                   "coalesce",
+			GraceTimeoutSeconds:              3.0,
 		},
 		Storage: StorageConfig{
 			DBPath:                   "~/.agyent/agyent.db",

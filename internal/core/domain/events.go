@@ -15,11 +15,12 @@ const (
 	EventErrorOccurred    EventType = "error.occurred"
 
 	// Real-Time Streaming Events
-	EventStreamInit   EventType = "stream.init"
-	EventStreamDelta  EventType = "stream.delta"
-	EventStreamTool   EventType = "stream.tool"
-	EventStreamResult EventType = "stream.result"
-	EventStreamError  EventType = "stream.error"
+	EventStreamInit        EventType = "stream.init"
+	EventStreamDelta       EventType = "stream.delta"
+	EventStreamTool        EventType = "stream.tool"
+	EventStreamResult      EventType = "stream.result"
+	EventStreamError       EventType = "stream.error"
+	EventStreamInterrupted EventType = "stream.interrupted"
 
 	// Subagent Lifecycle & Coordination Events
 	EventSubagentDispatched   EventType = "subagent.dispatched"
@@ -113,6 +114,16 @@ type StreamErrorPayload struct {
 }
 
 func (p StreamErrorPayload) GetSessionKey() string { return p.SessionKey }
+
+// StreamInterruptedPayload carries notification that an active stream was gracefully interrupted by an incoming turn.
+type StreamInterruptedPayload struct {
+	SessionKey     string    `json:"session_key"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	Reason         string    `json:"reason,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
+}
+
+func (p StreamInterruptedPayload) GetSessionKey() string { return p.SessionKey }
 
 // Event represents an internal system event broadcast across the application.
 type Event struct {

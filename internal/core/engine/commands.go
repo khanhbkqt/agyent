@@ -66,6 +66,9 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/stream":
 		responseText = e.handleStreamCommand(args)
 
+	case "/mode", "/queuemode":
+		responseText = e.handleModeCommand(args)
+
 	case "/model", "/m", "/models":
 		responseText, inlineKeyboard = e.handleModelCommand(ctx, session, args)
 
@@ -748,6 +751,26 @@ func (e *Engine) handleStreamCommand(args []string) string {
 	default:
 		return "⚠️ Invalid argument. Use `/stream on` or `/stream off`."
 	}
+}
+
+func (e *Engine) handleModeCommand(args []string) string {
+	if len(args) == 0 {
+		currentMode := "fifo"
+		if e.cfg != nil && e.cfg.AGY.QueueMode != "" {
+			currentMode = strings.ToLower(e.cfg.AGY.QueueMode)
+		}
+		return fmt.Sprintf("⚙️ <b>Queue Mode:</b> <code>%s</code>\n\nOptions:\n• <code>/mode fifo</code>: Sequential turn queuing (waits for current turn to complete).\n• <code>/mode append</code>: Real-time steering (smart aborts active turn at checkpoint and runs new prompt).", currentMode)
+	}
+
+	mode := strings.ToLower(args[0])
+	if mode != "fifo" && mode != "append" {
+		return "⚠️ Invalid mode. Please specify <code>/mode fifo</code> or <code>/mode append</code>."
+	}
+
+	if e.cfg != nil {
+		e.cfg.AGY.QueueMode = mode
+	}
+	return fmt.Sprintf("✅ <b>Queue mode updated to:</b> <code>%s</code>", mode)
 }
 
 func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {

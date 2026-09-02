@@ -153,6 +153,11 @@ When contributing or modifying code, agents **must adhere** to the following non
 - Structure log messages with key-value pairs (e.g. `slog.Info("executing turn", "session_key", key, "agent", agentName)`).
 - Never log sensitive API keys, bot tokens, or credentials in plain text.
 
+### 4.5. Real-Time Steering & Safe Checkpoint Interruption
+- When `queue_mode: "append"` is enabled, in-flight turns must be gracefully interrupted via `runner.InterruptStream(sessionKey)` (streaming `{"event": "interrupt"}\n` over STDIN) to allow active atomic tool operations to complete safely (`state: "DONE"`) before exit.
+- Always apply `grace_timeout_seconds` (default 3.0s) watchdog fallback before triggering hard process tree termination.
+- Zero Context Leakage: Always clear active stream mappings via `defer h.activeStreams.Delete(sessionKey)`.
+
 ---
 
 ## 5. Development & Verification Commands

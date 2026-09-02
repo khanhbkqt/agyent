@@ -320,11 +320,42 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 
 	// Zero-idle cleanup
 	dt.sessions.Delete(p.SessionKey)
-
 	return nil
 }
 
-// OnStreamError handles unexpected stream failure or crash.
+// OnStreamInterrupted handles graceful stream interruption by appending a pause indicator and finalizing the message cleanly.
+func (dt *DeliveryThrottler) OnStreamInterrupted(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamInterruptedPayload)
+	if !ok {
+		return nil
+	}
+
+	val, exists := dt.sessions.Load(p.SessionKey)
+	if !exists {
+		return nil
+	}
+	sess := val.(*StreamSession)
+
+	sess.Mu.Lock()
+	sess.State = StateFinalizing
+	currentText := sess.Buffer.String()
+	if strings.TrimSpace(currentText) != "" {
+		sess.Buffer.WriteString("\n\n⏸️ <i>Đã tạm dừng lượt này để nhận chỉ dẫn mới...</i>")
+	} else {
+		sess.Buffer.WriteString("⏸️ <i>Đã tạm dừng lượt này để nhận chỉ dẫn mới...</i>")
+	}
+	sess.Dirty = true
+	sess.Mu.Unlock()
+
+	// Trigger worker to finalize edit cleanly
+	sess.closeWorker()
+	<-sess.WorkerDone
+
+	dt.sessions.Delete(p.SessionKey)
+	return nil
+}
+
+// OnStreamError handles stream failure by flushing error and closing session.
 func (dt *DeliveryThrottler) OnStreamError(ctx context.Context, evt domain.Event) error {
 	p, ok := evt.Payload.(domain.StreamErrorPayload)
 	if !ok {
