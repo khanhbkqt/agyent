@@ -3,9 +3,11 @@ package agy_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/core/domain"
@@ -203,5 +205,27 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		require.NotNil(t, interruptedEvt)
 		assert.Equal(t, "telegram:interrupted", interruptedEvt.SessionKey)
 		assert.Equal(t, "c-interrupted", interruptedEvt.ConversationID)
+	})
+
+	t.Run("TC-BRG-07_ReturnsImmediatelyOnResultWithoutWaitingForEOF", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		defer pr.Close()
+
+		go func() {
+			_, _ = pw.Write([]byte("{\"event\":\"init\",\"conversation_id\":\"c-immediate\"}\n"))
+			_, _ = pw.Write([]byte("{\"event\":\"result\",\"result\":{\"conversation_id\":\"c-immediate\",\"status\":\"SUCCESS\",\"response\":\"done\"}}\n"))
+			// Deliberately keep pw OPEN to simulate open pipe from running subprocess
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		res, err := parser.ParseAndEmitStream(ctx, "telegram:imm", pr)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.Equal(t, "SUCCESS", res.Status)
+		assert.Equal(t, "c-immediate", res.ConversationID)
+		assert.Equal(t, "done", res.Response)
+		_ = pw.Close()
 	})
 }

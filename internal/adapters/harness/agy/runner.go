@@ -21,6 +21,7 @@ import (
 )
 
 type streamControlEntry struct {
+	mu          sync.Mutex
 	stdinWriter io.WriteCloser
 	cancelFunc  context.CancelFunc
 	interrupted atomic.Bool
@@ -336,8 +337,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	)
 
 	// Register active stream for soft interrupt
+	var entry *streamControlEntry
 	if sessionKey != "" {
-		entry := &streamControlEntry{
+		entry = &streamControlEntry{
 			stdinWriter: stdinPipe,
 			cancelFunc:  cancel,
 		}
@@ -361,6 +363,10 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 
 	// Write initial turn payload to stdin pipe
 	go func() {
+		if entry != nil {
+			entry.mu.Lock()
+			defer entry.mu.Unlock()
+		}
 		_, _ = stdinPipe.Write(append(inboundJSON, '\n'))
 	}()
 
@@ -381,6 +387,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		return arts
 	})
 	streamRes, parseErr := parser.ParseAndEmitStream(execCtx, sessionKey, stdoutPipe)
+
+	// Ensure stdinPipe is closed so subprocess unblocks on STDIN read and exits cleanly
+	_ = stdinPipe.Close()
 
 	// Ensure stdoutPipe is closed so subprocess unblocks if still writing, preventing cmd.Wait() deadlock
 	_ = stdoutPipe.Close()
@@ -437,6 +446,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		Error:          streamRes.Error,
 		Artifacts:      streamRes.Artifacts,
 	}
+	if streamRes.Status == "INTERRUPTED" && res.Error == "" {
+		res.Error = "INTERRUPTED"
+	}
 
 	// Fallback detect artifacts if not captured during stream
 	if len(res.Artifacts) == 0 {
@@ -477,7 +489,9 @@ func (h *Harness) InterruptStream(ctx context.Context, sessionKey string) error 
 
 	// 1. Write {"event": "interrupt"}\n to stdin pipe (safely ignoring closed pipe race conditions)
 	if entry.stdinWriter != nil {
+		entry.mu.Lock()
 		_, err := entry.stdinWriter.Write([]byte("{\"event\":\"interrupt\"}\n"))
+		entry.mu.Unlock()
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrClosed) {
 			slog.WarnContext(ctx, "Failed to write interrupt payload to stdin pipe", "error", err)
 		}

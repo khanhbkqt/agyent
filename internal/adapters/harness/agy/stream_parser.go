@@ -236,7 +236,17 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
 					}
 				}
+			} else {
+				lastResult = &domain.StreamResultPayload{
+					SessionKey:     sessionKey,
+					ConversationID: conversationID,
+					Status:         "SUCCESS",
+				}
+				if p.eventBus != nil {
+					_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
+				}
 			}
+			return lastResult, nil
 
 		case "error":
 			hasResult = true
