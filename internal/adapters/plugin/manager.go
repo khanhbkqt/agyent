@@ -42,8 +42,17 @@ func NewPluginManager(builtinDir string, embeddedFS *embed.FS) *PluginManager {
 func (m *PluginManager) ListPlugins(ctx context.Context, globalHome, workspaceDir string) ([]domain.Plugin, error) {
 	pluginMap := make(map[string]domain.Plugin)
 
-	// 1. Scan Built-in Plugins from disk if available
-	scannedFromDisk := false
+	// 1. Base / Fallback: Embedded Plugins
+	if m.embeddedFS != nil {
+		embeddedPlugins, err := m.ListEmbeddedPlugins(ctx)
+		if err == nil {
+			for _, ep := range embeddedPlugins {
+				pluginMap[ep.Manifest.Name] = ep
+			}
+		}
+	}
+
+	// 2. Built-in Plugins from disk if available (e.g. dev repository root)
 	if m.builtinDir != "" {
 		builtinRoot := m.builtinDir
 		if !filepath.IsAbs(builtinRoot) {
@@ -53,29 +62,30 @@ func (m *PluginManager) ListPlugins(ctx context.Context, globalHome, workspaceDi
 		}
 		if stat, err := os.Stat(builtinRoot); err == nil && stat.IsDir() {
 			m.scanPluginsInDir(builtinRoot, domain.ScopeGlobal, pluginMap)
-			scannedFromDisk = true
 		}
 	}
 
-	// 1b. Fallback to Embedded Plugins if builtin directory not present on disk
-	if !scannedFromDisk && m.embeddedFS != nil {
-		embeddedPlugins, err := m.ListEmbeddedPlugins(ctx)
-		if err == nil {
-			for _, ep := range embeddedPlugins {
-				pluginMap[ep.Manifest.Name] = ep
-			}
-		}
+	// 3. Standard User Global Plugins (~/.agyent/plugins/)
+	if home, err := os.UserHomeDir(); err == nil {
+		defaultGlobalDir := filepath.Join(home, ".agyent", "plugins")
+		m.scanPluginsInDir(defaultGlobalDir, domain.ScopeGlobal, pluginMap)
 	}
 
-	// 2. Scan Global Plugins (~/.agyent/plugins/)
+	// 4. Global Home / Agent Workspace Plugins (e.g. ~/.agyent/agents/<name>/)
 	if globalHome != "" {
 		globalPluginRoot := filepath.Join(globalHome, "plugins")
 		m.scanPluginsInDir(globalPluginRoot, domain.ScopeGlobal, pluginMap)
+
+		dotAgentsPluginRoot := filepath.Join(globalHome, ".agents", "plugins")
+		m.scanPluginsInDir(dotAgentsPluginRoot, domain.ScopeGlobal, pluginMap)
 	}
 
-	// 3. Scan Workspace Plugins (<project>/.agents/plugins/)
-	if workspaceDir != "" {
-		wsPluginRoot := filepath.Join(workspaceDir, ".agents", "plugins")
+	// 5. Workspace / Project Plugins (<project>/.agents/plugins/ and <project>/plugins/)
+	if workspaceDir != "" && workspaceDir != globalHome {
+		wsDotAgentsRoot := filepath.Join(workspaceDir, ".agents", "plugins")
+		m.scanPluginsInDir(wsDotAgentsRoot, domain.ScopeWorkspace, pluginMap)
+
+		wsPluginRoot := filepath.Join(workspaceDir, "plugins")
 		m.scanPluginsInDir(wsPluginRoot, domain.ScopeWorkspace, pluginMap)
 	}
 
@@ -132,9 +142,48 @@ func (m *PluginManager) ListEmbeddedPlugins(ctx context.Context) ([]domain.Plugi
 				for name, srv := range cfg.MCPServers {
 					srv.ServerName = name
 					srv.Scope = domain.ScopeGlobal
+					srv.Command = resolveCommandPath(srv.Command)
+
+					// If plugin is on disk in ~/.agyent/plugins/<pluginName>, resolve script arg paths
+					if home, hErr := os.UserHomeDir(); hErr == nil {
+						diskPluginDir := filepath.Join(home, ".agyent", "plugins", pluginName)
+						if len(srv.Args) > 0 {
+							for i, arg := range srv.Args {
+								if !filepath.IsAbs(arg) && (strings.HasSuffix(arg, ".py") || strings.HasSuffix(arg, ".js") || strings.HasSuffix(arg, ".sh")) {
+									localTarget := filepath.Join(diskPluginDir, arg)
+									if _, statErr := os.Stat(localTarget); statErr == nil {
+										srv.Args[i] = localTarget
+									}
+								}
+							}
+						}
+					}
+
 					p.MCPServers = append(p.MCPServers, srv)
 				}
 			}
+		}
+
+		// Load embedded Skills (plugins/<pluginName>/skills/*/SKILL.md)
+		skillsDir := fmt.Sprintf("plugins/%s/skills", pluginName)
+		if skillEntries, err := m.embeddedFS.ReadDir(skillsDir); err == nil {
+			for _, se := range skillEntries {
+				if !se.IsDir() {
+					continue
+				}
+				skillFile := fmt.Sprintf("%s/%s/SKILL.md", skillsDir, se.Name())
+				if skillData, err := m.embeddedFS.ReadFile(skillFile); err == nil {
+					if header, err := contextAdapter.ParseSkillHeaderFromBytes(skillData, skillFile, domain.ScopeGlobal); err == nil && header != nil {
+						p.Skills = append(p.Skills, *header)
+					}
+				}
+			}
+		}
+
+		// Load embedded Rules (plugins/<pluginName>/rules/AGENTS.md)
+		rulesFile := fmt.Sprintf("plugins/%s/rules/AGENTS.md", pluginName)
+		if ruleData, err := m.embeddedFS.ReadFile(rulesFile); err == nil && len(strings.TrimSpace(string(ruleData))) > 0 {
+			p.Rules = strings.TrimSpace(string(ruleData))
 		}
 
 		results = append(results, p)
@@ -466,9 +515,30 @@ func (m *PluginManager) TogglePlugin(ctx context.Context, pluginName string, ena
 		return fmt.Errorf("plugin %q not found", pluginName)
 	}
 
-	targetPlugin.Manifest.Enabled = enabled
-	manifestPath := filepath.Join(targetPlugin.Path, "plugin.json")
+	var manifestPath string
+	if strings.HasPrefix(targetPlugin.Path, "embedded:") || targetPlugin.Path == "" {
+		// Plugin is embedded only and not yet on disk.
+		// Auto-extract it so that plugin.json can be safely modified on disk.
+		var destDir string
+		if scope == domain.ScopeWorkspace && workspaceDir != "" {
+			destDir = filepath.Join(workspaceDir, ".agents", "plugins")
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to resolve user home: %w", err)
+			}
+			destDir = filepath.Join(home, ".agyent", "plugins")
+		}
+		_, err = m.ExtractPluginAtomic(ctx, pluginName, destDir, true)
+		if err != nil {
+			return fmt.Errorf("failed to extract embedded plugin to disk for toggling: %w", err)
+		}
+		manifestPath = filepath.Join(destDir, pluginName, "plugin.json")
+	} else {
+		manifestPath = filepath.Join(targetPlugin.Path, "plugin.json")
+	}
 
+	targetPlugin.Manifest.Enabled = enabled
 	data, err := json.MarshalIndent(targetPlugin.Manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated manifest: %w", err)

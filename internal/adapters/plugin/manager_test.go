@@ -16,7 +16,11 @@ import (
 )
 
 func TestPluginManager_ListAndAssemble(t *testing.T) {
-	globalDir := t.TempDir()
+	fakeHome := t.TempDir()
+	t.Setenv("USERPROFILE", fakeHome)
+	t.Setenv("HOME", fakeHome)
+
+	globalDir := filepath.Join(fakeHome, ".agyent")
 	wsDir := t.TempDir()
 	builtinDir := t.TempDir()
 
@@ -178,3 +182,111 @@ func TestPluginManager_ProvenanceAndDowngradeProtection(t *testing.T) {
 	assert.True(t, resDowngrade.Skipped)
 	assert.Equal(t, "already up-to-date", resDowngrade.Reason)
 }
+
+func TestPluginManager_MultiAgentScopedDiscovery(t *testing.T) {
+	// Create mock global ~/.agyent/plugins and agent ~/.agyent/agents/lyly
+	fakeHome := t.TempDir()
+	t.Setenv("USERPROFILE", fakeHome)
+	t.Setenv("HOME", fakeHome)
+
+	globalPluginDir := filepath.Join(fakeHome, ".agyent", "plugins", "browser-camoufox")
+	require.NoError(t, os.MkdirAll(filepath.Join(globalPluginDir, "skills", "web-browse-camoufox"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(globalPluginDir, "rules"), 0755))
+
+	manifest := domain.PluginManifest{
+		Name:        "browser-camoufox",
+		Version:     "1.2.1",
+		Description: "Stealth browser plugin",
+		Enabled:     true,
+	}
+	manifestData, _ := json.MarshalIndent(manifest, "", "  ")
+	require.NoError(t, os.WriteFile(filepath.Join(globalPluginDir, "plugin.json"), manifestData, 0644))
+
+	mcpCfg := map[string]any{
+		"mcpServers": map[string]any{
+			"camoufox-browser": map[string]any{
+				"command": "python",
+				"args":    []string{"server.py"},
+			},
+		},
+	}
+	mcpData, _ := json.MarshalIndent(mcpCfg, "", "  ")
+	require.NoError(t, os.WriteFile(filepath.Join(globalPluginDir, "mcp_config.json"), mcpData, 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(globalPluginDir, "server.py"), []byte("# server"), 0644))
+
+	skillContent := "---\nname: web-browse-camoufox\ndescription: Stealth browser\n---\n# Camoufox"
+	require.NoError(t, os.WriteFile(filepath.Join(globalPluginDir, "skills", "web-browse-camoufox", "SKILL.md"), []byte(skillContent), 0644))
+
+	// Mock agent directory for secondary agent "lyly"
+	agentDir := filepath.Join(fakeHome, ".agyent", "agents", "lyly")
+	require.NoError(t, os.MkdirAll(agentDir, 0755))
+
+	mgr := pluginAdapter.NewPluginManager("", &builtin.EmbeddedPluginsFS)
+	ctx := context.Background()
+
+	// 1. ListPlugins when caller passes agentDir as globalHome
+	plugins, err := mgr.ListPlugins(ctx, agentDir, agentDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, plugins)
+
+	var camoufoxPlugin *domain.Plugin
+	for _, p := range plugins {
+		if p.Manifest.Name == "browser-camoufox" {
+			camoufoxPlugin = &p
+			break
+		}
+	}
+	require.NotNil(t, camoufoxPlugin)
+	assert.Equal(t, globalPluginDir, camoufoxPlugin.Path)
+	assert.True(t, camoufoxPlugin.Manifest.Enabled)
+
+	// Verify MCP server args converted to absolute on-disk path
+	require.NotEmpty(t, camoufoxPlugin.MCPServers)
+	assert.Equal(t, "camoufox-browser", camoufoxPlugin.MCPServers[0].ServerName)
+	assert.Equal(t, filepath.Join(globalPluginDir, "server.py"), camoufoxPlugin.MCPServers[0].Args[0])
+
+	// 2. AssembleActivePlugins for agent
+	resolved, err := mgr.AssembleActivePlugins(ctx, agentDir, agentDir)
+	require.NoError(t, err)
+	require.NotEmpty(t, resolved.ActivePlugins)
+	require.NotEmpty(t, resolved.ActiveMCPServers)
+	assert.Equal(t, filepath.Join(globalPluginDir, "server.py"), resolved.ActiveMCPServers[0].Args[0])
+
+	// 3. Test TogglePlugin on disk
+	err = mgr.TogglePlugin(ctx, "browser-camoufox", false, domain.ScopeGlobal, agentDir)
+	require.NoError(t, err)
+
+	resolvedAfterDisable, err := mgr.AssembleActivePlugins(ctx, agentDir, agentDir)
+	require.NoError(t, err)
+
+	var hasCamoufox bool
+	for _, p := range resolvedAfterDisable.ActivePlugins {
+		if p.Manifest.Name == "browser-camoufox" {
+			hasCamoufox = true
+		}
+	}
+	assert.False(t, hasCamoufox)
+}
+
+func TestPluginManager_ToggleEmbeddedPluginAutoExtract(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("USERPROFILE", fakeHome)
+	t.Setenv("HOME", fakeHome)
+
+	mgr := pluginAdapter.NewPluginManager("", &builtin.EmbeddedPluginsFS)
+	ctx := context.Background()
+
+	// Toggle plugin that only exists in embeddedFS -> should auto-extract to ~/.agyent/plugins and toggle
+	err := mgr.TogglePlugin(ctx, "browser-camoufox", true, domain.ScopeGlobal, "")
+	require.NoError(t, err)
+
+	extractedManifest := filepath.Join(fakeHome, ".agyent", "plugins", "browser-camoufox", "plugin.json")
+	assert.FileExists(t, extractedManifest)
+
+	data, err := os.ReadFile(extractedManifest)
+	require.NoError(t, err)
+	var manifest domain.PluginManifest
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	assert.True(t, manifest.Enabled)
+}
+

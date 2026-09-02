@@ -63,6 +63,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/plugins", "/plugin":
 		responseText = e.handlePluginsCommand(ctx, session, args)
 
+	case "/browser":
+		responseText = "🌐 **Camoufox Browser Plugin**\n\n" +
+			"• To check plugin status: `/plugins`\n" +
+			"• To enable: `/plugin enable browser-camoufox`\n" +
+			"• To browse or scrape: Prompt your agent in natural language (e.g. _\"Mở website https://... và cào danh sách sản phẩm\"_), and the agent will automatically use native `camoufox_*` MCP tools."
+
 	case "/stream":
 		responseText = e.handleStreamCommand(args)
 
@@ -669,6 +675,11 @@ func (e *Engine) handlePluginsCommand(ctx context.Context, session *domain.Sessi
 		return "⚠️ PluginManager is not configured on this engine."
 	}
 
+	targetScope := domain.ScopeGlobal
+	if session.ActiveProject != "" {
+		targetScope = domain.ScopeWorkspace
+	}
+
 	if len(args) == 0 || args[0] == "list" {
 		plugins, err := e.pluginManager.ListPlugins(ctx, agentPath, wsDir)
 		if err != nil {
@@ -699,7 +710,7 @@ func (e *Engine) handlePluginsCommand(ctx context.Context, session *domain.Sessi
 			return "⚠️ Usage: `/plugin enable <plugin_name>`"
 		}
 		name := args[1]
-		err := e.pluginManager.TogglePlugin(ctx, name, true, domain.ScopeWorkspace, wsDir)
+		err := e.pluginManager.TogglePlugin(ctx, name, true, targetScope, wsDir)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to enable plugin %q: %v", name, err)
 		}
@@ -710,7 +721,7 @@ func (e *Engine) handlePluginsCommand(ctx context.Context, session *domain.Sessi
 			return "⚠️ Usage: `/plugin disable <plugin_name>`"
 		}
 		name := args[1]
-		err := e.pluginManager.TogglePlugin(ctx, name, false, domain.ScopeWorkspace, wsDir)
+		err := e.pluginManager.TogglePlugin(ctx, name, false, targetScope, wsDir)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to disable plugin %q: %v", name, err)
 		}
@@ -721,7 +732,7 @@ func (e *Engine) handlePluginsCommand(ctx context.Context, session *domain.Sessi
 			return "⚠️ Usage: `/plugin install <builtin_plugin_name>`\nAvailable builtins: `browser-camoufox`, `system-diagnostics`, `database-sqlite`"
 		}
 		name := args[1]
-		err := e.pluginManager.InstallBuiltinPlugin(ctx, name, domain.ScopeWorkspace, wsDir)
+		err := e.pluginManager.InstallBuiltinPlugin(ctx, name, targetScope, wsDir)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to install plugin %q: %v", name, err)
 		}

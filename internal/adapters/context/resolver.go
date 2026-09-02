@@ -240,13 +240,8 @@ func (r *ContextResolver) scanSkillsFromDir(skillsRoot string, scope domain.Cont
 	}
 }
 
-// SafeParseSkillHeader safely parses YAML frontmatter delimiters (---) from a SKILL.md file.
-func SafeParseSkillHeader(filePath string, scope domain.ContextScope) (*domain.SkillHeader, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read skill file: %w", err)
-	}
-
+// ParseSkillHeaderFromBytes safely parses YAML frontmatter delimiters (---) from raw SKILL.md bytes.
+func ParseSkillHeaderFromBytes(data []byte, filePath string, scope domain.ContextScope) (*domain.SkillHeader, error) {
 	content := string(data)
 	if !strings.HasPrefix(content, "---") {
 		return nil, fmt.Errorf("missing YAML frontmatter delimiters in %s", filePath)
@@ -277,4 +272,13 @@ func SafeParseSkillHeader(filePath string, scope domain.ContextScope) (*domain.S
 		FilePath:    filePath,
 		Scope:       scope,
 	}, nil
+}
+
+// SafeParseSkillHeader safely parses YAML frontmatter delimiters (---) from a SKILL.md file.
+func SafeParseSkillHeader(filePath string, scope domain.ContextScope) (*domain.SkillHeader, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read skill file: %w", err)
+	}
+	return ParseSkillHeaderFromBytes(data, filePath, scope)
 }
