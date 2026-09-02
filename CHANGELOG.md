@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.13] - 2026-09-02
+
+### Fixed
+- **Security Gateway Evaluation & Path Jail Enforcement:** Added explicit path jail enforcement for read/search tools (`list_dir`, `grep_search`, `find_by_name`) and fixed `web_search` parameter evaluation when query-based lookups lack target URLs.
+- **Deterministic Level 3 Prefix KV-Cache Sorting:** Sorted progressive skills metadata deterministically by name in ContextResolver to preserve Gemini Prefix KV-Cache invariant and maintain >85% cache hit efficiency.
+- **Process Tree Cleanup with ProcessJobGuard:** Attached harness runner subprocesses to `ProcessJobGuard` (Windows Kernel Job Objects / Unix process groups) ensuring complete termination of runaway child processes.
+- **Subagent Double-Dispatch Elimination:** Pre-registered background subagent tasks directly in the registry upon dispatch to prevent duplicate polling execution in `pollerLoop`.
+- **Slash Commands Directory Traversal Validation:** Added strict regex validation for `/agent` and `/project` commands to block path traversal sequences (`..`, `/`, `\`).
+- **Telegram Stream Execution Error Visibility:** Propagated stream execution errors to `DeliveryThrottler` to surface unhandled error notices immediately to users.
+
+---
+
 ## [1.0.12] - 2026-09-01
 
 ### Fixed
