@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.16] - 2026-09-02
+
+### Fixed
+- **MCP Server Crash & Handshake Blocking Prevention:** Resolved critical regression where `browser-camoufox/server.py` crashed on startup when `camoufox` Python dependencies were uninstalled on host VPS environments. Added safe optional imports and eliminated blocking daemon loops during `initialize` handshake to guarantee sub-millisecond JSON-RPC startup and zero Antigravity CLI timeout stalls.
+- **Pre-Flight MCP Script Validation in AssembleActivePlugins:** Validated on-disk existence of script arguments (`.py`) prior to dynamic mounting into `mcp_config.json`, preventing broken subprocess pipes.
+- **Camoufox Plugin Auto-Upgrade v1.2.2:** Bumped builtin browser plugin version to 1.2.2 ensuring instant extraction of optimized MCP server scripts on daemon boot.
+
+---
+
 ## [1.0.15] - 2026-09-02
 
 ### Fixed
