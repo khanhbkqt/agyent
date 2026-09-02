@@ -248,9 +248,16 @@ func TestPluginManager_MultiAgentScopedDiscovery(t *testing.T) {
 	// 2. AssembleActivePlugins for agent
 	resolved, err := mgr.AssembleActivePlugins(ctx, agentDir, agentDir)
 	require.NoError(t, err)
-	require.NotEmpty(t, resolved.ActivePlugins)
-	require.NotEmpty(t, resolved.ActiveMCPServers)
-	assert.Equal(t, filepath.Join(globalPluginDir, "server.py"), resolved.ActiveMCPServers[0].Args[0])
+	var camoufoxMCPServer *domain.MCPServerConfig
+	for _, srv := range resolved.ActiveMCPServers {
+		if srv.ServerName == "camoufox-browser" {
+			srvCopy := srv
+			camoufoxMCPServer = &srvCopy
+			break
+		}
+	}
+	require.NotNil(t, camoufoxMCPServer)
+	assert.Equal(t, filepath.Join(globalPluginDir, "server.py"), camoufoxMCPServer.Args[0])
 
 	// 3. Test TogglePlugin on disk
 	err = mgr.TogglePlugin(ctx, "browser-camoufox", false, domain.ScopeGlobal, agentDir)

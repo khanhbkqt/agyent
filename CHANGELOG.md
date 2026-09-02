@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.15] - 2026-09-02
+
+### Fixed
+- **Multi-Agent Scoped Plugin Discovery & Resolution:** Supported multi-agent plugin discovery across global (`~/.agyent/plugins`) and per-agent scoped directories (`~/.agyent/agents/<name>/.agents/plugins/`).
+- **Auto-Extraction on Plugin Toggle:** Ensured embedded capability plugins are automatically extracted to disk before enabling if not already present.
+- **Context Resolver Dual-Scope Aggregation:** Updated `ContextResolver` to assemble plugin rules and skills across dual scopes without omissions or collision.
+- **Agent Scoped Plugin Slash Command:** Enhanced `/plugin` slash command to support enabling and disabling plugins scoped per active agent.
+
+---
+
 ## [1.0.14] - 2026-09-02
 
 ### Added
