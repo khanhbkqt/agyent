@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.19] - 2026-09-03
+
+### Added
+- **Autonomous Self-Healing Doctor (`agyent doctor --fix`):** Added comprehensive diagnostic triage and automatic remediation for orphaned zombie processes (`agy`, `python`, `camoufox`) and stale file locks (`parent.lock`, session lockfiles) across Windows and Unix platforms.
+- **Background Daemon Janitor:** Implemented an autonomous background janitor service within `Engine` that periodically reaps dangling process trees, purges orphaned temporary sockets, and cleans stale workspace artifacts during continuous multi-day gateway operations.
+
+---
+
 ## [1.0.18] - 2026-09-03
 
 ### Fixed
