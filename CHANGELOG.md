@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.18] - 2026-09-03
+
+### Fixed
+- **Firefox `parent.lock` Deadlock & Camoufox Stale Lock Prevention:** Handled Firefox parent.lock deadlocks in `browser-camoufox` using non-blocking flock detection and automated ephemeral profile fallback. Reduced daemon RPC timeout from 120s to 35s.
+- **TurnID & Generation Guard in DeliveryThrottler:** Added `TurnID` to `ExecutionRequest` and streaming events, implementing Generation matching with atomic `CompareAndDelete` to prevent late turn termination from killing active workers.
+- **Bounded Subprocess Exit & Append Mode Turn Handover:** Added bounded subprocess exit wait and synchronized STDIN writing in AGY harness runner, and added turn handover wait in append mode within engine orchestrator.
+- **Camoufox Plugin v1.2.3 Update:** Disabled `browser-camoufox` by default in `plugin.json` and bumped plugin version to 1.2.3.
+
+---
+
 ## [1.0.17] - 2026-09-03
 
 ### Fixed
