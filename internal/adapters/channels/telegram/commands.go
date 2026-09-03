@@ -35,14 +35,27 @@ var DefaultBotCommands = []gotgbot.BotCommand{
 // If commands is nil or empty, DefaultBotCommands is used.
 func (a *Adapter) RegisterCommands(ctx context.Context, commands []gotgbot.BotCommand) error {
 	a.mu.RLock()
-	bot := a.bot
+	bots := make([]*gotgbot.Bot, 0, len(a.bots))
+	for _, b := range a.bots {
+		bots = append(bots, b)
+	}
+	if len(bots) == 0 && a.bot != nil {
+		bots = append(bots, a.bot)
+	}
 	a.mu.RUnlock()
 
-	if bot == nil {
+	if len(bots) == 0 {
 		return errors.New("telegram bot client is not initialized")
 	}
 
-	return a.RegisterCommandsForBot(ctx, bot, commands)
+	var firstErr error
+	for _, bot := range bots {
+		if err := a.RegisterCommandsForBot(ctx, bot, commands); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
 }
 
 // RegisterCommandsForBot registers a list of bot commands for a specific bot instance.
@@ -101,14 +114,36 @@ func (a *Adapter) GetCommands(ctx context.Context) ([]gotgbot.BotCommand, error)
 	return cmds, nil
 }
 
-// DeleteCommands removes all registered bot commands and resets the chat menu button.
+// DeleteCommands removes all registered bot commands across all bots and resets the chat menu button.
 func (a *Adapter) DeleteCommands(ctx context.Context) error {
 	a.mu.RLock()
-	bot := a.bot
+	bots := make([]*gotgbot.Bot, 0, len(a.bots))
+	for _, b := range a.bots {
+		bots = append(bots, b)
+	}
+	if len(bots) == 0 && a.bot != nil {
+		bots = append(bots, a.bot)
+	}
 	a.mu.RUnlock()
 
-	if bot == nil {
+	if len(bots) == 0 {
 		return errors.New("telegram bot client is not initialized")
+	}
+
+	var firstErr error
+	for _, bot := range bots {
+		if err := a.DeleteCommandsForBot(ctx, bot); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
+}
+
+// DeleteCommandsForBot removes all registered bot commands for a specific bot instance.
+func (a *Adapter) DeleteCommandsForBot(ctx context.Context, bot *gotgbot.Bot) error {
+	if bot == nil {
+		return errors.New("telegram bot client is nil")
 	}
 
 	// 1. Delete Default scope commands

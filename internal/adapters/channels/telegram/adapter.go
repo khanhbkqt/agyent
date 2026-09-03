@@ -132,6 +132,20 @@ func (a *Adapter) getBot(botID int64) *gotgbot.Bot {
 	return a.bot
 }
 
+func (a *Adapter) getBotByAgent(agentName string) *gotgbot.Bot {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	for botID, name := range a.bindAgents {
+		if strings.EqualFold(name, agentName) {
+			if b, exists := a.bots[botID]; exists {
+				return b
+			}
+		}
+	}
+	return a.bot
+}
+
 // Start initializes Telegram bot pool, connects event listeners, and starts polling or webhook.
 func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMessage) error {
 	a.mu.Lock()
@@ -195,11 +209,15 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 
 	// 2. Initialize subsystems
 	a.mediaMgr = NewMediaManager(a.cfg, a.bot)
+	a.mediaMgr.SetBotGetter(a.getBot)
+	a.mediaMgr.SetBotByAgentGetter(a.getBotByAgent)
 	if a.hitlCoord == nil {
 		a.hitlCoord = NewHITLCoordinator(a.bot, a.cfg, nil)
 	} else {
 		a.hitlCoord.SetBot(a.bot)
 	}
+	a.hitlCoord.SetBotGetter(a.getBot)
+	a.hitlCoord.SetBotByAgentGetter(a.getBotByAgent)
 	throttleInterval := 1.5
 	streamingOn := true
 	if a.cfg != nil {
@@ -420,7 +438,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 				Caption:  att.Caption,
 			})
 		}
-		_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts)
+		_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot)
 	}
 
 	// 2. Extract any embedded media from text and clean text
@@ -428,7 +446,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 	if textToSend != "" {
 		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, "", "")
 		if len(extraMedia) > 0 && mediaMgr != nil {
-			_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, extraMedia)
+			_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, extraMedia, bot)
 		}
 		textToSend = cleanedText
 	}

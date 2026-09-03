@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -51,7 +52,14 @@ func ValidateSecurePath(rootDir, targetPath string) (string, error) {
 		realTarget = cleanTarget
 	}
 
-	rel, err := filepath.Rel(realRoot, realTarget)
+	relRoot := realRoot
+	relTarget := realTarget
+	if runtime.GOOS == "windows" {
+		relRoot = strings.ToLower(relRoot)
+		relTarget = strings.ToLower(relTarget)
+	}
+
+	rel, err := filepath.Rel(relRoot, relTarget)
 	if err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/..") || strings.HasPrefix(rel, `\..`) {
 		return "", fmt.Errorf("security violation: path traversal detected outside root: %s", targetPath)
 	}

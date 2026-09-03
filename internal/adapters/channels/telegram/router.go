@@ -107,7 +107,7 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 	// 3. Extract media attachments
 	var attachments []domain.Attachment
 	if r.mediaMgr != nil {
-		atts, err := r.mediaMgr.DownloadInboundMedia(ctx, msg)
+		atts, err := r.mediaMgr.DownloadInboundMedia(ctx, msg, b)
 		if err == nil && len(atts) > 0 {
 			attachments = atts
 		}
@@ -203,22 +203,31 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		r.mu.RUnlock()
 	}
 
-	// 1. Answer callback query to dismiss loading state
-	if b != nil {
-		_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{})
-	}
-
 	data := cb.Data
 	if data == "" {
+		if b != nil {
+			_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{})
+		}
 		return nil
 	}
 
-	// 2. Handle HITL interactive approval callback
+	// 1. Handle HITL interactive approval callback (answered by HandleCallback with alerts/toasts)
 	if strings.HasPrefix(data, "hitl:") {
 		if r.hitlCoordinator != nil {
-			return r.hitlCoordinator.HandleCallback(context.Background(), cb.Id, cb.From.Id, data)
+			return r.hitlCoordinator.HandleCallbackWithBot(context.Background(), cb.Id, cb.From.Id, data, b)
+		}
+		if b != nil {
+			_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{
+				Text:      "⚠️ HITL Coordinator is offline.",
+				ShowAlert: true,
+			})
 		}
 		return nil
+	}
+
+	// 2. Answer other callback queries to dismiss loading state
+	if b != nil {
+		_, _ = b.AnswerCallbackQuery(cb.Id, &gotgbot.AnswerCallbackQueryOpts{})
 	}
 
 	// 3. Map compact callback data into synthesized slash command

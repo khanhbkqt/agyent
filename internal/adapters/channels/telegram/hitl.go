@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,8 @@ import (
 type pendingHITL struct {
 	req       domain.ApprovalRequest
 	respChan  chan domain.ApprovalDecision
+	bot       *gotgbot.Bot
+	botID     int64
 	chatID    int64
 	threadID  int64
 	messageID int64
@@ -27,10 +30,12 @@ type pendingHITL struct {
 
 // HITLCoordinator coordinates interactive approval requests over Telegram.
 type HITLCoordinator struct {
-	bot     *gotgbot.Bot
-	cfg     *config.Config
-	pending sync.Map // map[string]*pendingHITL (key = requestID)
-	logger  *slog.Logger
+	bot              *gotgbot.Bot
+	botGetter        func(botID int64) *gotgbot.Bot
+	botByAgentGetter func(agentName string) *gotgbot.Bot
+	cfg              *config.Config
+	pending          sync.Map // map[string]*pendingHITL (key = requestID)
+	logger           *slog.Logger
 }
 
 // NewHITLCoordinator constructs a new Telegram HITL approval coordinator.
@@ -50,20 +55,60 @@ func (h *HITLCoordinator) SetBot(bot *gotgbot.Bot) {
 	h.bot = bot
 }
 
+// SetBotGetter configures the multi-bot resolver by botID.
+func (h *HITLCoordinator) SetBotGetter(bg func(botID int64) *gotgbot.Bot) {
+	h.botGetter = bg
+}
+
+// SetBotByAgentGetter configures the multi-bot resolver by agent name.
+func (h *HITLCoordinator) SetBotByAgentGetter(bag func(agentName string) *gotgbot.Bot) {
+	h.botByAgentGetter = bag
+}
+
+func (h *HITLCoordinator) resolveBot(botID int64, agentName string) *gotgbot.Bot {
+	if h.botGetter != nil && botID > 0 {
+		if b := h.botGetter(botID); b != nil {
+			return b
+		}
+	}
+	if h.botByAgentGetter != nil && agentName != "" {
+		if b := h.botByAgentGetter(agentName); b != nil {
+			return b
+		}
+	}
+	return h.bot
+}
+
 // RequestApproval sends an interactive card and suspends execution until user action or timeout.
 func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
-	_, chatID, threadID, err := ParseSessionKey(req.SessionKey)
-	if err != nil {
+	var chatID int64
+	var threadID int64
+	var botID int64
+
+	parsed, err := domain.ParseSessionKey(req.SessionKey)
+	if err == nil {
+		botID = parsed.BotID
+		threadID = parsed.ThreadID
+		if c, cErr := strconv.ParseInt(parsed.ChatID, 10, 64); cErr == nil {
+			chatID = c
+		}
+	}
+
+	if chatID == 0 {
 		// Fallback: If sessionKey cannot be parsed, check admin user IDs
 		if len(h.cfg.Telegram.AdminUserIDs) > 0 {
 			chatID = h.cfg.Telegram.AdminUserIDs[0]
 		}
 	}
 
+	targetBot := h.resolveBot(botID, req.AgentName)
+
 	respChan := make(chan domain.ApprovalDecision, 1)
 	entry := &pendingHITL{
 		req:      req,
 		respChan: respChan,
+		bot:      targetBot,
+		botID:    botID,
 		chatID:   chatID,
 		threadID: threadID,
 	}
@@ -74,7 +119,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 	cardText := h.formatCardText(req)
 	keyboard := h.buildInlineKeyboard(req.RequestID)
 
-	if h.bot != nil {
+	if targetBot != nil {
 		opts := &gotgbot.SendMessageOpts{
 			ParseMode:   "HTML",
 			ReplyMarkup: keyboard,
@@ -86,7 +131,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 		if utf8.RuneCountInString(formatted) > 4000 {
 			formatted = FormatMarkdownToTelegramHTML(truncateString(cardText, 2500))
 		}
-		msg, err := h.bot.SendMessage(chatID, formatted, opts)
+		msg, err := targetBot.SendMessage(chatID, formatted, opts)
 		if err != nil {
 			h.logger.Warn("Failed to send HTML HITL approval message, retrying plain text fallback", "error", err)
 			opts.ParseMode = ""
@@ -94,7 +139,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 			if utf8.RuneCountInString(plainText) > 4000 {
 				plainText = truncateString(plainText, 3800)
 			}
-			msg, err = h.bot.SendMessage(chatID, plainText, opts)
+			msg, err = targetBot.SendMessage(chatID, plainText, opts)
 			if err != nil {
 				h.logger.Error("Failed to send HITL approval message after fallback", "error", err)
 			}
@@ -114,14 +159,13 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 
 	select {
 	case dec := <-respChan:
-		h.updateCardOnDecision(entry, dec)
+		// HandleCallbackWithBot already edited the card upon receiving the user's click.
 		return dec, nil
 
 	case <-timer.C:
 		if !entry.resolved.CompareAndSwap(false, true) {
-			// Callback won race right as timer expired
+			// Callback won race right as timer expired; HandleCallbackWithBot already edited card.
 			dec := <-respChan
-			h.updateCardOnDecision(entry, dec)
 			return dec, nil
 		}
 		dec := domain.ApprovalDecision{
@@ -150,8 +194,13 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 	}
 }
 
-// HandleCallback processes inline keyboard clicks with strict Admin RBAC verification.
+// HandleCallback processes inline keyboard clicks satisfying ports.HITLApprovalPort.
 func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error {
+	return h.HandleCallbackWithBot(ctx, callbackID, userID, action, nil)
+}
+
+// HandleCallbackWithBot processes inline keyboard clicks with specific bot client context.
+func (h *HITLCoordinator) HandleCallbackWithBot(ctx context.Context, callbackID string, userID int64, action string, bot *gotgbot.Bot) error {
 	// Parse callback data: "hitl:<req_id>:<action>"
 	parts := strings.Split(action, ":")
 	if len(parts) < 3 || parts[0] != "hitl" {
@@ -163,8 +212,12 @@ func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string,
 
 	val, exists := h.pending.Load(reqID)
 	if !exists {
-		if h.bot != nil {
-			_, _ = h.bot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
+		targetBot := h.bot
+		if bot != nil {
+			targetBot = bot
+		}
+		if targetBot != nil {
+			_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
 				Text:      "⏱️ Yêu cầu này đã hết hạn hoặc đã được xử lý.",
 				ShowAlert: true,
 			})
@@ -172,6 +225,14 @@ func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string,
 		return nil
 	}
 	entry := val.(*pendingHITL)
+
+	targetBot := bot
+	if targetBot == nil && entry.bot != nil {
+		targetBot = entry.bot
+	}
+	if targetBot == nil {
+		targetBot = h.resolveBot(entry.botID, entry.req.AgentName)
+	}
 
 	// RBAC Check: Ensure user is admin
 	isAdmin := false
@@ -191,8 +252,8 @@ func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string,
 	}
 
 	if !isAdmin {
-		if h.bot != nil {
-			_, _ = h.bot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
+		if targetBot != nil {
+			_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
 				Text:      "⛔ You are not authorized to approve this security request!",
 				ShowAlert: true,
 			})
@@ -201,8 +262,8 @@ func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string,
 	}
 
 	if !entry.resolved.CompareAndSwap(false, true) {
-		if h.bot != nil {
-			_, _ = h.bot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
+		if targetBot != nil {
+			_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
 				Text:      "⏱️ This approval request has already been processed or expired.",
 				ShowAlert: true,
 			})
@@ -219,12 +280,12 @@ func (h *HITLCoordinator) HandleCallback(ctx context.Context, callbackID string,
 		Timestamp: time.Now(),
 	}
 
-	if h.bot != nil {
+	if targetBot != nil {
 		toast := "✅ Action approved."
 		if !approved {
 			toast = "❌ Action denied."
 		}
-		_, _ = h.bot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
+		_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
 			Text: toast,
 		})
 	}
@@ -347,7 +408,11 @@ func (h *HITLCoordinator) buildInlineKeyboard(reqID string) gotgbot.InlineKeyboa
 }
 
 func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.ApprovalDecision) {
-	if h.bot == nil || entry.messageID == 0 {
+	targetBot := entry.bot
+	if targetBot == nil {
+		targetBot = h.resolveBot(entry.botID, entry.req.AgentName)
+	}
+	if targetBot == nil || entry.messageID == 0 {
 		return
 	}
 
@@ -380,7 +445,7 @@ func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.Ap
 		Text:      formatted,
 	}
 
-	_, _, err := h.bot.EditMessageText(opts)
+	_, _, err := targetBot.EditMessageText(opts)
 	if err != nil {
 		h.logger.Warn("Failed to edit HITL card HTML, attempting plaintext fallback", "error", err)
 		opts.ParseMode = ""
@@ -389,7 +454,7 @@ func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.Ap
 			plainText = truncateString(plainText, 3800)
 		}
 		opts.Text = plainText
-		_, _, _ = h.bot.EditMessageText(opts)
+		_, _, _ = targetBot.EditMessageText(opts)
 	}
 }
 

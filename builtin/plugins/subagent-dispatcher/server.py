@@ -17,13 +17,24 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low", workspace_mode="share", callback_mode="notify_user", parent_session_key=""):
+def dispatch_task(title, prompt, agent_name="", model="flash", effort="low", workspace_mode="share", callback_mode="notify_user", parent_session_key=""):
     if not title or not prompt:
         return {"error": "title and prompt are required"}
+    
+    if not parent_session_key:
+        parent_session_key = os.environ.get("AGYENT_SESSION_KEY", "").strip()
+
+    if not agent_name or agent_name == "agyent":
+        env_agent = os.environ.get("AGYENT_AGENT_NAME", "").strip()
+        if env_agent:
+            agent_name = env_agent
+        elif not agent_name:
+            agent_name = "agyent"
     
     task_id = f"task-{secrets.token_hex(4)}"
     now_ms = int(time.time() * 1000)
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -67,7 +78,6 @@ def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low
             now_ms, now_ms
         ))
         conn.commit()
-        conn.close()
 
         return {
             "task_id": task_id,
@@ -79,10 +89,14 @@ def dispatch_task(title, prompt, agent_name="agyent", model="flash", effort="low
         }
     except Exception as e:
         return {"error": f"Failed to dispatch task: {str(e)}"}
+    finally:
+        if conn:
+            conn.close()
 
 def check_progress(task_id):
     if not task_id:
         return {"error": "task_id is required"}
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -93,40 +107,58 @@ def check_progress(task_id):
             FROM subagent_tasks WHERE id = ?
         """, (task_id,))
         row = cursor.fetchone()
-        conn.close()
         if not row:
             return {"error": f"Task {task_id} not found"}
         return dict(row)
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
 def cancel_task(task_id):
     if not task_id:
         return {"error": "task_id is required"}
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         now_ms = int(time.time() * 1000)
         cursor.execute("UPDATE subagent_tasks SET status = 'CANCELLED', updated_at = ? WHERE id = ?", (now_ms, task_id))
         conn.commit()
-        conn.close()
         return {"task_id": task_id, "status": "CANCELLED", "message": f"🛑 Task {task_id} has been marked as cancelled."}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
-def list_tasks(limit=10):
+def list_tasks(limit=10, session_key=""):
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, agent_name, title, status, duration_seconds, total_tokens, created_at
-            FROM subagent_tasks ORDER BY created_at DESC LIMIT ?
-        """, (limit,))
+        if not session_key:
+            session_key = os.environ.get("AGYENT_SESSION_KEY", "").strip()
+        if session_key:
+            cursor.execute("""
+                SELECT id, agent_name, title, status, duration_seconds, total_tokens, created_at
+                FROM subagent_tasks 
+                WHERE parent_session_key = ?
+                ORDER BY created_at DESC LIMIT ?
+            """, (session_key, limit))
+        else:
+            cursor.execute("""
+                SELECT id, agent_name, title, status, duration_seconds, total_tokens, created_at
+                FROM subagent_tasks ORDER BY created_at DESC LIMIT ?
+            """, (limit,))
         rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
         return {"tasks": rows, "count": len(rows)}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        if conn:
+            conn.close()
 
 def handle_message(msg):
     req_id = msg.get("id")
@@ -162,7 +194,8 @@ def handle_message(msg):
                                 "model": {"type": "string", "enum": ["flash", "flash_lite", "pro"], "description": "Model tier for execution", "default": "flash"},
                                 "effort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Reasoning effort", "default": "low"},
                                 "workspace_mode": {"type": "string", "enum": ["share", "scratch"], "description": "Workspace isolation mode", "default": "share"},
-                                "callback_mode": {"type": "string", "enum": ["notify_user", "callback_main", "silent"], "description": "Reporting mode upon completion", "default": "notify_user"}
+                                "callback_mode": {"type": "string", "enum": ["notify_user", "callback_main", "silent"], "description": "Reporting mode upon completion", "default": "notify_user"},
+                                "parent_session_key": {"type": "string", "description": "Optional parent session key"}
                             },
                             "required": ["title", "prompt"]
                         }
@@ -195,7 +228,8 @@ def handle_message(msg):
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "limit": {"type": "integer", "description": "Max number of tasks to return", "default": 10}
+                                "limit": {"type": "integer", "description": "Max number of tasks to return", "default": 10},
+                                "session_key": {"type": "string", "description": "Optional session key filter"}
                             }
                         }
                     }
@@ -216,14 +250,15 @@ def handle_message(msg):
                 model=args.get("model", "flash"),
                 effort=args.get("effort", "low"),
                 workspace_mode=args.get("workspace_mode", "share"),
-                callback_mode=args.get("callback_mode", "notify_user")
+                callback_mode=args.get("callback_mode", "notify_user"),
+                parent_session_key=args.get("parent_session_key", "")
             )
         elif tool_name == "check_subagent_progress":
             res = check_progress(args.get("task_id", ""))
         elif tool_name == "cancel_subagent_task":
             res = cancel_task(args.get("task_id", ""))
         elif tool_name == "list_subagents":
-            res = list_tasks(limit=int(args.get("limit", 10)))
+            res = list_tasks(limit=int(args.get("limit", 10)), session_key=args.get("session_key", ""))
         else:
             return {
                 "jsonrpc": "2.0",

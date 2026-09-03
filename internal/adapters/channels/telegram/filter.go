@@ -56,6 +56,17 @@ func IsMessageForBot(botUsername string, botID int64, msg *gotgbot.Message) (sho
 
 	// 1. Check if message is a slash command
 	if strings.HasPrefix(trimmed, "/") {
+		fields := strings.Fields(trimmed)
+		if len(fields) > 0 {
+			cmdToken := fields[0]
+			if atIdx := strings.Index(cmdToken, "@"); atIdx != -1 {
+				targetBot := cmdToken[atIdx+1:]
+				if botUsername != "" && !strings.EqualFold(targetBot, botUsername) {
+					return false, false, false
+				}
+				isMentioned = true
+			}
+		}
 		shouldProcess = true
 	}
 

@@ -28,21 +28,30 @@ var (
 				os.Exit(1)
 			}
 
-			if cfg.Telegram.BotToken == "" {
-				fmt.Fprintf(os.Stderr, "❌ Telegram bot token is missing in configuration.\n")
+			normalizedBots := cfg.Telegram.GetNormalizedBots()
+			if len(normalizedBots) == 0 {
+				fmt.Fprintf(os.Stderr, "❌ Telegram bot token or bots configuration is missing.\n")
 				os.Exit(1)
 			}
 
-			bot, err := gotgbot.NewBot(cfg.Telegram.BotToken, nil)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "❌ Failed to initialize Telegram bot: %v\n", err)
+			var bots []*gotgbot.Bot
+			for _, bCfg := range normalizedBots {
+				b, err := gotgbot.NewBot(bCfg.BotToken, nil)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "⚠️ Failed to initialize bot %q: %v\n", bCfg.Name, err)
+					continue
+				}
+				bots = append(bots, b)
+			}
+			if len(bots) == 0 {
+				fmt.Fprintf(os.Stderr, "❌ Failed to initialize any Telegram bot from configuration.\n")
 				os.Exit(1)
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			adapter := telegram.NewAdapter(cfg, nil, telegram.WithBot(bot))
+			adapter := telegram.NewAdapter(cfg, nil, telegram.WithBots(bots...))
 
 			if deleteCommandsFlag {
 				fmt.Println("🗑️ Removing all bot commands from Telegram...")

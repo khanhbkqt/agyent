@@ -54,9 +54,11 @@ var allowedArtifactExts = map[string]bool{
 
 // MediaManager handles inbound and outbound media transfers.
 type MediaManager struct {
-	cfg        *config.Config
-	bot        *gotgbot.Bot
-	httpClient *http.Client
+	cfg              *config.Config
+	bot              *gotgbot.Bot
+	botGetter        func(botID int64) *gotgbot.Bot
+	botByAgentGetter func(agentName string) *gotgbot.Bot
+	httpClient       *http.Client
 }
 
 // NewMediaManager creates a new MediaManager instance.
@@ -68,6 +70,28 @@ func NewMediaManager(cfg *config.Config, bot *gotgbot.Bot) *MediaManager {
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+// SetBotGetter configures the bot resolver by botID.
+func (m *MediaManager) SetBotGetter(bg func(botID int64) *gotgbot.Bot) {
+	m.botGetter = bg
+}
+
+// SetBotByAgentGetter configures the bot resolver by agent name.
+func (m *MediaManager) SetBotByAgentGetter(bag func(agentName string) *gotgbot.Bot) {
+	m.botByAgentGetter = bag
+}
+
+func (m *MediaManager) resolveBot(botOpt []*gotgbot.Bot, botIDOpt ...int64) *gotgbot.Bot {
+	if len(botOpt) > 0 && botOpt[0] != nil {
+		return botOpt[0]
+	}
+	if len(botIDOpt) > 0 && botIDOpt[0] > 0 && m.botGetter != nil {
+		if b := m.botGetter(botIDOpt[0]); b != nil {
+			return b
+		}
+	}
+	return m.bot
 }
 
 var windowsReservedNames = map[string]bool{
@@ -110,8 +134,9 @@ func SanitizeFilename(name string) string {
 }
 
 // DownloadInboundMedia extracts and downloads media files from a Telegram message into staging directory.
-func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Message) ([]domain.Attachment, error) {
-	if msg == nil || m.bot == nil {
+func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Message, botOpt ...*gotgbot.Bot) ([]domain.Attachment, error) {
+	bot := m.resolveBot(botOpt)
+	if msg == nil || bot == nil {
 		return nil, nil
 	}
 
@@ -125,7 +150,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 	if len(msg.Photo) > 0 {
 		bestPhoto := msg.Photo[len(msg.Photo)-1]
 		fileName := fmt.Sprintf("photo_%d_%s.jpg", time.Now().Unix(), bestPhoto.FileUniqueId)
-		att, err := m.downloadFile(ctx, bestPhoto.FileId, fileName, "image/jpeg", "image", targetDir)
+		att, err := m.downloadFile(ctx, bot, bestPhoto.FileId, fileName, "image/jpeg", "image", targetDir)
 		if err == nil {
 			attachments = append(attachments, att)
 		}
@@ -141,7 +166,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		att, err := m.downloadFile(ctx, msg.Document.FileId, fileName, mimeType, "document", targetDir)
+		att, err := m.downloadFile(ctx, bot, msg.Document.FileId, fileName, mimeType, "document", targetDir)
 		if err == nil {
 			attachments = append(attachments, att)
 		}
@@ -150,7 +175,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 	// 3. Audio / Voice
 	if msg.Voice != nil {
 		fileName := fmt.Sprintf("voice_%d_%s.ogg", time.Now().Unix(), msg.Voice.FileUniqueId)
-		att, err := m.downloadFile(ctx, msg.Voice.FileId, fileName, "audio/ogg", "voice", targetDir)
+		att, err := m.downloadFile(ctx, bot, msg.Voice.FileId, fileName, "audio/ogg", "voice", targetDir)
 		if err == nil {
 			attachments = append(attachments, att)
 		}
@@ -160,7 +185,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 		if fileName == "file" {
 			fileName = fmt.Sprintf("audio_%d_%s.mp3", time.Now().Unix(), msg.Audio.FileUniqueId)
 		}
-		att, err := m.downloadFile(ctx, msg.Audio.FileId, fileName, "audio/mpeg", "audio", targetDir)
+		att, err := m.downloadFile(ctx, bot, msg.Audio.FileId, fileName, "audio/mpeg", "audio", targetDir)
 		if err == nil {
 			attachments = append(attachments, att)
 		}
@@ -172,7 +197,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 		if fileName == "file" {
 			fileName = fmt.Sprintf("video_%d_%s.mp4", time.Now().Unix(), msg.Video.FileUniqueId)
 		}
-		att, err := m.downloadFile(ctx, msg.Video.FileId, fileName, "video/mp4", "video", targetDir)
+		att, err := m.downloadFile(ctx, bot, msg.Video.FileId, fileName, "video/mp4", "video", targetDir)
 		if err == nil {
 			attachments = append(attachments, att)
 		}
@@ -181,13 +206,20 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 	return attachments, nil
 }
 
-func (m *MediaManager) downloadFile(ctx context.Context, fileID, fileName, mimeType, attType, targetDir string) (domain.Attachment, error) {
-	tgFile, err := m.bot.GetFile(fileID, nil)
+func (m *MediaManager) downloadFile(ctx context.Context, bot *gotgbot.Bot, fileID, fileName, mimeType, attType, targetDir string) (domain.Attachment, error) {
+	if bot == nil {
+		bot = m.bot
+	}
+	if bot == nil {
+		return domain.Attachment{}, fmt.Errorf("bot client is nil")
+	}
+
+	tgFile, err := bot.GetFile(fileID, nil)
 	if err != nil {
 		return domain.Attachment{}, fmt.Errorf("failed to get file info for %s: %w", fileID, err)
 	}
 
-	fileURL := tgFile.URL(m.bot, nil)
+	fileURL := tgFile.URL(bot, nil)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return domain.Attachment{}, fmt.Errorf("failed to create download request: %w", err)
@@ -442,8 +474,9 @@ func FindBrainImage(convID string, imageName string) (string, error) {
 }
 
 // SendBrainImage uploads and sends a brain image to Telegram chat.
-func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadID int64, imagePath string, caption string) error {
-	if imagePath == "" || m.bot == nil {
+func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadID int64, imagePath string, caption string, botOpt ...*gotgbot.Bot) error {
+	bot := m.resolveBot(botOpt)
+	if imagePath == "" || bot == nil {
 		return fmt.Errorf("invalid image path or bot client")
 	}
 
@@ -461,13 +494,14 @@ func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadI
 	}
 
 	inputFile := &gotgbot.FileReader{Name: filepath.Base(imagePath), Data: file}
-	_, err = m.bot.SendPhoto(chatID, inputFile, opts)
+	_, err = bot.SendPhoto(chatID, inputFile, opts)
 	return err
 }
 
 // SendMediaGroup sends up to 10 photos as a native Telegram Album / Media Group.
-func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadID int64, mediaList []domain.Attachment) error {
-	if len(mediaList) == 0 || m.bot == nil {
+func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadID int64, mediaList []domain.Attachment, botOpt ...*gotgbot.Bot) error {
+	bot := m.resolveBot(botOpt)
+	if len(mediaList) == 0 || bot == nil {
 		return nil
 	}
 
@@ -495,7 +529,7 @@ func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadI
 			if caption == "" {
 				caption = chunk[0].FileName
 			}
-			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption)
+			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption, bot)
 			continue
 		}
 
@@ -523,13 +557,13 @@ func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadI
 			if threadID != 0 {
 				opts.MessageThreadId = threadID
 			}
-			_, _ = m.bot.SendMediaGroup(chatID, inputMedias, opts)
+			_, _ = bot.SendMediaGroup(chatID, inputMedias, opts)
 		} else if len(inputMedias) == 1 {
 			caption := chunk[0].Caption
 			if caption == "" {
 				caption = chunk[0].FileName
 			}
-			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption)
+			_ = m.SendBrainImage(ctx, chatID, threadID, chunk[0].FilePath, caption, bot)
 		}
 
 		for _, f := range openFiles {
@@ -542,8 +576,9 @@ func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadI
 
 // UploadTurnArtifacts sends whitelisted outbound artifacts after turn completion.
 // If multiple photos are present, it sends them as an album (SendMediaGroup).
-func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, threadID int64, artifacts []domain.Attachment) error {
-	if len(artifacts) == 0 || m.bot == nil {
+func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, threadID int64, artifacts []domain.Attachment, botOpt ...*gotgbot.Bot) error {
+	bot := m.resolveBot(botOpt)
+	if len(artifacts) == 0 || bot == nil {
 		return nil
 	}
 
@@ -568,13 +603,13 @@ func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, th
 
 	// 1. Send photos (grouped as MediaGroup if >= 2)
 	if len(photos) >= 2 {
-		_ = m.SendMediaGroup(ctx, chatID, threadID, photos)
+		_ = m.SendMediaGroup(ctx, chatID, threadID, photos, bot)
 	} else if len(photos) == 1 {
 		caption := photos[0].Caption
 		if caption == "" {
 			caption = photos[0].FileName
 		}
-		_ = m.SendBrainImage(ctx, chatID, threadID, photos[0].FilePath, caption)
+		_ = m.SendBrainImage(ctx, chatID, threadID, photos[0].FilePath, caption, bot)
 	}
 
 	// 2. Send non-photo documents
@@ -594,7 +629,7 @@ func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, th
 		if threadID != 0 {
 			opts.MessageThreadId = threadID
 		}
-		_, _ = m.bot.SendDocument(chatID, inputFile, opts)
+		_, _ = bot.SendDocument(chatID, inputFile, opts)
 		file.Close()
 	}
 

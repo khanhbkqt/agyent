@@ -75,6 +75,22 @@ func TestBoost_FilterAndRouterEdgeCases(t *testing.T) {
 	assert.True(t, proc)
 	assert.True(t, ment)
 
+	// Command targeted at other bot in group
+	msgOtherBot := &gotgbot.Message{
+		Chat: gotgbot.Chat{Type: "group"},
+		Text: "/status@otherbot",
+	}
+	proc, _, _ = IsMessageForBot("testbot", 999, msgOtherBot)
+	assert.False(t, proc)
+
+	msgThisBot := &gotgbot.Message{
+		Chat: gotgbot.Chat{Type: "group"},
+		Text: "/status@testbot",
+	}
+	proc, ment, _ = IsMessageForBot("testbot", 999, msgThisBot)
+	assert.True(t, proc)
+	assert.True(t, ment)
+
 	// Router edge cases
 	cfg := config.DefaultConfig()
 	inbound := make(chan domain.CanonicalMessage, 10)

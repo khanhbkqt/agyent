@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -562,6 +563,18 @@ func (m *Manager) EnsureWorkspaceHooks(workspaceDir string) error {
 	return err
 }
 
+func canonicalizeWorkspacePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(p)
+	if runtime.GOOS == "windows" {
+		cleaned = strings.ToLower(cleaned)
+		cleaned = strings.ReplaceAll(cleaned, "/", "\\")
+	}
+	return cleaned
+}
+
 // RegisterActiveTurn registers the active sessionKey, preset, and workspace associated with a running turn.
 func (m *Manager) RegisterActiveTurn(turn domain.TurnSecurityContext) {
 	m.mu.Lock()
@@ -574,7 +587,7 @@ func (m *Manager) RegisterActiveTurn(turn domain.TurnSecurityContext) {
 		m.activeTurns[turn.ConversationID] = turn
 	}
 	if turn.WorkspaceDir != "" {
-		m.activeWorkspaces[filepath.Clean(turn.WorkspaceDir)] = turn
+		m.activeWorkspaces[canonicalizeWorkspacePath(turn.WorkspaceDir)] = turn
 	}
 }
 
@@ -587,7 +600,7 @@ func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 		delete(m.activeTurns, convID)
 	}
 	if workspaceDir != "" {
-		delete(m.activeWorkspaces, filepath.Clean(workspaceDir))
+		delete(m.activeWorkspaces, canonicalizeWorkspacePath(workspaceDir))
 	}
 }
 
@@ -610,7 +623,7 @@ func (m *Manager) ResolveTurnContext(convID string, workspaceDir string) (domain
 		}
 	}
 	if workspaceDir != "" {
-		if t, ok := m.activeWorkspaces[filepath.Clean(workspaceDir)]; ok && t.SessionKey != "" {
+		if t, ok := m.activeWorkspaces[canonicalizeWorkspacePath(workspaceDir)]; ok && t.SessionKey != "" {
 			return t, true
 		}
 	}

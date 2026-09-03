@@ -8,6 +8,7 @@ import (
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"github.com/PaulSonOfLars/gotgbot/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -129,3 +130,61 @@ func TestTruncateString(t *testing.T) {
 	truncatedMulti := truncateString(multiLine, 25)
 	assert.Contains(t, truncatedMulti, "\n... [")
 }
+
+func TestHITLCoordinator_MultiBotResolution(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AdminUserIDs: []int64{123456789},
+		},
+		Security: config.GetEffectiveSecurityPreset("balanced"),
+	}
+
+	mockPrimaryBot := &gotgbot.Bot{User: gotgbot.User{Id: 1001, Username: "primary_bot"}}
+	mockSecondaryBot := &gotgbot.Bot{User: gotgbot.User{Id: 2002, Username: "coder_bot"}}
+
+	coordinator := NewHITLCoordinator(mockPrimaryBot, cfg, nil)
+
+	// 1. Initially without getter, falls back to primary bot
+	assert.Equal(t, mockPrimaryBot, coordinator.resolveBot(2002, "coder"))
+
+	// 2. Set botGetter and botByAgentGetter
+	coordinator.SetBotGetter(func(botID int64) *gotgbot.Bot {
+		if botID == 2002 {
+			return mockSecondaryBot
+		}
+		return nil
+	})
+	coordinator.SetBotByAgentGetter(func(agentName string) *gotgbot.Bot {
+		if agentName == "coder" {
+			return mockSecondaryBot
+		}
+		return nil
+	})
+
+	// Resolves via botID
+	assert.Equal(t, mockSecondaryBot, coordinator.resolveBot(2002, "other"))
+	// Resolves via agentName if botID is 0
+	assert.Equal(t, mockSecondaryBot, coordinator.resolveBot(0, "coder"))
+	// Falls back to primary bot if neither matches
+	assert.Equal(t, mockPrimaryBot, coordinator.resolveBot(9999, "unknown"))
+
+	// 3. Test RequestApproval with namespaced session key
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	req := domain.ApprovalRequest{
+		RequestID:   "hitl-multibot-test",
+		SessionKey:  "telegram:2002:123456789",
+		AgentName:   "coder",
+		ToolName:    "run_command",
+		CommandLine: "ls",
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(50 * time.Millisecond),
+	}
+
+	dec, err := coordinator.RequestApproval(ctx, req)
+	assert.NoError(t, err)
+	assert.False(t, dec.Approved)
+	assert.Equal(t, "timeout", dec.Action)
+}
+

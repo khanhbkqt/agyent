@@ -260,6 +260,7 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 			if len(args) == 0 {
 				if e.channel != nil {
 					_ = e.channel.Send(ctx, domain.OutboundMessage{
+						Channel:          msg.Channel,
 						BotID:            msg.BotID,
 						ChatID:           msg.Chat.ID,
 						ThreadID:         msg.Chat.ThreadID,
@@ -322,6 +323,7 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 	if e.HasActiveTurn(sessionKey) {
 		if e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:          msg.Channel,
 				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
@@ -432,6 +434,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			slog.String("error", err.Error()),
 		)
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:          msg.Channel,
 			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
@@ -465,6 +468,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			slog.String("error", err.Error()),
 		)
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:          msg.Channel,
 			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
@@ -539,6 +543,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			ownerDesc = "admin"
 		}
 		_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+			Channel:          msg.Channel,
 			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
@@ -830,6 +835,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			}
 
 			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+				Channel:          msg.Channel,
 				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
@@ -943,6 +949,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			)
 			if compRes, compErr := e.CompactSessionContext(turnCtx, session, agent, "auto-threshold"); compErr == nil && compRes != nil {
 				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					Channel:  msg.Channel,
 					BotID:    msg.BotID,
 					ChatID:   msg.Chat.ID,
 					ThreadID: msg.Chat.ThreadID,
@@ -967,6 +974,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	if execErr != nil {
 		if !isStream && !isInterrupted {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:          msg.Channel,
 				BotID:            msg.BotID,
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
@@ -1120,6 +1128,10 @@ func (e *Engine) subscribeSubagentEvents() {
 		task := payload.Task
 
 		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
+		channel := parsedKey.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
 		chatID := parsedKey.ChatID
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
@@ -1129,7 +1141,7 @@ func (e *Engine) subscribeSubagentEvents() {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
-				Channel:   "telegram",
+				Channel:   channel,
 				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
 					ID:       chatID,
@@ -1145,6 +1157,7 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:  channel,
 				BotID:    parsedKey.BotID,
 				ChatID:   chatID,
 				ThreadID: parsedKey.ThreadID,
@@ -1163,6 +1176,10 @@ func (e *Engine) subscribeSubagentEvents() {
 		task := payload.Task
 
 		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
+		channel := parsedKey.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
 		chatID := parsedKey.ChatID
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
@@ -1172,7 +1189,7 @@ func (e *Engine) subscribeSubagentEvents() {
 			syntheticMsg := domain.CanonicalMessage{
 				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
 				Timestamp: time.Now(),
-				Channel:   "telegram",
+				Channel:   channel,
 				BotID:     parsedKey.BotID,
 				Chat: domain.ChatContext{
 					ID:       chatID,
@@ -1188,11 +1205,60 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:  channel,
 				BotID:    parsedKey.BotID,
 				ChatID:   chatID,
 				ThreadID: parsedKey.ThreadID,
 				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
+				ParseMode: "HTML",
+			})
+		}
+	})
+
+	e.eventBus.SubscribeAsync(domain.EventSubagentFailed, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.SubagentEventPayload)
+		if !ok {
+			return
+		}
+		task := payload.Task
+
+		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
+		channel := parsedKey.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
+		chatID := parsedKey.ChatID
+		if chatID == "" {
+			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
+		}
+
+		if task.CallbackMode == domain.CallbackInvokeMain {
+			syntheticMsg := domain.CanonicalMessage{
+				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
+				Timestamp: time.Now(),
+				Channel:   channel,
+				BotID:     parsedKey.BotID,
+				Chat: domain.ChatContext{
+					ID:       chatID,
+					ThreadID: parsedKey.ThreadID,
+				},
+				Text: fmt.Sprintf("[SYSTEM NOTIFICATION: Subagent Task #%s (@%s) FAILED]\nTask Title: %s\nError: %s\nDuration: %.2fs\n\nPlease evaluate this failure and report or handle it appropriately.",
+					task.ID, task.AgentName, task.Title, task.ErrorMessage, task.DurationSeconds),
+			}
+			select {
+			case e.inboundChan <- syntheticMsg:
+			default:
+				slog.Warn("inbound queue full for subagent failure message", "task_id", task.ID)
+			}
+		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
+			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:  channel,
+				BotID:    parsedKey.BotID,
+				ChatID:   chatID,
+				ThreadID: parsedKey.ThreadID,
+				Text: fmt.Sprintf("❌ <b>Sub-Agent @%s failed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⚠️ <b>Error:</b> %s\n⏱️ <b>Duration:</b> %.2fs",
+					task.AgentName, task.Title, task.ID, task.ErrorMessage, task.DurationSeconds),
 				ParseMode: "HTML",
 			})
 		}

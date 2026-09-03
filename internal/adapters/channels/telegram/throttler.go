@@ -261,11 +261,12 @@ func (dt *DeliveryThrottler) OnStreamTool(ctx context.Context, evt domain.Event)
 					imageName = in
 				}
 			}
-			go func(chatID, threadID int64, convID, imgName string) {
+			bot := dt.getBot(sess.BotID)
+			go func(targetBot *gotgbot.Bot, chatID, threadID int64, convID, imgName string) {
 				if imgPath, err := FindBrainImage(convID, imgName); err == nil && imgPath != "" {
-					_ = dt.mediaMgr.SendBrainImage(context.Background(), chatID, threadID, imgPath, "🎨 Generated Image")
+					_ = dt.mediaMgr.SendBrainImage(context.Background(), chatID, threadID, imgPath, "🎨 Generated Image", targetBot)
 				}
-			}(sess.ChatID, sess.ThreadID, p.ConversationID, imageName)
+			}(bot, sess.ChatID, sess.ThreadID, p.ConversationID, imageName)
 		}
 	}
 
@@ -332,9 +333,10 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 
 	// Outbound turn artifacts auto-upload (async non-blocking)
 	if len(allArtifacts) > 0 && dt.mediaMgr != nil {
-		go func(chatID, threadID int64, arts []domain.Attachment) {
-			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts)
-		}(sess.ChatID, sess.ThreadID, allArtifacts)
+		bot := dt.getBot(sess.BotID)
+		go func(targetBot *gotgbot.Bot, chatID, threadID int64, arts []domain.Attachment) {
+			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts, targetBot)
+		}(bot, sess.ChatID, sess.ThreadID, allArtifacts)
 	}
 
 	// Zero-idle cleanup: CompareAndDelete guarantees we do not remove a newer active session
@@ -625,9 +627,9 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	// Clean any remaining markdown image references or comments before final dispatch
 	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, "", convID)
 	if len(extractedMedia) > 0 && dt.mediaMgr != nil {
-		go func(cID, tID int64, arts []domain.Attachment) {
-			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts)
-		}(chatID, threadID, extractedMedia)
+		go func(targetBot *gotgbot.Bot, cID, tID int64, arts []domain.Attachment) {
+			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts, targetBot)
+		}(bot, chatID, threadID, extractedMedia)
 	}
 
 	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, 4000)
