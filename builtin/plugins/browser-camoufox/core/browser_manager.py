@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import uuid
 try:
     from camoufox.sync_api import Camoufox
