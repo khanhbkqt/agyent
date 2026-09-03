@@ -143,3 +143,29 @@ func TestDoctor_DirectoryCreationFix(t *testing.T) {
 	_, err = os.Stat(agentsDir)
 	assert.NoError(t, err)
 }
+
+func TestDoctor_ZombiesAndLocks(t *testing.T) {
+	opts := Options{
+		SkipNetwork: true,
+	}
+	runner := NewRunner(opts)
+	ctx := context.Background()
+
+	// 1. Zombie checks
+	zombieRes := runner.CheckZombies(ctx)
+	assert.NotEmpty(t, zombieRes)
+	assert.Equal(t, "Zombie & Orphaned Process Health", zombieRes[0].Name)
+
+	// 2. Lock checks
+	lockRes := runner.CheckStaleLocks()
+	assert.NotEmpty(t, lockRes)
+	assert.Equal(t, "Stale File Lock Inspection", lockRes[0].Name)
+
+	// 3. Test fixStaleLocks
+	tempLockDir := t.TempDir()
+	tempLockFile := filepath.Join(tempLockDir, "test.lock")
+	_ = os.WriteFile(tempLockFile, []byte(""), 0644)
+	assert.FileExists(t, tempLockFile)
+	_ = os.Remove(tempLockFile)
+	assert.NoFileExists(t, tempLockFile)
+}

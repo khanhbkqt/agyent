@@ -97,8 +97,9 @@ func (d *DoctorRunner) Run(ctx context.Context) (*DiagnosticReport, error) {
 		Results:   make([]CheckResult, 0),
 	}
 
-	// 1. System & Host checks
+	// 1. System & Host checks (including zombie process detection)
 	report.Results = append(report.Results, d.CheckSystem()...)
+	report.Results = append(report.Results, d.CheckZombies(ctx)...)
 
 	// 2. Configuration checks
 	cfgResults, loadedCfg := d.CheckConfiguration()
@@ -116,6 +117,7 @@ func (d *DoctorRunner) Run(ctx context.Context) (*DiagnosticReport, error) {
 
 	// 4. SQLite Storage & Session checks
 	report.Results = append(report.Results, d.CheckStorage(ctx)...)
+	report.Results = append(report.Results, d.CheckStaleLocks()...)
 
 	// 5. Telegram Gateway & Live Auth checks
 	if !d.opts.SkipNetwork {

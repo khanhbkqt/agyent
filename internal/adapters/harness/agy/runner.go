@@ -369,7 +369,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			entry.mu.Lock()
 			defer entry.mu.Unlock()
 		}
-		_, _ = stdinPipe.Write(append(inboundJSON, '\n'))
+		if _, writeErr := stdinPipe.Write(append(inboundJSON, '\n')); writeErr != nil {
+			slog.WarnContext(ctx, "Failed to write initial prompt payload to stdin pipe", "error", writeErr, "session_key", sessionKey)
+		}
 	}()
 
 	parser := NewStreamParser(h.eventBus)
@@ -442,10 +444,17 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if execCtx.Err() != nil {
 		var timeoutErr error
 		if timedOut.Load() {
-			slog.ErrorContext(ctx, "AGY stream execution timed out (no milestone activity)", slog.Duration("timeout", timeout), slog.String("session_key", sessionKey))
+			slog.ErrorContext(ctx, "AGY stream execution timed out (no milestone activity)",
+				slog.Duration("timeout", timeout),
+				slog.String("session_key", sessionKey),
+				slog.String("stderr", stderrBuf.String()),
+			)
 			timeoutErr = fmt.Errorf("agy stream execution timed out after %v without milestone activity: %w", timeout, context.DeadlineExceeded)
 		} else {
-			slog.WarnContext(ctx, "AGY stream execution cancelled", slog.String("session_key", sessionKey))
+			slog.WarnContext(ctx, "AGY stream execution cancelled",
+				slog.String("session_key", sessionKey),
+				slog.String("stderr", stderrBuf.String()),
+			)
 			timeoutErr = fmt.Errorf("agy stream execution cancelled: %w", execCtx.Err())
 		}
 		if h.eventBus != nil {

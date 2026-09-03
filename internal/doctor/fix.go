@@ -27,8 +27,23 @@ func (d *DoctorRunner) ApplyFixes(ctx context.Context, report *DiagnosticReport)
 		}
 
 		switch res.Category {
+		case CategorySystem:
+			if res.Name == "Zombie & Orphaned Process Health" {
+				if killed := d.fixZombies(ctx); killed > 0 {
+					res.Status = StatusPass
+					res.Fixed = true
+					res.Message = fmt.Sprintf("Auto-fixed: successfully terminated %d zombie process(es)", killed)
+				}
+			}
+
 		case CategoryStorage:
-			if err := d.fixStorage(ctx); err == nil {
+			if res.Name == "Stale File Lock Inspection" {
+				if removed := d.fixStaleLocks(); removed > 0 {
+					res.Status = StatusPass
+					res.Fixed = true
+					res.Message = fmt.Sprintf("Auto-fixed: purged %d stale lock file(s)", removed)
+				}
+			} else if err := d.fixStorage(ctx); err == nil {
 				res.Status = StatusPass
 				res.Fixed = true
 				res.Message += " (Auto-fixed: directories & database initialized)"
@@ -51,6 +66,34 @@ func (d *DoctorRunner) ApplyFixes(ctx context.Context, report *DiagnosticReport)
 			}
 		}
 	}
+}
+
+func (d *DoctorRunner) fixZombies(ctx context.Context) int {
+	zombies, err := findZombieProcesses(ctx)
+	if err != nil {
+		return 0
+	}
+	killed := 0
+	for _, z := range zombies {
+		proc, err := os.FindProcess(z.PID)
+		if err == nil && proc != nil {
+			if err := proc.Kill(); err == nil {
+				killed++
+			}
+		}
+	}
+	return killed
+}
+
+func (d *DoctorRunner) fixStaleLocks() int {
+	locks := findStaleLockFiles()
+	removed := 0
+	for _, l := range locks {
+		if err := os.Remove(l.Path); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 func (d *DoctorRunner) fixStorage(ctx context.Context) error {

@@ -213,6 +213,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	// 3. Start background Conversation Lifecycle GC Worker (runs daily, purge threshold 30 days)
 	e.StartConversationGCWorker(e.ctx, 24*time.Hour, 30)
 
+	// 4. Start background Autonomous Janitor Worker (runs every 30 mins)
+	e.StartBackgroundJanitor(e.ctx, 30*time.Minute)
+
 	// 4. Start background Evolution Orchestrator (if configured)
 	if e.evolution != nil {
 		_ = e.evolution.Start(e.ctx)
