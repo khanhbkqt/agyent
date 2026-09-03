@@ -303,6 +303,11 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 		if e.runner != nil {
 			_ = e.runner.InterruptStream(ctx, sessionKey)
 		}
+		// Wait briefly for previous turn to release lock, enabling clean turn handover
+		waitDeadline := time.Now().Add(500 * time.Millisecond)
+		for e.HasActiveTurn(sessionKey) && time.Now().Before(waitDeadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 
 	return e.executeTurn(ctx, msg, false)
@@ -676,6 +681,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
 		ConversationID:             activeConvID,
+		TurnID:                     turnID,
 		WorkspaceDir:               workspaceDir,
 		Timeout:                    timeout,
 		Model:                      resolvedModel,

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
@@ -31,6 +32,8 @@ const (
 type StreamSession struct {
 	SessionKey      string
 	ConversationID  string
+	TurnID          string
+	Generation      uint64
 	BotID           int64
 	ChatID          int64
 	ThreadID        int64
@@ -54,13 +57,14 @@ type StreamSession struct {
 
 // DeliveryThrottler handles real-time token buffering and periodic Telegram edits.
 type DeliveryThrottler struct {
-	bot             *gotgbot.Bot
-	botGetter       func(botID int64) *gotgbot.Bot
-	mediaMgr        *MediaManager
-	throttleSeconds float64
-	streamingOn     bool
-	sessions        sync.Map // map[string]*StreamSession
-	mu              sync.RWMutex
+	bot               *gotgbot.Bot
+	botGetter         func(botID int64) *gotgbot.Bot
+	mediaMgr          *MediaManager
+	throttleSeconds   float64
+	streamingOn       bool
+	generationCounter atomic.Uint64
+	sessions          sync.Map // map[string]*StreamSession
+	mu                sync.RWMutex
 }
 
 // NewDeliveryThrottler creates a new DeliveryThrottler.
@@ -138,11 +142,14 @@ func (dt *DeliveryThrottler) OnStreamInit(ctx context.Context, evt domain.Event)
 		}
 	}
 
+	gen := dt.generationCounter.Add(1)
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 
 	sess := &StreamSession{
 		SessionKey:     p.SessionKey,
 		ConversationID: p.ConversationID,
+		TurnID:         p.TurnID,
+		Generation:     gen,
 		BotID:          parsed.BotID,
 		ChatID:         chatID,
 		ThreadID:       parsed.ThreadID,
@@ -179,6 +186,10 @@ func (dt *DeliveryThrottler) OnStreamDelta(ctx context.Context, evt domain.Event
 	}
 
 	sess := val.(*StreamSession)
+	if p.TurnID != "" && sess.TurnID != "" && p.TurnID != sess.TurnID {
+		return nil
+	}
+
 	sess.Mu.Lock()
 	sess.Buffer.WriteString(p.TextDelta)
 	sess.Dirty = true
@@ -207,6 +218,9 @@ func (dt *DeliveryThrottler) OnStreamTool(ctx context.Context, evt domain.Event)
 		return nil
 	}
 	sess := val.(*StreamSession)
+	if p.TurnID != "" && sess.TurnID != "" && p.TurnID != sess.TurnID {
+		return nil
+	}
 
 	if p.State == "ACTIVE" {
 		sess.Mu.Lock()
@@ -270,6 +284,11 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 		return nil
 	}
 	sess := val.(*StreamSession)
+	if p.TurnID != "" && sess.TurnID != "" && p.TurnID != sess.TurnID {
+		slog.DebugContext(ctx, "Ignoring stale stream result from prior turn",
+			"session_key", p.SessionKey, "event_turn", p.TurnID, "active_turn", sess.TurnID)
+		return nil
+	}
 
 	sess.Mu.Lock()
 	sess.State = StateFinalizing
@@ -318,8 +337,8 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 		}(sess.ChatID, sess.ThreadID, allArtifacts)
 	}
 
-	// Zero-idle cleanup
-	dt.sessions.Delete(p.SessionKey)
+	// Zero-idle cleanup: CompareAndDelete guarantees we do not remove a newer active session
+	dt.sessions.CompareAndDelete(p.SessionKey, sess)
 	return nil
 }
 
@@ -335,6 +354,11 @@ func (dt *DeliveryThrottler) OnStreamInterrupted(ctx context.Context, evt domain
 		return nil
 	}
 	sess := val.(*StreamSession)
+	if p.TurnID != "" && sess.TurnID != "" && p.TurnID != sess.TurnID {
+		slog.DebugContext(ctx, "Ignoring stale stream interrupted event from prior turn",
+			"session_key", p.SessionKey, "event_turn", p.TurnID, "active_turn", sess.TurnID)
+		return nil
+	}
 
 	sess.Mu.Lock()
 	sess.State = StateFinalizing
@@ -351,7 +375,7 @@ func (dt *DeliveryThrottler) OnStreamInterrupted(ctx context.Context, evt domain
 	sess.closeWorker()
 	<-sess.WorkerDone
 
-	dt.sessions.Delete(p.SessionKey)
+	dt.sessions.CompareAndDelete(p.SessionKey, sess)
 	return nil
 }
 
@@ -375,6 +399,11 @@ func (dt *DeliveryThrottler) OnStreamError(ctx context.Context, evt domain.Event
 		return nil
 	}
 	sess := val.(*StreamSession)
+	if p.TurnID != "" && sess.TurnID != "" && p.TurnID != sess.TurnID {
+		slog.DebugContext(ctx, "Ignoring stale stream error from prior turn",
+			"session_key", p.SessionKey, "event_turn", p.TurnID, "active_turn", sess.TurnID)
+		return nil
+	}
 
 	sess.Mu.Lock()
 	sess.State = StateFailed
@@ -388,8 +417,8 @@ func (dt *DeliveryThrottler) OnStreamError(ctx context.Context, evt domain.Event
 	sess.closeWorker()
 	<-sess.WorkerDone
 
-	// Zero-idle cleanup
-	dt.sessions.Delete(p.SessionKey)
+	// Zero-idle cleanup: CompareAndDelete guarantees we do not remove a newer active session
+	dt.sessions.CompareAndDelete(p.SessionKey, sess)
 
 	return nil
 }

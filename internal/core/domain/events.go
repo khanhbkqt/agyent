@@ -60,6 +60,7 @@ type SessionScopedPayload interface {
 type StreamInitPayload struct {
 	SessionKey     string    `json:"session_key"`
 	ConversationID string    `json:"conversation_id"`
+	TurnID         string    `json:"turn_id,omitempty"`
 	CWD            string    `json:"cwd"`
 	Tools          []string  `json:"tools"`
 	Timestamp      time.Time `json:"timestamp"`
@@ -71,6 +72,7 @@ func (p StreamInitPayload) GetSessionKey() string { return p.SessionKey }
 type StreamDeltaPayload struct {
 	SessionKey     string `json:"session_key"`
 	ConversationID string `json:"conversation_id"`
+	TurnID         string `json:"turn_id,omitempty"`
 	StepIndex      int    `json:"step_index"`
 	TextDelta      string `json:"text_delta"`
 }
@@ -81,6 +83,7 @@ func (p StreamDeltaPayload) GetSessionKey() string { return p.SessionKey }
 type StreamToolPayload struct {
 	SessionKey      string         `json:"session_key"`
 	ConversationID  string         `json:"conversation_id"`
+	TurnID          string         `json:"turn_id,omitempty"`
 	StepIndex       int            `json:"step_index"`
 	State           string         `json:"state"` // "ACTIVE", "DONE"
 	ToolName        string         `json:"tool_name"`
@@ -95,6 +98,7 @@ func (p StreamToolPayload) GetSessionKey() string { return p.SessionKey }
 type StreamResultPayload struct {
 	SessionKey      string       `json:"session_key"`
 	ConversationID  string       `json:"conversation_id"`
+	TurnID          string       `json:"turn_id,omitempty"`
 	Status          string       `json:"status"` // "SUCCESS", "ERROR"
 	Response        string       `json:"response"`
 	Error           string       `json:"error,omitempty"`
@@ -110,6 +114,7 @@ func (p StreamResultPayload) GetSessionKey() string { return p.SessionKey }
 type StreamErrorPayload struct {
 	SessionKey     string `json:"session_key"`
 	ConversationID string `json:"conversation_id"`
+	TurnID         string `json:"turn_id,omitempty"`
 	Error          string `json:"error"`
 }
 
@@ -119,6 +124,7 @@ func (p StreamErrorPayload) GetSessionKey() string { return p.SessionKey }
 type StreamInterruptedPayload struct {
 	SessionKey     string    `json:"session_key"`
 	ConversationID string    `json:"conversation_id,omitempty"`
+	TurnID         string    `json:"turn_id,omitempty"`
 	Reason         string    `json:"reason,omitempty"`
 	Timestamp      time.Time `json:"timestamp"`
 }

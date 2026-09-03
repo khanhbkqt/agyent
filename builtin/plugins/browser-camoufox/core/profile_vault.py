@@ -125,6 +125,60 @@ class ProfileVault:
                         return True
         return False
 
+    def clean_stale_locks(
+        self,
+        profile_name: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> bool:
+        """
+        Detects and removes orphan/stale Firefox lock files if no active process holds the file lock.
+        Returns True if any stale lock was cleaned.
+        """
+        data_dir = self.get_user_data_dir(profile_name, agent_name=agent_name, workspace_dir=workspace_dir)
+        lock_files = [
+            os.path.join(data_dir, "parent.lock"),
+            os.path.join(data_dir, ".parentlock"),
+            os.path.join(data_dir, "lock"),
+        ]
+        cleaned = False
+        for lock_file in lock_files:
+            if not os.path.exists(lock_file):
+                continue
+            if sys.platform != "win32":
+                try:
+                    import fcntl
+                    with open(lock_file, "r+") as f:
+                        try:
+                            # Try non-blocking exclusive flock
+                            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                            # If we could acquire flock, no active process holds it -> safe to delete!
+                            try:
+                                os.remove(lock_file)
+                                cleaned = True
+                            except OSError:
+                                pass
+                        except (IOError, BlockingIOError, PermissionError, OSError):
+                            # Actively locked by running process
+                            pass
+                except Exception:
+                    pass
+            else:
+                try:
+                    # On Windows, try opening in append mode
+                    with open(lock_file, "a"):
+                        pass
+                    # If open succeeds, file is not locked by another process
+                    try:
+                        os.remove(lock_file)
+                        cleaned = True
+                    except OSError:
+                        pass
+                except (IOError, OSError, PermissionError):
+                    pass
+        return cleaned
+
     def get_session_meta_path(
         self,
         profile_name: str,

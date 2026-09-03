@@ -361,8 +361,10 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		_ = jobGuard.AttachProcess(cmd.Process)
 	}
 
-	// Write initial turn payload to stdin pipe
+	// Write initial turn payload to stdin pipe with synchronization
+	stdinDone := make(chan struct{})
 	go func() {
+		defer close(stdinDone)
 		if entry != nil {
 			entry.mu.Lock()
 			defer entry.mu.Unlock()
@@ -371,6 +373,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}()
 
 	parser := NewStreamParser(h.eventBus)
+	if req.TurnID != "" {
+		parser.SetTurnID(req.TurnID)
+	}
 	parser.SetOnMilestone(resetWatchdog)
 	parser.SetArtifactDetector(func() []domain.Attachment {
 		var arts []domain.Attachment
@@ -388,13 +393,51 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	})
 	streamRes, parseErr := parser.ParseAndEmitStream(execCtx, sessionKey, stdoutPipe)
 
-	// Ensure stdinPipe is closed so subprocess unblocks on STDIN read and exits cleanly
-	_ = stdinPipe.Close()
+	// Ensure stdin writing is done before closing pipe
+	select {
+	case <-stdinDone:
+	case <-time.After(1 * time.Second):
+	}
 
-	// Ensure stdoutPipe is closed so subprocess unblocks if still writing, preventing cmd.Wait() deadlock
+	if entry != nil {
+		entry.mu.Lock()
+	}
+	_ = stdinPipe.Close()
+	if entry != nil {
+		entry.mu.Unlock()
+	}
+
+	// Ensure stdoutPipe is closed so subprocess unblocks if still writing
 	_ = stdoutPipe.Close()
 
-	waitErr := cmd.Wait()
+	// Wait for subprocess with bounded timeout to prevent hangs when child MCP processes hold stderr open
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+		// Subprocess exited cleanly
+	case <-time.After(4 * time.Second):
+		slog.WarnContext(ctx, "AGY process did not exit within grace period after stream completion, terminating process tree",
+			slog.String("session_key", sessionKey),
+		)
+		_ = killProcessTree(cmd)
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(1 * time.Second):
+			waitErr = fmt.Errorf("subprocess wait timed out")
+		}
+	case <-execCtx.Done():
+		_ = killProcessTree(cmd)
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(1 * time.Second):
+			waitErr = execCtx.Err()
+		}
+	}
 
 	if execCtx.Err() != nil {
 		var timeoutErr error
@@ -409,6 +452,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			_ = h.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
 				SessionKey:     sessionKey,
 				ConversationID: req.ConversationID,
+				TurnID:         req.TurnID,
 				Error:          timeoutErr.Error(),
 			}))
 		}

@@ -6,6 +6,7 @@ import "time"
 type ExecutionRequest struct {
 	Prompt                     string            `json:"prompt"`
 	ConversationID             string            `json:"conversation_id,omitempty"`
+	TurnID                     string            `json:"turn_id,omitempty"`
 	WorkspaceDir               string            `json:"workspace_dir"`
 	Files                      []string          `json:"files,omitempty"`
 	Attachments                []Attachment      `json:"attachments,omitempty"`

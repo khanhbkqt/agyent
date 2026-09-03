@@ -326,13 +326,15 @@ class BrowserManager:
         clean_profile = self.profile_vault.clean_profile_name(profile_name)
         lookup_key = f"{clean_agent}:{clean_profile}"
 
-        # Check for profile lock conflict
+        # Check for profile lock conflict and clean orphan locks
+        self.profile_vault.clean_stale_locks(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)
         if self.profile_vault.is_profile_locked(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir):
             # Check if we own this session already
             with self._lock:
                 if lookup_key in self.profile_to_session:
                     return self.profile_to_session[lookup_key]
-            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} (agent: {clean_agent}) parent.lock detected\n")
+            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} (agent: {clean_agent}) actively locked, falling back to ephemeral profile\n")
+            clean_profile = f"{clean_profile}_eph_{uuid.uuid4().hex[:6]}"
 
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
         user_data_dir = self.profile_vault.get_user_data_dir(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)

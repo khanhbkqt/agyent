@@ -456,3 +456,73 @@ func TestThrottler_StreamInterrupted(t *testing.T) {
 	lastEdit := mockServer.EditMessages[len(mockServer.EditMessages)-1]
 	assert.Contains(t, lastEdit.Text, "Đã tạm dừng lượt này để nhận chỉ dẫn mới")
 }
+
+// TC-THR-11: Turn Race Condition Protection: Late Turn 1 Error does not kill Turn 2 active stream session
+func TestThrottler_TurnRaceCondition_StaleTurnDoesNotKillActiveTurn(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_11")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:999888:0"
+	ctx := context.Background()
+
+	// Turn 1 starts
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-1",
+	}))
+
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-1",
+		TextDelta:      "Turn 1 processing...",
+	}))
+
+	// Turn 2 is dispatched (e.g. via Append mode)
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-2",
+	}))
+
+	// Verify session now belongs to Turn 2
+	assert.Equal(t, 1, throttler.ActiveSessionsCount())
+
+	// Stale Turn 1 error arrives late over EventBus
+	err = throttler.OnStreamError(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-1", // Belongs to turn-1!
+		Error:          "context canceled",
+	}))
+	require.NoError(t, err)
+
+	// Turn 2 MUST STILL BE ACTIVE!
+	assert.Equal(t, 1, throttler.ActiveSessionsCount(), "Turn 2 session must NOT be deleted by stale Turn 1 error")
+
+	// Turn 2 sends delta and finishes successfully
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-2",
+		TextDelta:      "Turn 2 actual answer!",
+	}))
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_race",
+		TurnID:         "turn-2",
+		Status:         "SUCCESS",
+		Response:       "Turn 2 final answer complete.",
+	}))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Turn 2 must cleanly finalize and clean up")
+}

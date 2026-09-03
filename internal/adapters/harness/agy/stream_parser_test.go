@@ -228,4 +228,60 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Equal(t, "done", res.Response)
 		_ = pw.Close()
 	})
+
+	t.Run("TC-BRG-08_TurnIDPropagationToAllEvents", func(t *testing.T) {
+		var (
+			mu            sync.Mutex
+			initTurnID    string
+			deltaTurnID   string
+			toolTurnID    string
+			resultTurnID  string
+		)
+
+		bus.SubscribeSync(domain.EventStreamInit, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			initTurnID = evt.Payload.(domain.StreamInitPayload).TurnID
+			mu.Unlock()
+			return nil
+		})
+		bus.SubscribeSync(domain.EventStreamDelta, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			deltaTurnID = evt.Payload.(domain.StreamDeltaPayload).TurnID
+			mu.Unlock()
+			return nil
+		})
+		bus.SubscribeSync(domain.EventStreamTool, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			toolTurnID = evt.Payload.(domain.StreamToolPayload).TurnID
+			mu.Unlock()
+			return nil
+		})
+		bus.SubscribeSync(domain.EventStreamResult, func(ctx context.Context, evt domain.Event) error {
+			mu.Lock()
+			resultTurnID = evt.Payload.(domain.StreamResultPayload).TurnID
+			mu.Unlock()
+			return nil
+		})
+
+		turnParser := agy.NewStreamParser(bus)
+		turnParser.SetTurnID("turn-test-xyz")
+
+		ndjson := `
+{"event":"init","conversation_id":"c-turnid"}
+{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}
+{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"cmd"}}
+{"event":"result","result":{"status":"SUCCESS","response":"done"}}
+`
+		res, err := turnParser.ParseAndEmitStream(context.Background(), "telegram:turnid", strings.NewReader(ndjson))
+		require.NoError(t, err)
+		require.NotNil(t, res)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, "turn-test-xyz", initTurnID)
+		assert.Equal(t, "turn-test-xyz", deltaTurnID)
+		assert.Equal(t, "turn-test-xyz", toolTurnID)
+		assert.Equal(t, "turn-test-xyz", resultTurnID)
+		assert.Equal(t, "turn-test-xyz", res.TurnID)
+	})
 }

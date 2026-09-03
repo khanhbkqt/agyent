@@ -63,6 +63,7 @@ type StreamParser struct {
 	eventBus         ports.EventBusPort
 	artifactDetector func() []domain.Attachment
 	onMilestone      func()
+	turnID           string
 }
 
 // NewStreamParser creates a new StreamParser instance.
@@ -70,6 +71,11 @@ func NewStreamParser(bus ports.EventBusPort) *StreamParser {
 	return &StreamParser{
 		eventBus: bus,
 	}
+}
+
+// SetTurnID assigns a turn identifier to all emitted stream events.
+func (p *StreamParser) SetTurnID(turnID string) {
+	p.turnID = turnID
 }
 
 // SetArtifactDetector sets an optional callback function to detect created or modified artifacts before emitting EventStreamResult.
@@ -138,6 +144,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 			initPayload := domain.StreamInitPayload{
 				SessionKey:     sessionKey,
 				ConversationID: conversationID,
+				TurnID:         p.turnID,
 				CWD:            cwd,
 				Tools:          tools,
 				Timestamp:      time.Now(),
@@ -162,6 +169,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					deltaPayload := domain.StreamDeltaPayload{
 						SessionKey:     sessionKey,
 						ConversationID: conversationID,
+						TurnID:         p.turnID,
 						StepIndex:      step.StepIndex,
 						TextDelta:      step.TextDelta,
 					}
@@ -182,6 +190,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					toolPayload := domain.StreamToolPayload{
 						SessionKey:      sessionKey,
 						ConversationID:  conversationID,
+						TurnID:          p.turnID,
 						StepIndex:       step.StepIndex,
 						State:           step.State,
 						ToolName:        toolName,
@@ -216,6 +225,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				lastResult = &domain.StreamResultPayload{
 					SessionKey:      sessionKey,
 					ConversationID:  conversationID,
+					TurnID:          p.turnID,
 					Status:          res.Status,
 					Response:        res.Response,
 					Error:           res.Error,
@@ -229,6 +239,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
 							SessionKey:     sessionKey,
 							ConversationID: conversationID,
+							TurnID:         p.turnID,
 							Reason:         "Preempted by incoming user message",
 							Timestamp:      time.Now(),
 						}))
@@ -240,6 +251,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				lastResult = &domain.StreamResultPayload{
 					SessionKey:     sessionKey,
 					ConversationID: conversationID,
+					TurnID:         p.turnID,
 					Status:         "SUCCESS",
 				}
 				if p.eventBus != nil {
@@ -253,6 +265,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 			errPayload := domain.StreamErrorPayload{
 				SessionKey:     sessionKey,
 				ConversationID: conversationID,
+				TurnID:         p.turnID,
 				Error:          rawEvt.Error,
 			}
 			if p.eventBus != nil {

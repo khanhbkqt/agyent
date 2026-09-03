@@ -673,7 +673,7 @@ def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120.0) as resp:
+    with urllib.request.urlopen(req, timeout=35.0) as resp:
         body = resp.read().decode("utf-8")
         data = json.loads(body)
         if data.get("error"):
@@ -691,7 +691,11 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
         try:
             return execute_tool_via_daemon(port, name, args)
         except Exception as e:
-            log(f"Daemon RPC failed ({e}). Falling back to local execution.")
+            log(f"Daemon RPC failed ({e}). Returning error directly to prevent pipeline hang.")
+            return {
+                "error": f"Camoufox daemon RPC execution failed: {e}",
+                "tool": name,
+            }
     return execute_tool_local(name, args)
 
 
@@ -712,7 +716,7 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
                 "serverInfo": {
                     "name": "camoufox-browser-plugin",
-                    "version": "1.2.2"
+                    "version": "1.2.3"
                 }
             }
         }
