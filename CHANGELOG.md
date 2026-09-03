@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.20] - 2026-09-03
+
+### Fixed
+- **Camoufox Browser Manager Typing Imports & v1.2.4 Upgrade:** Added missing `typing` imports (`Dict`, `Any`, `Optional`) to `browser_manager.py` to prevent Python runtime errors during daemon startup, and bumped builtin browser plugin version to 1.2.4 for automatic client sync.
+
+---
+
 ## [1.0.19] - 2026-09-03
 
 ### Added
