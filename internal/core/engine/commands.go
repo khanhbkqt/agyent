@@ -825,7 +825,12 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			}
 			statusTag := "initialized"
 			if !a.IsInitialized() {
-				statusTag = "uninitialized (bootstrap on next turn)"
+				if e.workspaceManager != nil && e.workspaceManager.HasDirectives(a.WorkspacePath) {
+					a.Status = domain.StatusInitialized
+					_ = e.storage.SaveAgent(ctx, &a)
+				} else {
+					statusTag = "uninitialized (bootstrap on next turn)"
+				}
 			}
 
 			badge := " [Public]"

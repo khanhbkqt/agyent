@@ -468,11 +468,11 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 	client := ipc.NewClient(addr)
 
 	// 1. Real TCP IPC Request for Unrestricted Agent
-	resp1, err := client.SendHookRequest(domain.HookRequest{
+	resp1, err := client.SendHookRequest(ipc.HookRequest{
 		HookType:       "pre",
 		ConversationID: "conv-ipc-unres",
 		WorkspacePaths: []string{"/tmp/ws_admin"},
-		ToolCall: domain.HookToolCall{
+		ToolCall: ipc.HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "python custom_deploy.py"},
 		},
@@ -482,11 +482,11 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 	assert.Equal(t, "allow", resp1.Decision, "Real IPC call for unrestricted agent must return allow")
 
 	// 2. Real TCP IPC Request for Strict Agent (Unwhitelisted command)
-	resp2, err := client.SendHookRequest(domain.HookRequest{
+	resp2, err := client.SendHookRequest(ipc.HookRequest{
 		HookType:       "pre",
 		ConversationID: "conv-ipc-strict",
 		WorkspacePaths: []string{"/tmp/ws_audit"},
-		ToolCall: domain.HookToolCall{
+		ToolCall: ipc.HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "python custom_deploy.py"},
 		},
@@ -497,11 +497,11 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 	assert.Contains(t, resp2.Reason, "Strict")
 
 	// 3. Real TCP IPC Request for Strict Agent (Whitelisted command)
-	resp3, err := client.SendHookRequest(domain.HookRequest{
+	resp3, err := client.SendHookRequest(ipc.HookRequest{
 		HookType:       "pre",
 		ConversationID: "conv-ipc-strict",
 		WorkspacePaths: []string{"/tmp/ws_audit"},
-		ToolCall: domain.HookToolCall{
+		ToolCall: ipc.HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "go test ./..."},
 		},

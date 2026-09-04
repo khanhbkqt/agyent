@@ -89,9 +89,9 @@ func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 	client := NewClient(addr)
 
 	// Test 1: Denied command
-	respDeny, err := client.SendHookRequest(domain.HookRequest{
+	respDeny, err := client.SendHookRequest(HookRequest{
 		HookType: "pre",
-		ToolCall: domain.HookToolCall{
+		ToolCall: HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "rm -rf /"},
 		},
@@ -104,9 +104,9 @@ func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 	assert.Contains(t, respDeny.Reason, "Destructive command blocked")
 
 	// Test 2: Allowed command
-	respAllow, err := client.SendHookRequest(domain.HookRequest{
+	respAllow, err := client.SendHookRequest(HookRequest{
 		HookType: "pre",
-		ToolCall: domain.HookToolCall{
+		ToolCall: HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "go test ./..."},
 		},
@@ -121,9 +121,9 @@ func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 func TestIPCClient_OfflineDefaultDeny(t *testing.T) {
 	client := NewClient("127.0.0.1:49999") // Offline port
 
-	resp, err := client.SendHookRequest(domain.HookRequest{
+	resp, err := client.SendHookRequest(HookRequest{
 		HookType: "pre",
-		ToolCall: domain.HookToolCall{
+		ToolCall: HookToolCall{
 			Name: "run_command",
 			Args: map[string]interface{}{"CommandLine": "rm -rf /"},
 		},

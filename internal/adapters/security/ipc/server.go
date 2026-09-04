@@ -19,7 +19,7 @@ import (
 // DefaultIPCAddress is the standard local IPC endpoint.
 const DefaultIPCAddress = "127.0.0.1:49215"
 
-// Server implements ports.HookIPCPort to receive and evaluate Antigravity hook requests
+// Server coordinates IPC communication to receive and evaluate Antigravity hook requests
 // and process management IPC actions from local plugins.
 type Server struct {
 	addr      string
@@ -151,7 +151,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 		s.logger.Error("Failed to unmarshal IPC payload", "error", err)
-		resp := domain.HookResponse{
+		resp := HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   "Malformed JSON payload",
 		}
@@ -167,13 +167,13 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// 2. Otherwise process as standard HookRequest
-	var req domain.HookRequest
+	var req HookRequest
 	_ = json.Unmarshal(scanner.Bytes(), &req)
 
 	resp, err := s.HandleHookRequest(ctx, req)
 	if err != nil {
 		s.logger.Error("Error handling hook request", "error", err)
-		resp = domain.HookResponse{
+		resp = HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   fmt.Sprintf("Internal security evaluation error: %v", err),
 		}
@@ -475,10 +475,10 @@ func (s *Server) handleTriggerHeartbeat(ctx context.Context, p map[string]interf
 	}, nil
 }
 
-// HandleHookRequest processes a domain.HookRequest and returns a domain.HookResponse.
-func (s *Server) HandleHookRequest(ctx context.Context, req domain.HookRequest) (domain.HookResponse, error) {
+// HandleHookRequest processes a HookRequest and returns a HookResponse.
+func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookResponse, error) {
 	if s.manager == nil {
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   "Security Manager is not initialized (Default-Deny)",
 		}, nil
@@ -506,13 +506,13 @@ func (s *Server) HandleHookRequest(ctx context.Context, req domain.HookRequest) 
 
 		decision, err := s.manager.EvaluateToolCall(ctx, evalReq)
 		if err != nil {
-			return domain.HookResponse{
+			return HookResponse{
 				Decision: string(domain.DecisionDeny),
 				Reason:   fmt.Sprintf("Evaluation error: %v", err),
 			}, nil
 		}
 
-		return domain.HookResponse{
+		return HookResponse{
 			Decision:  string(decision.Decision),
 			Reason:    decision.Reason,
 			Overwrite: decision.Overwrite,
@@ -523,17 +523,17 @@ func (s *Server) HandleHookRequest(ctx context.Context, req domain.HookRequest) 
 		if req.ToolCall.Name != "" && req.ToolCall.Args != nil {
 			if out, ok := req.ToolCall.Args["output"].(string); ok && out != "" {
 				sanitized, _ := s.manager.SanitizeToolOutput(ctx, req.ToolCall.Name, out)
-				return domain.HookResponse{
+				return HookResponse{
 					Overwrite: map[string]interface{}{
 						"output": sanitized,
 					},
 				}, nil
 			}
 		}
-		return domain.HookResponse{}, nil
+		return HookResponse{}, nil
 
 	default:
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionAllow),
 		}, nil
 	}

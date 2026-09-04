@@ -69,13 +69,6 @@ type SecurityManagerPort interface {
 	CancelSessionApprovals(sessionKey string)
 }
 
-// HookIPCPort defines the IPC server interface communicating with agyent-hook binary.
-type HookIPCPort interface {
-	Start(ctx context.Context) error
-	Stop() error
-	HandleHookRequest(ctx context.Context, req domain.HookRequest) (domain.HookResponse, error)
-}
-
 // HITLApprovalPort coordinates interactive approval requests over communication channels.
 type HITLApprovalPort interface {
 	// RequestApproval sends an interactive card and suspends execution until user action or timeout.

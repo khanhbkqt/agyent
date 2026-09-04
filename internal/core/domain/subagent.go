@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -62,28 +61,4 @@ func (t *SubagentTask) IsTerminal() bool {
 // IsActive returns true if the task is queued, running, or waiting for input.
 func (t *SubagentTask) IsActive() bool {
 	return t.Status == TaskStatusPending || t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput
-}
-
-// ArtifactsJSON marshals the artifacts slice to a JSON string for SQLite storage.
-func (t *SubagentTask) ArtifactsJSON() string {
-	if len(t.Artifacts) == 0 {
-		return "[]"
-	}
-	data, err := json.Marshal(t.Artifacts)
-	if err != nil {
-		return "[]"
-	}
-	return string(data)
-}
-
-// ParseArtifactsJSON unmarshals a JSON string from SQLite into the Artifacts slice.
-func (t *SubagentTask) ParseArtifactsJSON(raw string) {
-	if len(raw) == 0 || raw == "[]" {
-		t.Artifacts = nil
-		return
-	}
-	var atts []Attachment
-	if err := json.Unmarshal([]byte(raw), &atts); err == nil {
-		t.Artifacts = atts
-	}
 }

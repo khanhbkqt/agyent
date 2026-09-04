@@ -614,7 +614,7 @@ func (h *Harness) ListAvailableModels(ctx context.Context) ([]domain.ModelCapabi
 		return domain.ListAvailableModels(), nil
 	}
 
-	parsed := domain.ParseModelsOutput(string(output))
+	parsed := ParseModelsOutput(string(output))
 	if len(parsed) > 0 {
 		domain.SetDynamicModelCapabilities(parsed)
 		return parsed, nil

@@ -18,6 +18,7 @@ import (
 	securityAdapter "agyent/internal/adapters/security"
 	"agyent/internal/adapters/security/ipc"
 	"agyent/internal/adapters/storage/sqlite"
+	"agyent/internal/adapters/subagent"
 	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
@@ -26,7 +27,6 @@ import (
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
 	"agyent/internal/core/scheduler"
-	"agyent/internal/core/subagent"
 	"agyent/internal/logger"
 
 	"github.com/spf13/cobra"

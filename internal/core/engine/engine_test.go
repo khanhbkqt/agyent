@@ -45,6 +45,12 @@ type mockRunner struct {
 
 func (m *mockRunner) Name() string { return "mock-runner" }
 
+func (m *mockRunner) setExecuteFunc(fn func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.executeFunc = fn
+}
+
 func (m *mockRunner) Execute(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
 	m.mu.Lock()
 	m.executeCalls = append(m.executeCalls, req)
@@ -1354,13 +1360,13 @@ func TestEngine_ForceUnlockSession_AndNewConversation(t *testing.T) {
 	assert.False(t, eng.HasActiveTurn(sessionKey), "expected active turn to be cleaned up after ForceUnlockSession")
 
 	// 4. Calling /new now should succeed immediately
-	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
 		return &domain.ExecutionResult{
 			Success:        true,
 			ConversationID: "conv-fresh-after-force",
 			ResponseText:   "Xin chào! Cuộc trò chuyện mới đã sẵn sàng.",
 		}, nil
-	}
+	})
 
 	newMsg := domain.CanonicalMessage{
 		ID:        "msg-new-success",
@@ -1427,13 +1433,13 @@ func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "expected active turn to be cleaned up after EventForceKillRequested")
 
 	// 3. New conversation executes cleanly
-	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
 		return &domain.ExecutionResult{
 			Success:        true,
 			ConversationID: "conv-fresh-2",
 			ResponseText:   "New context ready!",
 		}, nil
-	}
+	})
 
 	newMsg := domain.CanonicalMessage{
 		ID:        "msg-new-2",

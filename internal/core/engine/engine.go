@@ -557,6 +557,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	isBootstrap := !agent.IsInitialized()
+	if isBootstrap && e.workspaceManager != nil && e.workspaceManager.HasDirectives(agent.WorkspacePath) {
+		isBootstrap = false
+		agent.Status = domain.StatusInitialized
+		_ = e.storage.SaveAgent(turnCtx, agent)
+	}
 
 	// 5. Resolve CWD (In-Project Workspace vs Global Agent Workspace)
 	workspaceDir := agent.WorkspacePath
