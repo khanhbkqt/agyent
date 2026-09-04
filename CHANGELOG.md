@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.23] - 2026-09-04
+
+### Added
+- **Camoufox Full Capabilities Engine 2.0 (v1.4.0):**
+  - **Stealth Media Sniffer & FFmpeg Downloader:** Real-time interception of video/audio chunks, YouTube decrypted `videoplayback` streams, HLS playlists (`.m3u8`), and DASH manifests (`.mpd`) with active quality escalation, dual-adaptive stream muxing, and accurate trimming via `imageio-ffmpeg` zero-setup fallback.
+  - **Native Desktop Headful Mode:** Added visual debugging support on workstation desktops (`headful: true`) with full anti-detection bypass.
+  - **Autonomous CAPTCHA Detection & Solving:** Added automated resolution for Cloudflare Turnstile, hCaptcha, and reCAPTCHA.
+  - **Advanced Interaction & Gesture Engine:** Added support for drag-and-drop, keyboard combos, complex mouse gestures, canvas inspection, and dynamic DOM interaction.
+  - **New MCP Tools:** Added `camoufox_sniff_media`, `camoufox_download_media`, `camoufox_solve_captcha`, and `camoufox_interact`.
+
+---
+
 ## [1.0.22] - 2026-09-04
 
 ### Changed
