@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.21] - 2026-09-04
+
+### Fixed
+- **Multi-Bot Media & Artifact Dispatch:** Ensured artifacts, photos, voice notes, and documents generated during agent turns are routed and delivered to the correct originating bot adapter in multi-bot topologies.
+- **Human-In-The-Loop (HITL) Multi-Bot Routing:** Scoped HITL authorization callbacks, button interactions, and inline keyboard events to the specific bot instance that originated the turn.
+- **Subagent Session Bleed Prevention:** Hardened `subagent-dispatcher` to isolate subagent session context per conversation ID, eliminating cross-agent state contamination.
+- **Path Case & Workspace Normalization:** Normalized filesystem path comparisons across Windows and Unix platforms in `SecurityManager` and `ContextResolver`.
+
+---
+
 ## [1.0.20] - 2026-09-03
 
 ### Fixed
