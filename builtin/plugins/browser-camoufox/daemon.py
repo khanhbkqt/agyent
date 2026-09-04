@@ -31,6 +31,8 @@ try:
         handle_act,
         handle_inspect_dom,
         handle_session_close,
+        handle_session_export_state,
+        handle_session_import_state,
         handle_session_list,
         handle_session_save,
         handle_session_start,
@@ -48,6 +50,7 @@ try:
         handle_download_media,
         handle_sniff_media,
     )
+    from handlers.captcha_handler import handle_solve_captcha
     CAMOUFOX_AVAILABLE = True
 except Exception as e:
     CAMOUFOX_AVAILABLE = False
@@ -110,6 +113,7 @@ def execute_tool(
             session_id=args.get("session_id"),
             agent_name=agent,
             workspace_dir=ws_dir,
+            headless=args.get("headless"),
         )
     elif name == "camoufox_extract_json_ld":
         return handle_extract_json_ld(
@@ -144,7 +148,7 @@ def execute_tool(
     elif name == "camoufox_session_start":
         return handle_session_start(
             profile_name=args.get("profile_name", "default"),
-            headless=args.get("headless", True),
+            headless=args.get("headless"),
             locale=args.get("locale", "en-US"),
             initial_url=args.get("initial_url"),
             agent_name=agent,
@@ -214,6 +218,7 @@ def execute_tool(
             timeout_ms=args.get("timeout_ms", 30000),
             agent_name=agent,
             workspace_dir=ws_dir,
+            headless=args.get("headless"),
         )
     elif name == "camoufox_download_media":
         return handle_download_media(
@@ -227,6 +232,31 @@ def execute_tool(
             custom_headers=args.get("custom_headers"),
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
+    elif name == "camoufox_solve_captcha":
+        return handle_solve_captcha(
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            captcha_type=args.get("captcha_type", "auto"),
+            timeout_ms=args.get("timeout_ms", 15000),
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
+    elif name == "camoufox_session_export_state":
+        return handle_session_export_state(
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            output_path=args.get("output_path"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
+    elif name == "camoufox_session_import_state":
+        return handle_session_import_state(
+            profile_name=args.get("profile_name", ""),
+            state_path=args.get("state_path"),
+            state_json=args.get("state_json"),
             agent_name=agent,
             workspace_dir=ws_dir,
         )

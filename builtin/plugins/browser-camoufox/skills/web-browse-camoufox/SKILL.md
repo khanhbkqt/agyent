@@ -159,6 +159,52 @@ If a video requires login (YouTube Premium, age confirmation, member-only):
 1. First, authenticate in a named profile (e.g. `profile_name="google_main"`).
 2. Pass `profile_name="google_main"` to both `camoufox_sniff_media` and `camoufox_download_media`. Camoufox will automatically pass authenticated session cookies and headers to both the browser and FFmpeg.
 
+### Pattern F: Autonomous Cloudflare Turnstile & Checkbox Solver
+When browsing dynamically protected pages that present a Cloudflare Turnstile ("Verify you are human"), hCaptcha, or reCAPTCHA checkbox:
+1. Call `camoufox_solve_captcha(session_id=session_id)`.
+2. The solver scans for the challenge iframe, calculates the target checkbox coordinates, executes a human Bézier trajectory with natural hesitation (~800ms dwell time), and clicks the checkbox.
+3. Once solved, inspect the DOM again via `camoufox_inspect_dom` to proceed with your workflow.
+
+### Pattern G: Lightweight Session Export/Import Across Machines (<50KB)
+To transfer authenticated logins between your local workstation and a remote VPS without copying heavy multi-hundred megabyte Firefox profiles:
+1. **Export State on Local Machine**:
+   Call `camoufox_session_export_state(profile_name="shopee_vn")`.
+   This saves a tiny, portable JSON file (<50KB) containing cookies, localStorage, and fingerprint metadata (OS & User-Agent).
+2. **Import State on Remote VPS**:
+   Transfer the file and call `camoufox_session_import_state(profile_name="shopee_vn", state_path="/path/to/storage_state.json")`.
+   Camoufox on the VPS immediately restores the login state and spoofs the exact original OS/User-Agent, avoiding platform session revocation.
+
+### Pattern H: Native AdBlock & Geo-IP Proxy Harmonization
+- **Native AdBlock**: Enabled by default (`enable_adblock=True`). Uses Camoufox's native uBlock Origin to strip 95% of ads, video pre-rolls, and cookie banners automatically.
+- **Proxy Geo-IP Harmonization**: When passing `proxy={"server": "http://user:pass@host:port"}`, Camoufox automatically queries the exit IP and synchronizes timezone, GPS coordinates, and Accept-Language demographic headers matching the proxy's location.
+
+### Pattern I: Headful Mode for Manual User Interaction & 2FA Login
+When running on a personal workstation or desktop (Windows, macOS, or Linux with X11/Wayland display), users frequently need to log into protected services (Google, Facebook, Shopee, Amazon, banking) or complete interactive MFA/2FA manually in a visible window.
+
+1. **Start Visible Headful Browser**:
+   ```json
+   {
+     "name": "camoufox_session_start",
+     "arguments": {
+       "profile_name": "google_personal",
+       "headless": false,
+       "initial_url": "https://accounts.google.com"
+     }
+   }
+   ```
+   - On Windows, macOS, or Linux desktop, this directly opens a visible native Firefox browser window in the foreground.
+   - On Linux VPS/SSH without a display, Camoufox gracefully falls back to `headless="virtual"` (Xvfb) to avoid startup crashes.
+   - Alternatively, set the environment variable `CAMOUFOX_HEADLESS=false` to run all sessions in headful mode by default.
+
+2. **Notify User & Allow Interaction**:
+   - Inform the user that the browser window is open on their screen.
+   - The user can type their credentials, tap hardware security keys, or complete 2FA prompts in the real browser.
+
+3. **Wait & Synchronize State**:
+   - The agent can wait for navigation: `camoufox_act(action="wait_for_url", value="https://myaccount.google.com*")`.
+   - Or bring the window to front: `camoufox_act(action="bring_to_front")`.
+   - Once the user finishes, call `camoufox_session_save(session_id=session_id)` to persist authentication state into the Profile Vault.
+
 ---
 
 ## 3. Invariants & Best Practices
@@ -168,5 +214,6 @@ If a video requires login (YouTube Premium, age confirmation, member-only):
 - **Token Efficiency**: Use default `extract_mode="markdown"` to save ~75% tokens.
 - **FFmpeg Zero-Setup**: FFmpeg is automatically discovered from PATH or Python's `imageio-ffmpeg` static binary bundle.
 - **Corporate Firewall Handling**: If a target returns `"Application Control Violation"` or `"The URL you requested has been blocked"`, an enterprise firewall (FortiGate / Palo Alto) is blocking social media/streaming at the gateway layer. Advise the user to use a VPN, home network, or VPS connection.
+
 
 

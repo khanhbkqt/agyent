@@ -184,6 +184,7 @@ def handle_sniff_media(
     timeout_ms: int = 30000,
     agent_name: Optional[str] = None,
     workspace_dir: Optional[str] = None,
+    headless: Optional[Union[bool, str]] = None,
 ) -> Dict[str, Any]:
     """
     Navigates to URL, escalates player quality, captures clean CDN streams,
@@ -357,7 +358,7 @@ def handle_sniff_media(
     try:
         return mgr.run_stateless(
             run,
-            headless=True,
+            headless=headless,
             timeout_ms=timeout_ms + wait_time_ms,
             profile_name=target_profile,
             agent_name=agent,

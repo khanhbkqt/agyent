@@ -31,6 +31,8 @@ try:
         handle_act,
         handle_inspect_dom,
         handle_session_close,
+        handle_session_export_state,
+        handle_session_import_state,
         handle_session_list,
         handle_session_save,
         handle_session_start,
@@ -48,6 +50,7 @@ try:
         handle_download_media,
         handle_sniff_media,
     )
+    from handlers.captcha_handler import handle_solve_captcha
     CAMOUFOX_AVAILABLE = True
     CAMOUFOX_IMPORT_ERROR = None
 except Exception as e:
@@ -233,6 +236,11 @@ TOOL_DEFINITIONS = [
                     "type": "integer",
                     "default": 30000,
                     "description": "Page navigation timeout in milliseconds"
+                },
+                "headless": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Whether to run browser in headless mode. Set to false to launch a visible GUI window."
                 }
             },
             "required": ["url"]
@@ -346,7 +354,7 @@ TOOL_DEFINITIONS = [
                 "headless": {
                     "type": "boolean",
                     "default": True,
-                    "description": "Whether to run browser in headless mode"
+                    "description": "Whether to run browser in headless mode (default: true). Set to false to launch a visible GUI browser window on desktop (Windows, macOS, or Linux) for manual user interaction, login, or 2FA."
                 },
                 "locale": {
                     "type": "string",
@@ -385,7 +393,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "camoufox_act",
-        "description": "Executes human-like user actions on the page (click, type, hover, scroll, select_option, check, upload_file, switch_tab, new_tab, close_tab, go_back, reload).",
+        "description": "Executes human-like user actions on the page (click, type, hover, scroll, select_option, check, upload_file, switch_tab, new_tab, close_tab, go_back, reload, bring_to_front, wait_for_url).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -403,7 +411,7 @@ TOOL_DEFINITIONS = [
                         "click", "type", "hover", "scroll", "press_key", "navigate",
                         "select_option", "check", "uncheck", "upload_file",
                         "switch_tab", "new_tab", "close_tab", "go_back", "go_forward", "reload",
-                        "wait_for_selector", "wait"
+                        "bring_to_front", "wait_for_url", "wait_for_selector", "wait"
                     ],
                     "description": "Action type to perform"
                 },
@@ -555,6 +563,11 @@ TOOL_DEFINITIONS = [
                     "type": "integer",
                     "default": 30000,
                     "description": "Overall navigation and inspection timeout in milliseconds"
+                },
+                "headless": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Whether to run browser in headless mode. Set to false to launch a visible GUI window."
                 }
             },
             "required": ["url"]
@@ -611,6 +624,77 @@ TOOL_DEFINITIONS = [
             },
             "required": ["video_url"]
         }
+    },
+    {
+        "name": "camoufox_solve_captcha",
+        "description": "Autonomously detects, targets, and clicks Cloudflare Turnstile, hCaptcha, or reCAPTCHA verification checkboxes using human Bézier kinematics and dwell-time simulation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Active session ID containing the challenge"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Profile name"
+                },
+                "captcha_type": {
+                    "type": "string",
+                    "enum": ["auto", "turnstile", "hcaptcha", "recaptcha"],
+                    "default": "auto",
+                    "description": "Challenge type to search for"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "default": 15000,
+                    "description": "Maximum detection and resolution timeout in milliseconds"
+                }
+            }
+        }
+    },
+    {
+        "name": "camoufox_session_export_state",
+        "description": "Exports lightweight session authentication state (cookies, localStorage, sessionStorage) as a compact JSON file (<50KB) with OS/fingerprint metadata for cross-device portability.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID to export"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name to export from vault"
+                },
+                "output_path": {
+                    "type": "string",
+                    "description": "Optional target destination file path for storage_state.json"
+                }
+            }
+        }
+    },
+    {
+        "name": "camoufox_session_import_state",
+        "description": "Imports a lightweight storage_state JSON file or JSON payload directly into a profile in ProfileVault, instantly restoring logins across machines.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "profile_name": {
+                    "type": "string",
+                    "description": "Target profile name in ProfileVault"
+                },
+                "state_path": {
+                    "type": "string",
+                    "description": "Local file path to storage_state.json"
+                },
+                "state_json": {
+                    "type": "string",
+                    "description": "Direct JSON string containing storage state payload"
+                }
+            },
+            "required": ["profile_name"]
+        }
     }
 ]
 
@@ -654,6 +738,7 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             session_id=args.get("session_id"),
             agent_name=agent_name,
             workspace_dir=workspace_dir,
+            headless=args.get("headless"),
         )
     elif name == "camoufox_extract_json_ld":
         return handle_extract_json_ld(
@@ -688,7 +773,7 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
     elif name == "camoufox_session_start":
         return handle_session_start(
             profile_name=args.get("profile_name", "default"),
-            headless=args.get("headless", True),
+            headless=args.get("headless"),
             locale=args.get("locale", "en-US"),
             initial_url=args.get("initial_url"),
             agent_name=agent_name,
@@ -758,6 +843,7 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             timeout_ms=args.get("timeout_ms", 30000),
             agent_name=agent_name,
             workspace_dir=workspace_dir,
+            headless=args.get("headless"),
         )
     elif name == "camoufox_download_media":
         return handle_download_media(
@@ -771,6 +857,31 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             custom_headers=args.get("custom_headers"),
             session_id=args.get("session_id"),
             profile_name=args.get("profile_name"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
+        )
+    elif name == "camoufox_solve_captcha":
+        return handle_solve_captcha(
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            captcha_type=args.get("captcha_type", "auto"),
+            timeout_ms=args.get("timeout_ms", 15000),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
+        )
+    elif name == "camoufox_session_export_state":
+        return handle_session_export_state(
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            output_path=args.get("output_path"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
+        )
+    elif name == "camoufox_session_import_state":
+        return handle_session_import_state(
+            profile_name=args.get("profile_name", ""),
+            state_path=args.get("state_path"),
+            state_json=args.get("state_json"),
             agent_name=agent_name,
             workspace_dir=workspace_dir,
         )

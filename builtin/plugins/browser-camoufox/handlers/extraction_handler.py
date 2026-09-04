@@ -20,6 +20,7 @@ def handle_fetch_page(
     session_id: Optional[str] = None,
     agent_name: Optional[str] = None,
     workspace_dir: Optional[str] = None,
+    headless: Optional[Union[bool, str]] = None,
 ) -> Dict[str, Any]:
     """
     Fetches a web page using Camoufox stealth browser and returns cleaned content.
@@ -80,7 +81,7 @@ def handle_fetch_page(
             }
 
     try:
-        return mgr.run_stateless(run, headless=True, timeout_ms=timeout_ms, profile_name=target_profile, agent_name=agent, workspace_dir=ws_dir)
+        return mgr.run_stateless(run, headless=headless, timeout_ms=timeout_ms, profile_name=target_profile, agent_name=agent, workspace_dir=ws_dir)
     except Exception as e:
         return {
             "url": url,

@@ -36,7 +36,7 @@ class TestServerRPC(unittest.TestCase):
         tools = resp["result"]["tools"]
         tool_names = [t["name"] for t in tools]
 
-        expected_12 = [
+        expected_tools = [
             "camoufox_search",
             "camoufox_discover_trends",
             "camoufox_fetch_page",
@@ -53,10 +53,13 @@ class TestServerRPC(unittest.TestCase):
             "camoufox_pdf_export",
             "camoufox_sniff_media",
             "camoufox_download_media",
+            "camoufox_solve_captcha",
+            "camoufox_session_export_state",
+            "camoufox_session_import_state",
         ]
 
-        self.assertEqual(len(tools), 16)
-        for expected in expected_12:
+        self.assertEqual(len(tools), 19)
+        for expected in expected_tools:
             self.assertIn(expected, tool_names)
 
     def test_tools_call_unknown(self):

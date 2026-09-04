@@ -18,7 +18,7 @@ try:
 except Exception:
     Camoufox = None
 
-from .fingerprint import build_camoufox_launch_options, build_context_options
+from .fingerprint import build_camoufox_launch_options, build_context_options, parse_headless_option
 from .network_sniffer import NetworkSniffer
 from .profile_vault import ProfileVault
 
@@ -35,11 +35,13 @@ class TabSession:
         sniffer: Optional[NetworkSniffer] = None,
         agent_name: str = "default",
         workspace_dir: Optional[str] = None,
+        headless: Union[bool, str] = True,
     ):
         self.session_id = session_id
         self.profile_name = profile_name
         self.agent_name = agent_name or os.environ.get("AGYENT_AGENT_NAME", "default")
         self.workspace_dir = workspace_dir or os.environ.get("AGYENT_AGENT_WORKSPACE")
+        self.headless = headless
         self.context = context
         self._browser_cm = browser_cm
         self.sniffer = sniffer
@@ -213,41 +215,74 @@ class BrowserManager:
     def run_stateless(
         self,
         handler: Callable[[Any], Any],
-        headless: bool = True,
+        headless: Optional[Union[bool, str]] = None,
         locale: str = "en-US",
         timeout_ms: int = 30000,
         profile_name: Optional[str] = None,
         agent_name: str = "default",
         workspace_dir: Optional[str] = None,
+        proxy: Optional[Dict[str, str]] = None,
+        enable_adblock: bool = True,
+        block_images: bool = False,
+        os_target: Optional[Union[str, List[str]]] = None,
+        **extra_opts: Any,
     ) -> Any:
         """
         Executes a task either with a temporary context or inside a named persistent profile for an agent.
         """
         self.reap_idle_sessions()
+        norm_headless = parse_headless_option(headless)
+
         if profile_name:
             # Execute within stateful profile
             session = self.get_or_create_session(
                 profile_name=profile_name,
                 agent_name=agent_name,
                 workspace_dir=workspace_dir,
-                headless=headless,
+                headless=norm_headless,
                 locale=locale,
+                proxy=proxy,
+                enable_adblock=enable_adblock,
+                block_images=block_images,
+                os_target=os_target,
+                **extra_opts,
             )
             with session.busy_guard():
                 page = session.page
                 page.set_default_timeout(timeout_ms)
+                if norm_headless is False:
+                    try:
+                        page.bring_to_front()
+                    except Exception:
+                        pass
                 res = handler(page)
                 session.sync_to_vault(self.profile_vault)
                 return res
 
         # Pure temporary stateless launch
-        launch_opts = build_camoufox_launch_options(headless=headless, locale=locale)
+        launch_opts = build_camoufox_launch_options(
+            headless=norm_headless,
+            locale=locale,
+            proxy=proxy,
+            enable_adblock=enable_adblock,
+            block_images=block_images,
+            os_target=os_target,
+            extra_options=extra_opts,
+        )
         ctx_opts = build_context_options(locale=locale)
+        if launch_opts.get("geoip"):
+            ctx_opts.pop("timezone_id", None)
+            ctx_opts.pop("geolocation", None)
 
         with Camoufox(**launch_opts) as browser:
             context = browser.new_context(**ctx_opts)
             page = context.new_page()
             page.set_default_timeout(timeout_ms)
+            if norm_headless is False:
+                try:
+                    page.bring_to_front()
+                except Exception:
+                    pass
             try:
                 return handler(page)
             finally:
@@ -265,46 +300,80 @@ class BrowserManager:
         profile_name: str = "default",
         agent_name: str = "default",
         workspace_dir: Optional[str] = None,
-        headless: bool = True,
+        headless: Optional[Union[bool, str]] = None,
         locale: str = "en-US",
         initial_url: Optional[str] = None,
         enable_sniffer: bool = False,
         sniffer_pattern: Optional[str] = None,
+        proxy: Optional[Dict[str, str]] = None,
+        enable_adblock: bool = True,
+        block_images: bool = False,
+        os_target: Optional[Union[str, List[str]]] = None,
+        **extra_opts: Any,
     ) -> TabSession:
         """
         Retrieves existing active session for agent_name:profile_name or creates a new one.
+        If existing session's headless mode differs from requested mode (e.g. headless -> headful),
+        recycles the session so the visible window appears.
         """
         clean_agent = self.profile_vault.clean_agent_name(agent_name)
         clean_prof = self.profile_vault.clean_profile_name(profile_name)
         lookup_key = f"{clean_agent}:{clean_prof}"
+        norm_headless = parse_headless_option(headless)
 
+        existing_sid_to_close = None
         with self._lock:
             existing_sid = self.profile_to_session.get(lookup_key)
             if existing_sid and existing_sid in self.sessions:
                 sess = self.sessions[existing_sid]
-                sess.touch()
-                if initial_url and sess.page:
-                    try:
-                        with sess.busy_guard():
-                            sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
-                    except Exception:
-                        pass
-                return sess
+                active_headless = getattr(sess, "headless", True)
+                if active_headless == norm_headless:
+                    sess.touch()
+                    if initial_url and sess.page:
+                        try:
+                            with sess.busy_guard():
+                                sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
+                        except Exception:
+                            pass
+                    if norm_headless is False and sess.page:
+                        try:
+                            sess.page.bring_to_front()
+                        except Exception:
+                            pass
+                    return sess
+                else:
+                    sys.stderr.write(
+                        f"[CAMOUFOX_MANAGER] Mode switch for '{clean_prof}': headless={active_headless} -> {norm_headless}. Recycling session.\n"
+                    )
+                    existing_sid_to_close = existing_sid
+
+        if existing_sid_to_close:
+            self.close_session(existing_sid_to_close, agent_name=clean_agent, workspace_dir=workspace_dir)
 
         sid = self.create_session(
             profile_name=clean_prof,
             agent_name=clean_agent,
             workspace_dir=workspace_dir,
-            headless=headless,
+            headless=norm_headless,
             locale=locale,
             enable_sniffer=enable_sniffer,
             sniffer_pattern=sniffer_pattern,
+            proxy=proxy,
+            enable_adblock=enable_adblock,
+            block_images=block_images,
+            os_target=os_target,
+            **extra_opts,
         )
         sess = self.get_session(sid, agent_name=clean_agent, workspace_dir=workspace_dir)
         if initial_url and sess and sess.page:
             try:
                 with sess.busy_guard():
                     sess.page.goto(initial_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+        if norm_headless is False and sess and sess.page:
+            try:
+                sess.page.bring_to_front()
             except Exception:
                 pass
         return sess
@@ -314,10 +383,15 @@ class BrowserManager:
         profile_name: str = "default",
         agent_name: str = "default",
         workspace_dir: Optional[str] = None,
-        headless: bool = True,
+        headless: Optional[Union[bool, str]] = None,
         locale: str = "en-US",
         enable_sniffer: bool = False,
         sniffer_pattern: Optional[str] = None,
+        proxy: Optional[Dict[str, str]] = None,
+        enable_adblock: bool = True,
+        block_images: bool = False,
+        os_target: Optional[Union[str, List[str]]] = None,
+        **extra_opts: Any,
     ) -> str:
         """
         Starts a persistent browser session with native Firefox user_data_dir for a specific agent.
@@ -326,6 +400,7 @@ class BrowserManager:
         clean_agent = self.profile_vault.clean_agent_name(agent_name)
         clean_profile = self.profile_vault.clean_profile_name(profile_name)
         lookup_key = f"{clean_agent}:{clean_profile}"
+        norm_headless = parse_headless_option(headless)
 
         # Check for profile lock conflict and clean orphan locks
         self.profile_vault.clean_stale_locks(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)
@@ -339,19 +414,30 @@ class BrowserManager:
 
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
         user_data_dir = self.profile_vault.get_user_data_dir(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)
-        launch_opts = build_camoufox_launch_options(headless=headless, locale=locale)
+        launch_opts = build_camoufox_launch_options(
+            headless=norm_headless,
+            locale=locale,
+            proxy=proxy,
+            enable_adblock=enable_adblock,
+            block_images=block_images,
+            os_target=os_target,
+            extra_options=extra_opts,
+        )
         ctx_opts = build_context_options(locale=locale)
 
         # Merge context options into persistent context launch options
         launch_opts.update({
             "persistent_context": True,
             "user_data_dir": user_data_dir,
-            "locale": ctx_opts.get("locale", "en-US"),
-            "timezone_id": ctx_opts.get("timezone_id", "America/New_York"),
-            "geolocation": ctx_opts.get("geolocation"),
             "permissions": ctx_opts.get("permissions", ["geolocation"]),
             "ignore_https_errors": True,
         })
+        if not launch_opts.get("geoip"):
+            launch_opts.update({
+                "locale": ctx_opts.get("locale", "en-US"),
+                "timezone_id": ctx_opts.get("timezone_id", "America/New_York"),
+                "geolocation": ctx_opts.get("geolocation"),
+            })
 
         # Launch persistent context
         browser_cm = Camoufox(**launch_opts)
@@ -362,6 +448,11 @@ class BrowserManager:
             context.new_page()
 
         page = context.pages[0]
+        if norm_headless is False and page:
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
 
         sniffer = None
         if enable_sniffer:
@@ -376,6 +467,7 @@ class BrowserManager:
             context=context,
             browser_cm=browser_cm,
             sniffer=sniffer,
+            headless=norm_headless,
         )
 
         with self._lock:
