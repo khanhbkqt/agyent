@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.22] - 2026-09-04
+
+### Changed
+- **Decoupled Core & Standardized Markdown Wire Format:** Decoupled channel-specific HTML generation from `core/engine` and `core/domain`. Engine slash commands and system notifications now produce clean GitHub-Flavored Markdown, while channel adapters transparently handle channel-native rendering.
+- **Unified Admin Checking:** Consolidated sender admin verification through `config.IsAdmin()`.
+
+### Fixed
+- **Outbound Media Delivery & Document Fallback:** Implemented file lock retries (`openFileWithRetry`) for rapid artifact sync on Windows, added automatic `SendDocument` fallback when Telegram rejects photos, and introduced HTTP 429 rate limit backoff.
+- **Overhauled System Runtime Foundation:** Restructured Level 0 System Runtime Foundation into 5 imperative pillars with strict outbound media referencing rules (`![alt](path)` and `[title](path)`).
+
+---
+
 ## [1.0.21] - 2026-09-04
 
 ### Fixed
