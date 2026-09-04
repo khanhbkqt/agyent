@@ -133,6 +133,16 @@ def handle_message(msg):
     return None
 
 def main():
+    if "--check" in sys.argv or "--health" in sys.argv:
+        status = {
+            "status": "ok",
+            "plugin": "database-sqlite",
+            "python": sys.executable,
+        }
+        sys.stdout.write(json.dumps(status) + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
     while True:
         line = sys.stdin.readline()
         if not line:

@@ -1023,8 +1023,26 @@ def handle_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def check_health() -> Dict[str, Any]:
+    """Fast health probe verifying imports, typing definitions, and Camoufox core engine."""
+    return {
+        "status": "ok" if CAMOUFOX_AVAILABLE else "missing_dependency",
+        "camoufox_available": CAMOUFOX_AVAILABLE,
+        "import_error": CAMOUFOX_IMPORT_ERROR,
+        "python": sys.executable,
+        "version": "1.4.0",
+        "tools_count": len(TOOL_DEFINITIONS),
+    }
+
+
 def main() -> None:
-    log("Starting Camoufox Full Capabilities Engine MCP Server v1.2.0...")
+    if "--check" in sys.argv or "--health" in sys.argv:
+        status = check_health()
+        sys.stdout.write(json.dumps(status, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        sys.exit(0 if status["camoufox_available"] else 1)
+
+    log("Starting Camoufox Full Capabilities Engine MCP Server v1.4.0...")
     while True:
         try:
             line = sys.stdin.readline()

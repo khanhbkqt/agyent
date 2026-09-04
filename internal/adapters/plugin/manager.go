@@ -467,6 +467,14 @@ func (m *PluginManager) loadPluginFromDir(pluginDir string, scope domain.Context
 						}
 					}
 				}
+				if _, statErr := os.Stat(srv.Command); statErr != nil {
+					if _, lookErr := exec.LookPath(srv.Command); lookErr != nil {
+						slog.Warn("Plugin declared MCP server command not found on host",
+							slog.String("plugin", manifest.Name),
+							slog.String("server", name),
+							slog.String("command", srv.Command))
+					}
+				}
 				p.MCPServers = append(p.MCPServers, srv)
 			}
 		}
@@ -712,6 +720,13 @@ func copyFile(src, dst string) error {
 }
 
 func resolveCommandPath(cmd string) string {
+	return ResolveCommandPath(cmd)
+}
+
+// ResolveCommandPath resolves the absolute or optimal path for an executable command,
+// with dedicated multi-tier discovery for Python virtualenvs (AGYENT_PYTHON, active VIRTUAL_ENV,
+// ~/.agyent/venv, ~/.agyent/camoufox/venv, and system PATH).
+func ResolveCommandPath(cmd string) string {
 	if cmd == "python" || cmd == "python3" {
 		// 1. Check AGYENT_PYTHON environment variable
 		if envPy := os.Getenv("AGYENT_PYTHON"); envPy != "" {
@@ -720,19 +735,34 @@ func resolveCommandPath(cmd string) string {
 			}
 		}
 
-		// 2. Check ~/.agyent/venv/bin/python or ~/.agyent/venv/Scripts/python.exe
-		if home, err := os.UserHomeDir(); err == nil {
-			venvPyUnix := filepath.Join(home, ".agyent", "venv", "bin", "python")
+		// 2. Check active VIRTUAL_ENV environment variable
+		if venv := os.Getenv("VIRTUAL_ENV"); venv != "" {
+			venvPyUnix := filepath.Join(venv, "bin", "python")
 			if _, err := os.Stat(venvPyUnix); err == nil {
 				return venvPyUnix
 			}
-			venvPyWin := filepath.Join(home, ".agyent", "venv", "Scripts", "python.exe")
+			venvPyWin := filepath.Join(venv, "Scripts", "python.exe")
 			if _, err := os.Stat(venvPyWin); err == nil {
 				return venvPyWin
 			}
 		}
 
-		// 3. Fallback to LookPath
+		// 3. Check ~/.agyent/venv and ~/.agyent/camoufox/venv
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates := []string{
+				filepath.Join(home, ".agyent", "venv", "bin", "python"),
+				filepath.Join(home, ".agyent", "venv", "Scripts", "python.exe"),
+				filepath.Join(home, ".agyent", "camoufox", "venv", "bin", "python"),
+				filepath.Join(home, ".agyent", "camoufox", "venv", "Scripts", "python.exe"),
+			}
+			for _, candidate := range candidates {
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate
+				}
+			}
+		}
+
+		// 4. Fallback to LookPath
 		if runtime.GOOS == "windows" {
 			if path, err := exec.LookPath("python.exe"); err == nil {
 				return path
