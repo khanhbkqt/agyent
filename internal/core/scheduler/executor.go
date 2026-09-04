@@ -55,6 +55,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	}
 
 	promptText := formatBackgroundPrompt(task.Title, task.Prompt)
+	model, effort := e.resolveModelAndEffort(task.AgentName)
 
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
@@ -62,8 +63,8 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		TurnID:                     fmt.Sprintf("turn-%s-%d", task.ID, time.Now().UnixNano()),
 		WorkspaceDir:               agentWS,
 		Timeout:                    timeout,
-		Model:                      e.resolveModel(task.AgentName),
-		Effort:                     e.resolveEffort(task.AgentName),
+		Model:                      model,
+		Effort:                     effort,
 		Mode:                       "accept-edits",
 		DangerouslySkipPermissions: true,
 		AgentName:                  task.AgentName,
@@ -76,6 +77,8 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		"agent", task.AgentName,
 		"title", task.Title,
 		"session_key", sessionKey,
+		"model", model,
+		"effort", effort,
 	)
 
 	var result *domain.ExecutionResult
@@ -84,6 +87,12 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	if e.runner != nil {
 		// Use Execute in background worker to execute task prompt
 		result, execErr = e.runner.Execute(ctx, req)
+		if domain.IsEffortError(execErr, result) && req.Effort != "" {
+			e.logger.Warn("Model rejected reasoning effort in scheduled task, retrying without --effort flag",
+				"task_id", task.ID, "model", req.Model, "effort", req.Effort)
+			req.Effort = ""
+			result, execErr = e.runner.Execute(ctx, req)
+		}
 	} else {
 		execErr = fmt.Errorf("runner port is not initialized")
 	}
@@ -144,6 +153,7 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	}
 
 	promptText := formatHeartbeatPrompt(hb.AgentName, promptDirectives)
+	model, effort := e.resolveModelAndEffort(hb.AgentName)
 
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
@@ -151,8 +161,8 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		TurnID:                     fmt.Sprintf("turn-hb-%s-%d", hb.AgentName, time.Now().UnixNano()),
 		WorkspaceDir:               agentWS,
 		Timeout:                    timeout,
-		Model:                      e.resolveModel(hb.AgentName),
-		Effort:                     e.resolveEffort(hb.AgentName),
+		Model:                      model,
+		Effort:                     effort,
 		Mode:                       "accept-edits",
 		DangerouslySkipPermissions: true,
 		AgentName:                  hb.AgentName,
@@ -164,6 +174,8 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		"agent", hb.AgentName,
 		"interval", hb.IntervalSeconds,
 		"session_key", sessionKey,
+		"model", model,
+		"effort", effort,
 	)
 
 	var result *domain.ExecutionResult
@@ -171,6 +183,12 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 
 	if e.runner != nil {
 		result, execErr = e.runner.Execute(ctx, req)
+		if domain.IsEffortError(execErr, result) && req.Effort != "" {
+			e.logger.Warn("Model rejected reasoning effort in heartbeat task, retrying without --effort flag",
+				"agent", hb.AgentName, "model", req.Model, "effort", req.Effort)
+			req.Effort = ""
+			result, execErr = e.runner.Execute(ctx, req)
+		}
 	} else {
 		execErr = fmt.Errorf("runner port is not initialized")
 	}
@@ -207,28 +225,47 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	return result, execErr
 }
 
-func (e *TaskExecutor) resolveModel(agentName string) string {
+func (e *TaskExecutor) resolveModelAndEffort(agentName string) (string, string) {
+	var rawModel string
+	var rawEffort string
+
 	if e.cfg != nil {
-		if a, ok := e.cfg.Agents[agentName]; ok && strings.TrimSpace(a.DefaultModel) != "" {
-			return a.DefaultModel
+		if a, ok := e.cfg.Agents[agentName]; ok {
+			rawModel = a.DefaultModel
+			rawEffort = a.DefaultEffort
 		}
-		if strings.TrimSpace(e.cfg.AGY.DefaultModel) != "" {
-			return e.cfg.AGY.DefaultModel
+		if rawModel == "" && strings.TrimSpace(e.cfg.AGY.DefaultModel) != "" {
+			rawModel = e.cfg.AGY.DefaultModel
+		}
+		if rawEffort == "" && strings.TrimSpace(e.cfg.AGY.DefaultEffort) != "" {
+			rawEffort = e.cfg.AGY.DefaultEffort
 		}
 	}
-	return "flash"
+
+	if rawModel == "" {
+		rawModel = "flash"
+	}
+	if rawEffort == "" {
+		rawEffort = "low"
+	}
+
+	var customAliases map[string]string
+	if e.cfg != nil {
+		customAliases = e.cfg.AGY.ModelAliases
+	}
+
+	canonicalModel, normalizedEffort, _ := domain.NormalizeModelAndEffort(rawModel, rawEffort, customAliases)
+	return canonicalModel, normalizedEffort
+}
+
+func (e *TaskExecutor) resolveModel(agentName string) string {
+	m, _ := e.resolveModelAndEffort(agentName)
+	return m
 }
 
 func (e *TaskExecutor) resolveEffort(agentName string) string {
-	if e.cfg != nil {
-		if a, ok := e.cfg.Agents[agentName]; ok && strings.TrimSpace(a.DefaultEffort) != "" {
-			return a.DefaultEffort
-		}
-		if strings.TrimSpace(e.cfg.AGY.DefaultEffort) != "" {
-			return e.cfg.AGY.DefaultEffort
-		}
-	}
-	return "low"
+	_, eff := e.resolveModelAndEffort(agentName)
+	return eff
 }
 
 // formatBackgroundPrompt injects the scheduled task into Level 4 preserving Levels 0-3 KV-cache.

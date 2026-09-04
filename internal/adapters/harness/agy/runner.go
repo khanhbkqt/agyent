@@ -36,6 +36,7 @@ type Harness struct {
 	defaultMode                string
 	dangerouslySkipPermissions bool
 	graceTimeout               time.Duration
+	modelAliases               map[string]string
 	watcher                    *SnapshotWatcher
 	eventBus                   ports.EventBusPort
 	activeStreams              sync.Map // map[string]*streamControlEntry
@@ -72,6 +73,7 @@ func NewHarness(cfg config.AGYConfig, bus ...ports.EventBusPort) *Harness {
 		defaultMode:                mode,
 		dangerouslySkipPermissions: cfg.DangerouslySkipPermissions,
 		graceTimeout:               graceTimeout,
+		modelAliases:               cfg.ModelAliases,
 		watcher:                    NewSnapshotWatcher(),
 		eventBus:                   eb,
 	}
@@ -117,16 +119,25 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		args = append(args, "--mode", mode)
 	}
 
+	model := req.Model
 	effort := req.Effort
 	if effort == "" {
 		effort = h.defaultEffort
 	}
+	if model != "" || effort != "" {
+		canonical, normEffort, _ := domain.NormalizeModelAndEffort(model, effort, h.modelAliases)
+		if canonical != "" {
+			model = canonical
+		}
+		effort = normEffort
+	}
+
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
 
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 
 	cmd := exec.CommandContext(execCtx, h.binaryPath, args...)
@@ -275,16 +286,25 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		args = append(args, "--mode", mode)
 	}
 
+	model := req.Model
 	effort := req.Effort
 	if effort == "" {
 		effort = h.defaultEffort
 	}
+	if model != "" || effort != "" {
+		canonical, normEffort, _ := domain.NormalizeModelAndEffort(model, effort, h.modelAliases)
+		if canonical != "" {
+			model = canonical
+		}
+		effort = normEffort
+	}
+
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
 
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 
 	inboundMsg := map[string]any{

@@ -240,6 +240,15 @@ func (e *Engine) Start(ctx context.Context) error {
 		_ = e.evolution.Start(e.ctx)
 	}
 
+	// 5. Discover available models from AGY CLI in background
+	if e.runner != nil {
+		concurrency.SafeGo(func() {
+			discoverCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+			defer cancel()
+			_, _ = e.runner.ListAvailableModels(discoverCtx)
+		})
+	}
+
 	// 5. Subscribe to Force Kill & Cancellation events from EventBus
 	if e.eventBus != nil {
 		e.eventBus.SubscribeSync(domain.EventForceKillRequested, func(ctx context.Context, evt domain.Event) error {
@@ -1103,19 +1112,7 @@ func isTransientError(err error, result *domain.ExecutionResult) bool {
 
 // isEffortError identifies cases where the underlying CLI or model rejected the reasoning effort flag.
 func isEffortError(err error, result *domain.ExecutionResult) bool {
-	var errStr string
-	if err != nil {
-		errStr += err.Error() + " "
-	}
-	if result != nil && !result.Success && result.Error != "" {
-		errStr += result.Error + " "
-	}
-	low := strings.ToLower(errStr)
-	return strings.Contains(low, "flag provided but not defined: -effort") ||
-		strings.Contains(low, "unknown flag: --effort") ||
-		strings.Contains(low, "effort not supported") ||
-		strings.Contains(low, "unrecognized effort") ||
-		strings.Contains(low, "invalid effort")
+	return domain.IsEffortError(err, result)
 }
 
 func (e *Engine) subscribeSubagentEvents() {

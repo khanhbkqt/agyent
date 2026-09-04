@@ -59,6 +59,16 @@ func (m ModelCapability) EffectiveCompactThreshold() int {
 // DefaultModelCapabilities contains the fallback catalog of models supported by Antigravity CLI (agy).
 var DefaultModelCapabilities = []ModelCapability{
 	{
+		ID:                    "gemini-3.8-flash",
+		DisplayName:           "Gemini 3.8 Flash",
+		Aliases:               []string{"3.8-flash", "gemini-3.8"},
+		SupportedEfforts:      []string{"low", "medium", "high"},
+		DefaultEffort:         "high",
+		MaxContextTokens:      1048576,
+		MaxOutputTokens:       65536,
+		CompactThresholdRatio: 0.70,
+	},
+	{
 		ID:                    "gemini-3.7-flash",
 		DisplayName:           "Gemini 3.7 Flash",
 		Aliases:               []string{"flash", "fast", "3.7-flash", "gemini-flash"},
@@ -251,4 +261,23 @@ func NormalizeModelAndEffort(rawModel, rawEffort string, customAliases map[strin
 	// Effort requested is not supported by this model (e.g. "medium" on "gemini-3.1-pro" which only supports low/high)
 	// Clamp/fallback to model's default effort ("high")
 	return canonicalModel, cap.DefaultEffort, false
+}
+
+// IsEffortError identifies cases where the underlying CLI or model rejected the reasoning effort flag.
+func IsEffortError(err error, result *ExecutionResult) bool {
+	var errStr string
+	if err != nil {
+		errStr += err.Error() + " "
+	}
+	if result != nil && !result.Success && result.Error != "" {
+		errStr += result.Error + " "
+	}
+	low := strings.ToLower(errStr)
+	return strings.Contains(low, "flag provided but not defined: -effort") ||
+		strings.Contains(low, "unknown flag: --effort") ||
+		strings.Contains(low, "effort not supported") ||
+		strings.Contains(low, "effort is not supported") ||
+		(strings.Contains(low, "effort") && strings.Contains(low, "not supported")) ||
+		strings.Contains(low, "unrecognized effort") ||
+		strings.Contains(low, "invalid effort")
 }

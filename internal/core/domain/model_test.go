@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"fmt"
 	"testing"
 
 	"agyent/internal/core/domain"
@@ -182,4 +183,57 @@ func TestModelCapability_ContextAndThresholds(t *testing.T) {
 	assert.Equal(t, 1048576, genericCap.EffectiveMaxContext())
 	assert.Equal(t, 65536, genericCap.EffectiveMaxOutput())
 	assert.Equal(t, 734003, genericCap.EffectiveCompactThreshold())
+}
+
+func TestIsEffortError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		result   *domain.ExecutionResult
+		expected bool
+	}{
+		{
+			name:     "AGY error: --effort is not supported for model flash",
+			err:      fmt.Errorf("exit status 1: invalid model selection (--model \"flash\" --effort \"high\"): --effort is not supported for model \"flash\""),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Result error: effort not supported",
+			err:      nil,
+			result:   &domain.ExecutionResult{Success: false, Error: "effort not supported for this model"},
+			expected: true,
+		},
+		{
+			name:     "Flag not defined: -effort",
+			err:      fmt.Errorf("flag provided but not defined: -effort"),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Unknown flag: --effort",
+			err:      fmt.Errorf("unknown flag: --effort"),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Unrelated network error",
+			err:      fmt.Errorf("connection refused: dial tcp 127.0.0.1:80"),
+			result:   nil,
+			expected: false,
+		},
+		{
+			name:     "Successful execution",
+			err:      nil,
+			result:   &domain.ExecutionResult{Success: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := domain.IsEffortError(tt.err, tt.result)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
 }
