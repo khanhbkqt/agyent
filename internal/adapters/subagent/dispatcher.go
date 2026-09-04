@@ -419,7 +419,7 @@ func (d *SubagentDispatcher) handleTurnResult(tCtx *taskRuntimeContext, res *Tur
 	case domain.TaskStatusCompleted:
 		tCtx.setCompleted(res.Response, res.Artifacts, res.Usage, res.DurationSeconds)
 		snap := tCtx.snapshot()
-		_ = d.storage.UpdateSubagentTaskCompleted(d.ctx, taskID, res.Response, snap.ArtifactsJSON(), res.Usage, res.DurationSeconds)
+		_ = d.storage.UpdateSubagentTaskCompleted(d.ctx, taskID, res.Response, snap.Artifacts, res.Usage, res.DurationSeconds)
 		if d.eventBus != nil {
 			d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentCompleted, domain.SubagentEventPayload{Task: snap}))
 		}

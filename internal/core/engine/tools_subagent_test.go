@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"agyent/internal/adapters/storage/sqlite"
+	"agyent/internal/adapters/subagent"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
-	"agyent/internal/core/subagent"
 )
 
 func TestSubagentTools_HandleSubagentToolCall(t *testing.T) {

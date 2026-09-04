@@ -219,3 +219,16 @@ func isInsideDir(target, base string) bool {
 	}
 	return strings.HasPrefix(cTarget, cBase)
 }
+
+// HasDirectives checks if any core persona/directive files exist in the agent's workspace directory.
+func (m *Manager) HasDirectives(workspaceDir string) bool {
+	if workspaceDir == "" {
+		return false
+	}
+	for _, f := range []string{"IDENTITY.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"} {
+		if _, err := os.Stat(filepath.Join(workspaceDir, f)); err == nil {
+			return true
+		}
+	}
+	return false
+}

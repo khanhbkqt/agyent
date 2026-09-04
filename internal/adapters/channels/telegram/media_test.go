@@ -801,5 +801,3 @@ func TestMedia_OpenFileWithRetry(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 	assert.Less(t, duration, 100*time.Millisecond, "Non-existent files must fail fast without retrying delays")
 }
-
-

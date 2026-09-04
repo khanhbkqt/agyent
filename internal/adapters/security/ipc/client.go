@@ -23,8 +23,8 @@ func NewClient(addr string) *Client {
 	return &Client{addr: addr}
 }
 
-// SendHookRequest sends a domain.HookRequest and reads the response within the given timeout.
-func (c *Client) SendHookRequest(req domain.HookRequest, timeout time.Duration) (domain.HookResponse, error) {
+// SendHookRequest sends a HookRequest and reads the response within the given timeout.
+func (c *Client) SendHookRequest(req HookRequest, timeout time.Duration) (HookResponse, error) {
 	if timeout <= 0 {
 		timeout = 65 * time.Second
 	}
@@ -32,7 +32,7 @@ func (c *Client) SendHookRequest(req domain.HookRequest, timeout time.Duration) 
 	conn, err := net.DialTimeout("tcp", c.addr, 2*time.Second)
 	if err != nil {
 		// Fail-Safe Default-Deny fallback
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   fmt.Sprintf("🛡️ [Security Gateway]: Gateway daemon is offline or unreachable (%v). Fail-safe Default-Deny engaged.", err),
 		}, err
@@ -43,14 +43,14 @@ func (c *Client) SendHookRequest(req domain.HookRequest, timeout time.Duration) 
 
 	reqBytes, err := json.Marshal(req)
 	if err != nil {
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   fmt.Sprintf("Failed to encode hook request: %v", err),
 		}, err
 	}
 
 	if _, err := conn.Write(append(reqBytes, '\n')); err != nil {
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   fmt.Sprintf("Failed to transmit hook request: %v", err),
 		}, err
@@ -61,15 +61,15 @@ func (c *Client) SendHookRequest(req domain.HookRequest, timeout time.Duration) 
 	scanner.Buffer(buf, 1024*1024)
 
 	if !scanner.Scan() {
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   "No response received from Security Gateway IPC Daemon",
 		}, fmt.Errorf("empty response from daemon")
 	}
 
-	var resp domain.HookResponse
+	var resp HookResponse
 	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		return domain.HookResponse{
+		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   fmt.Sprintf("Malformed decision payload from daemon: %v", err),
 		}, err
@@ -143,4 +143,3 @@ func (c *Client) SendAction(action string, params any, timeout time.Duration) (A
 
 	return resp, nil
 }
-

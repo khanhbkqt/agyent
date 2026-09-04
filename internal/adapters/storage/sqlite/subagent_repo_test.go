@@ -114,7 +114,10 @@ func TestSQLiteStore_SubagentRepository(t *testing.T) {
 		OutputTokens: 250,
 		TotalTokens:  1750,
 	}
-	if err := store.UpdateSubagentTaskCompleted(ctx, "task-sub-001", "Refactoring complete!", `[{"file_name":"result.go","file_path":"/tmp/result.go"}]`, usage, 14.5); err != nil {
+	atts := []domain.Attachment{
+		{FileName: "result.go", FilePath: "/tmp/result.go"},
+	}
+	if err := store.UpdateSubagentTaskCompleted(ctx, "task-sub-001", "Refactoring complete!", atts, usage, 14.5); err != nil {
 		t.Fatalf("failed to update completed: %v", err)
 	}
 	retrieved, _ = store.GetSubagentTask(ctx, "task-sub-001")

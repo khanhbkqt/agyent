@@ -20,10 +20,10 @@ var hookBridgeCmd = &cobra.Command{
 			hookType = "post"
 		}
 
-		var req domain.HookRequest
+		var req ipc.HookRequest
 		if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
 			// If stdin cannot be decoded, output fail-safe response
-			resp, _ := json.Marshal(domain.HookResponse{
+			resp, _ := json.Marshal(ipc.HookResponse{
 				Decision: string(domain.DecisionDeny),
 				Reason:   fmt.Sprintf("Failed to decode STDIN hook payload: %v", err),
 			})
@@ -41,7 +41,7 @@ var hookBridgeCmd = &cobra.Command{
 		resp, err := client.SendHookRequest(req, 65*time.Second)
 		if err != nil {
 			// Fail-safe Default-Deny if daemon is unreachable
-			resp = domain.HookResponse{
+			resp = ipc.HookResponse{
 				Decision: string(domain.DecisionDeny),
 				Reason:   fmt.Sprintf("🛡️ [Security Gateway]: Gateway daemon offline (%v). Fail-safe Default-Deny engaged.", err),
 			}

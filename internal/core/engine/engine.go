@@ -557,6 +557,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	isBootstrap := !agent.IsInitialized()
+	if isBootstrap && e.workspaceManager != nil && e.workspaceManager.HasDirectives(agent.WorkspacePath) {
+		isBootstrap = false
+		agent.Status = domain.StatusInitialized
+		_ = e.storage.SaveAgent(turnCtx, agent)
+	}
 
 	// 5. Resolve CWD (In-Project Workspace vs Global Agent Workspace)
 	workspaceDir := agent.WorkspacePath
@@ -1360,10 +1365,10 @@ func (e *Engine) subscribeSchedulerEvents() {
 		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:  channel,
-			ChatID:   hb.ChatID,
-			ThreadID: threadID,
-			Text:     fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
+			Channel:   channel,
+			ChatID:    hb.ChatID,
+			ThreadID:  threadID,
+			Text:      fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
 			ParseMode: "Markdown",
 		})
 	})

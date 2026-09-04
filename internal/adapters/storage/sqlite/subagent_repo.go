@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -55,7 +56,7 @@ func (s *SQLiteStore) GetSubagentTask(ctx context.Context, id string) (*domain.S
 	t.CallbackMode = domain.SubagentCallbackMode(cbModeStr)
 	t.CreatedAt = createdAt.Time
 	t.UpdatedAt = updatedAt.Time
-	t.ParseArtifactsJSON(artifactsJSON)
+	t.Artifacts = unmarshalArtifacts(artifactsJSON)
 
 	return &t, nil
 }
@@ -118,7 +119,7 @@ func (s *SQLiteStore) ListSubagentTasks(ctx context.Context, parentSessionKey st
 		t.CallbackMode = domain.SubagentCallbackMode(cbModeStr)
 		t.CreatedAt = createdAt.Time
 		t.UpdatedAt = updatedAt.Time
-		t.ParseArtifactsJSON(artifactsJSON)
+		t.Artifacts = unmarshalArtifacts(artifactsJSON)
 
 		results = append(results, t)
 	}
@@ -174,7 +175,7 @@ func (s *SQLiteStore) ListActiveSubagentTasks(ctx context.Context, parentSession
 		t.CallbackMode = domain.SubagentCallbackMode(cbModeStr)
 		t.CreatedAt = createdAt.Time
 		t.UpdatedAt = updatedAt.Time
-		t.ParseArtifactsJSON(artifactsJSON)
+		t.Artifacts = unmarshalArtifacts(artifactsJSON)
 
 		results = append(results, t)
 	}
@@ -235,7 +236,7 @@ func (s *SQLiteStore) ListPendingSubagentTasks(ctx context.Context, limit int) (
 		t.CallbackMode = domain.SubagentCallbackMode(cbModeStr)
 		t.CreatedAt = createdAt.Time
 		t.UpdatedAt = updatedAt.Time
-		t.ParseArtifactsJSON(artifactsJSON)
+		t.Artifacts = unmarshalArtifacts(artifactsJSON)
 
 		results = append(results, t)
 	}
@@ -299,7 +300,7 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 		task.ID, task.ParentSessionKey, task.ParentConversationID, task.SubConversationID,
 		task.AgentName, task.ProjectName, task.Title, task.Prompt, task.Model, task.Effort, task.WorkspaceMode, string(task.CallbackMode),
 		string(task.Status), task.CurrentStep, task.CurrentTool, task.ProgressMessage, task.PendingQuestion,
-		task.ResultSummary, task.ArtifactsJSON(), task.ErrorMessage, task.Usage.TotalTokens, task.DurationSeconds,
+		task.ResultSummary, marshalArtifacts(task.Artifacts), task.ErrorMessage, task.Usage.TotalTokens, task.DurationSeconds,
 		timeToMilli(task.CreatedAt), timeToMilli(task.UpdatedAt),
 	)
 	if err != nil {
@@ -347,12 +348,13 @@ func (s *SQLiteStore) UpdateSubagentTaskWaitingInput(ctx context.Context, id str
 }
 
 // UpdateSubagentTaskCompleted marks a task as COMPLETED with distilled summary and token metrics.
-func (s *SQLiteStore) UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary, artifactsJSON string, usage domain.TokenUsage, durationSec float64) error {
+func (s *SQLiteStore) UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary string, artifacts []domain.Attachment, usage domain.TokenUsage, durationSec float64) error {
 	nowMs := timeToMilli(time.Now())
 	totalTokens := usage.TotalTokens
 	if totalTokens == 0 {
 		totalTokens = usage.InputTokens + usage.OutputTokens + usage.ThinkingTokens
 	}
+	artifactsJSON := marshalArtifacts(artifacts)
 
 	query := `
 		UPDATE subagent_tasks
@@ -434,4 +436,26 @@ func (s *SQLiteStore) PurgeSubagentTasks(ctx context.Context, olderThanDays int)
 	}
 
 	return affected, nil
+}
+
+func marshalArtifacts(artifacts []domain.Attachment) string {
+	if len(artifacts) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(artifacts)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func unmarshalArtifacts(raw string) []domain.Attachment {
+	if len(raw) == 0 || raw == "[]" {
+		return nil
+	}
+	var atts []domain.Attachment
+	if err := json.Unmarshal([]byte(raw), &atts); err == nil {
+		return atts
+	}
+	return nil
 }

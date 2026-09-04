@@ -1,8 +1,6 @@
 package domain
 
 import (
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -41,26 +39,10 @@ type AgentPermission struct {
 	GrantedAt time.Time `json:"granted_at"`
 }
 
-// HasDirectives checks if any core persona/directive files exist in the agent's workspace directory.
-func (a *Agent) HasDirectives() bool {
-	if a == nil || a.WorkspacePath == "" {
-		return false
-	}
-	for _, f := range []string{"IDENTITY.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"} {
-		if _, err := os.Stat(filepath.Join(a.WorkspacePath, f)); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// IsInitialized checks if the agent has finished its bootstrap protocol.
+// IsInitialized checks if the agent has finished its bootstrap protocol based on recorded status.
 func (a *Agent) IsInitialized() bool {
 	if a == nil {
 		return false
 	}
-	if a.Status == StatusInitialized {
-		return true
-	}
-	return a.HasDirectives()
+	return a.Status == StatusInitialized
 }

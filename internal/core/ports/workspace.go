@@ -23,4 +23,7 @@ type WorkspacePort interface {
 
 	// WriteHeartbeat serializes and writes HEARTBEAT.md with YAML frontmatter to the agent workspace.
 	WriteHeartbeat(ctx context.Context, workspaceDir string, cfg domain.HeartbeatConfig, prompt string) error
+
+	// HasDirectives checks if any core persona/directive files exist in the agent's workspace directory.
+	HasDirectives(workspaceDir string) bool
 }

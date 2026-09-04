@@ -15,7 +15,7 @@ type SubagentRepository interface {
 	SaveSubagentTask(ctx context.Context, task *domain.SubagentTask) error
 	UpdateSubagentTaskProgress(ctx context.Context, id string, step int, tool, progressMsg string) error
 	UpdateSubagentTaskWaitingInput(ctx context.Context, id string, question, subConvID string) error
-	UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary, artifactsJSON string, usage domain.TokenUsage, durationSec float64) error
+	UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary string, artifacts []domain.Attachment, usage domain.TokenUsage, durationSec float64) error
 	UpdateSubagentTaskFailed(ctx context.Context, id string, errMsg string, durationSec float64) error
 	UpdateSubagentTaskCancelled(ctx context.Context, id string) error
 	PurgeSubagentTasks(ctx context.Context, olderThanDays int) (int64, error)

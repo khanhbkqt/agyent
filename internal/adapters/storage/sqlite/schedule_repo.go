@@ -117,15 +117,15 @@ func (s *SQLiteStore) GetSchedule(ctx context.Context, id string) (*domain.Sched
 	`
 
 	var (
-		t             domain.ScheduleTask
-		schedTypeStr  string
-		statusStr     string
-		overlapStr    string
-		misfireStr    string
-		nextRunAt     FlexTime
-		lastRunAt     FlexTime
-		createdAt     FlexTime
-		updatedAt     FlexTime
+		t            domain.ScheduleTask
+		schedTypeStr string
+		statusStr    string
+		overlapStr   string
+		misfireStr   string
+		nextRunAt    FlexTime
+		lastRunAt    FlexTime
+		createdAt    FlexTime
+		updatedAt    FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, id).Scan(
@@ -228,15 +228,15 @@ func (s *SQLiteStore) ListSchedules(ctx context.Context, agentName string, statu
 	var results []domain.ScheduleTask
 	for rows.Next() {
 		var (
-			t             domain.ScheduleTask
-			schedTypeStr  string
-			statusStr     string
-			overlapStr    string
-			misfireStr    string
-			nextRunAt     FlexTime
-			lastRunAt     FlexTime
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			t            domain.ScheduleTask
+			schedTypeStr string
+			statusStr    string
+			overlapStr   string
+			misfireStr   string
+			nextRunAt    FlexTime
+			lastRunAt    FlexTime
+			createdAt    FlexTime
+			updatedAt    FlexTime
 		)
 
 		err := rows.Scan(
@@ -300,15 +300,15 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 
 	for rows.Next() {
 		var (
-			t             domain.ScheduleTask
-			schedTypeStr  string
-			statusStr     string
-			overlapStr    string
-			misfireStr    string
-			nextRunAt     FlexTime
-			lastRunAt     FlexTime
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			t            domain.ScheduleTask
+			schedTypeStr string
+			statusStr    string
+			overlapStr   string
+			misfireStr   string
+			nextRunAt    FlexTime
+			lastRunAt    FlexTime
+			createdAt    FlexTime
+			updatedAt    FlexTime
 		)
 
 		err := rows.Scan(
@@ -415,12 +415,12 @@ func (s *SQLiteStore) GetHeartbeat(ctx context.Context, agentName string) (*doma
 	`
 
 	var (
-		hb        domain.HeartbeatConfig
+		hb         domain.HeartbeatConfig
 		enabledInt int
-		statusStr string
-		lastRunAt FlexTime
-		nextRunAt FlexTime
-		updatedAt FlexTime
+		statusStr  string
+		lastRunAt  FlexTime
+		nextRunAt  FlexTime
+		updatedAt  FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, agentName).Scan(
@@ -540,12 +540,12 @@ func (s *SQLiteStore) AcquireDueHeartbeats(ctx context.Context, nowUnixMs int64,
 
 	for rows.Next() {
 		var (
-			hb        domain.HeartbeatConfig
+			hb         domain.HeartbeatConfig
 			enabledInt int
-			statusStr string
-			lastRunAt FlexTime
-			nextRunAt FlexTime
-			updatedAt FlexTime
+			statusStr  string
+			lastRunAt  FlexTime
+			nextRunAt  FlexTime
+			updatedAt  FlexTime
 		)
 
 		err := rows.Scan(

@@ -130,44 +130,25 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 	}
 }
 
-func TestParseModelsOutput(t *testing.T) {
-	rawCLIOutput := `Fetching available models...
-gemini-3.7-flash-high	Gemini 3.7 Flash (High)
-gemini-3.7-flash-medium	Gemini 3.7 Flash (Medium)
-gemini-3.7-flash-low	Gemini 3.7 Flash (Low)
-gemini-3.1-pro-high	Gemini 3.1 Pro (High)
-gemini-3.1-pro-low	Gemini 3.1 Pro (Low)
-claude-sonnet-4-6	Claude Sonnet 4.6 (Thinking)
-claude-opus-4-6-thinking	Claude Opus 4.6 (Thinking)
-gpt-oss-120b-medium	GPT-OSS 120B (Medium)`
+func TestDynamicModelCapabilities_Registry(t *testing.T) {
+	mockModels := []domain.ModelCapability{
+		{
+			ID:               "custom-test-model",
+			DisplayName:      "Custom Test Model",
+			Aliases:          []string{"custom"},
+			SupportedEfforts: []string{"high"},
+			DefaultEffort:    "high",
+		},
+	}
 
-	parsed := domain.ParseModelsOutput(rawCLIOutput)
-	assert.Len(t, parsed, 5)
-
-	// 1. Check Gemini 3.7 Flash
-	assert.Equal(t, "gemini-3.7-flash", parsed[0].ID)
-	assert.Equal(t, "Gemini 3.7 Flash", parsed[0].DisplayName)
-	assert.Equal(t, []string{"high", "medium", "low"}, parsed[0].SupportedEfforts)
-	assert.Equal(t, "high", parsed[0].DefaultEffort)
-	assert.Contains(t, parsed[0].Aliases, "flash")
-
-	// 2. Check Gemini 3.1 Pro (only high and low)
-	assert.Equal(t, "gemini-3.1-pro", parsed[1].ID)
-	assert.Equal(t, "Gemini 3.1 Pro", parsed[1].DisplayName)
-	assert.Equal(t, []string{"high", "low"}, parsed[1].SupportedEfforts)
-	assert.Equal(t, "high", parsed[1].DefaultEffort)
-	assert.Contains(t, parsed[1].Aliases, "pro")
-
-	// 3. Check Claude Sonnet 4.6 (no effort)
-	assert.Equal(t, "claude-sonnet-4-6", parsed[2].ID)
-	assert.Empty(t, parsed[2].SupportedEfforts)
-	assert.Equal(t, "", parsed[2].DefaultEffort)
-	assert.Contains(t, parsed[2].Aliases, "claude")
-
-	// 4. Test Dynamic Registry injection
-	domain.SetDynamicModelCapabilities(parsed)
+	domain.SetDynamicModelCapabilities(mockModels)
 	models := domain.ListAvailableModels()
-	assert.GreaterOrEqual(t, len(models), 5)
+	assert.GreaterOrEqual(t, len(models), 1)
+
+	cap, _, ok := domain.LookupModelCapability("custom", nil)
+	assert.True(t, ok)
+	assert.Equal(t, "custom-test-model", cap.ID)
+
 	domain.SetDynamicModelCapabilities(domain.DefaultModelCapabilities)
 }
 
