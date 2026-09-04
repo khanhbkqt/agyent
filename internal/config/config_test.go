@@ -439,3 +439,47 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 		assert.Error(t, cfg.Validate())
 	})
 }
+
+func TestConfig_IsAdmin(t *testing.T) {
+	t.Run("nil config returns true (open local-dev mode)", func(t *testing.T) {
+		var cfg *config.Config
+		assert.True(t, cfg.IsAdmin("12345"))
+	})
+
+	t.Run("empty admin lists return true (open local-dev mode)", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{}
+		cfg.Telegram.AdminUserIDs = []int64{}
+		assert.True(t, cfg.IsAdmin("12345"))
+		assert.True(t, cfg.IsAdmin("any_user"))
+	})
+
+	t.Run("empty sender ID returns false when admins configured", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{12345}
+		assert.False(t, cfg.IsAdmin(""))
+	})
+
+	t.Run("matches Security.AdminUserIDs", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{111, 222}
+		assert.True(t, cfg.IsAdmin("111"))
+		assert.True(t, cfg.IsAdmin("222"))
+		assert.False(t, cfg.IsAdmin("333"))
+	})
+
+	t.Run("matches Telegram.AdminUserIDs", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Telegram.AdminUserIDs = []int64{555, 666}
+		assert.True(t, cfg.IsAdmin("555"))
+		assert.True(t, cfg.IsAdmin("666"))
+		assert.False(t, cfg.IsAdmin("777"))
+	})
+
+	t.Run("handles non-numeric or invalid string IDs safely", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{12345}
+		assert.False(t, cfg.IsAdmin("non_numeric_user"))
+		assert.False(t, cfg.IsAdmin("invalid_id_9999"))
+	})
+}

@@ -187,4 +187,3 @@ func TestHITLCoordinator_MultiBotResolution(t *testing.T) {
 	assert.False(t, dec.Approved)
 	assert.Equal(t, "timeout", dec.Action)
 }
-

@@ -25,7 +25,7 @@ type Agent struct {
 	SecurityPreset SecurityPreset `json:"security_preset,omitempty"` // Baseline / active security preset (e.g. balanced, strict)
 
 	// Ownership & Access Control
-	OwnerID  string `json:"owner_id"`  // Telegram User ID of the creator
+	OwnerID  string `json:"owner_id"`  // Channel-agnostic User ID of the creator
 	IsPublic bool   `json:"is_public"` // true: Accessible by all; false: Owner + Shared members only
 
 	CreatedAt time.Time `json:"created_at"`

@@ -231,11 +231,11 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 
 	t.Run("TC-BRG-08_TurnIDPropagationToAllEvents", func(t *testing.T) {
 		var (
-			mu            sync.Mutex
-			initTurnID    string
-			deltaTurnID   string
-			toolTurnID    string
-			resultTurnID  string
+			mu           sync.Mutex
+			initTurnID   string
+			deltaTurnID  string
+			toolTurnID   string
+			resultTurnID string
 		)
 
 		bus.SubscribeSync(domain.EventStreamInit, func(ctx context.Context, evt domain.Event) error {

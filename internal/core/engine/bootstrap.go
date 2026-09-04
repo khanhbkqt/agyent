@@ -32,7 +32,7 @@ const systemRuntimeFoundationTemplate = `[SYSTEM RUNTIME FOUNDATION]
      • Never panic, never hallucinate excuses, and DO NOT enter an endless retry loop with the same blocked tool call.
      • Clearly and constructively explain the security guardrail trigger to the user.
      • Proactively guide the user on how they can grant permission if the action is intended:
-       - Single turn or session grant: Run ` + "`/security grant <pattern>`" + ` or click '[ ✅ Allow Once ]' / '[ 🛡️ Allow for Session ]' on the Telegram approval card.
+       - Single turn or session grant: Run ` + "`/security grant <pattern>`" + ` or click '[ ✅ Allow Once ]' / '[ 🛡️ Allow for Session ]' on the interactive approval card.
        - Permanent whitelist rule: Run ` + "`/whitelist add \"<command>\"`" + `.
        - Switch security preset: Run ` + "`/security preset <unrestricted|developer|balanced|strict|read_only>`" + ` (e.g. ` + "`/security preset unrestricted`" + ` for full autonomous access, or ` + "`/security preset developer`" + ` for high-autonomy dev mode).
        - Configuration file updates (.env, config.yaml): Present clear diffs and request user approval.

@@ -457,16 +457,15 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 
 	chunks := SplitMarkdownPreservingCodeBlocks(textToSend, 4000)
 	for i, chunk := range chunks {
-		parseMode := msg.ParseMode
-		if parseMode == "" {
-			parseMode = "HTML"
-		}
-
+		targetParseMode := "HTML"
 		formatted := chunk
-		if parseMode == "HTML" {
-			formatted = FormatMarkdownToTelegramHTML(chunk)
-		} else if parseMode == "MarkdownV2" {
+
+		if msg.ParseMode == "MarkdownV2" {
+			targetParseMode = "MarkdownV2"
 			formatted = AutoCloseMarkdown(chunk)
+		} else {
+			targetParseMode = "HTML"
+			formatted = FormatMarkdownToTelegramHTML(chunk)
 		}
 
 		var markup gotgbot.ReplyMarkup
@@ -487,7 +486,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 		}
 
 		opts := &gotgbot.SendMessageOpts{
-			ParseMode:   parseMode,
+			ParseMode:   targetParseMode,
 			ReplyMarkup: markup,
 		}
 		if msg.ThreadID != 0 {
@@ -510,7 +509,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 				)
 				opts.ParseMode = ""
 				fallbackText := chunk
-				if parseMode == "HTML" {
+				if targetParseMode == "HTML" {
 					fallbackText = StripHTMLTags(formatted)
 				}
 				_, err = bot.SendMessage(chatID, fallbackText, opts)

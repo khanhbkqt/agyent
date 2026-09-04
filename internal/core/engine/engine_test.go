@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	telegramAdapter "agyent/internal/adapters/channels/telegram"
 	contextAdapter "agyent/internal/adapters/context"
 	"agyent/internal/adapters/mcp"
 	pluginAdapter "agyent/internal/adapters/plugin"
@@ -1095,8 +1097,8 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	sent := channel.GetSentMessages()
 	require.NotEmpty(t, sent)
 	lastSent := sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Active Agent</b>      : <code>admin_agent</code>")
-	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>unrestricted</code>")
+	assert.Contains(t, lastSent.Text, "Active Agent**      : `admin_agent`")
+	assert.Contains(t, lastSent.Text, "Active Preset**     : `unrestricted`")
 
 	// 2. Initialize auditor_agent via turn message
 	turnMsg2 := domain.CanonicalMessage{
@@ -1127,8 +1129,8 @@ func TestEngine_PerAgentSecurityIsolationAndConfig(t *testing.T) {
 	require.NoError(t, eng.HandleDebouncedMessage(ctx, secCmd2))
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Active Agent</b>      : <code>auditor_agent</code>")
-	assert.Contains(t, lastSent.Text, "Active Preset</b>     : <code>strict</code>")
+	assert.Contains(t, lastSent.Text, "Active Agent**      : `auditor_agent`")
+	assert.Contains(t, lastSent.Text, "Active Preset**     : `strict`")
 
 	// 3. Initialize unlisted agent -> falls back to balanced
 	turnMsg3 := domain.CanonicalMessage{
@@ -1555,4 +1557,66 @@ func TestEngine_ModeSlashCommand(t *testing.T) {
 	require.NotNil(t, out)
 	assert.Contains(t, out.Text, "fifo")
 	assert.Equal(t, "fifo", cfg.AGY.QueueMode)
+}
+
+func TestEngine_Commands_ChannelAgnosticMarkdown(t *testing.T) {
+	eng, _, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	testCommands := []string{
+		"/help",
+		"/mode",
+		"/mode fifo",
+		"/status",
+		"/model",
+		"/effort",
+		"/security",
+		"/whitelist",
+		"/a info",
+		"/agents",
+		"/force_unlock",
+		"/unknown_cmd",
+	}
+
+	for _, cmd := range testCommands {
+		t.Run("Command "+cmd, func(t *testing.T) {
+			msg := domain.CanonicalMessage{
+				ID:        "test-cmd-" + cmd,
+				Timestamp: time.Now(),
+				Channel:   "telegram",
+				Text:      cmd,
+				Sender:    domain.SenderUser{ID: "12345", Username: "admin"},
+				Chat:      domain.ChatContext{ID: "12345", Type: "private"},
+			}
+
+			out, err := eng.HandleCommand(ctx, msg)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+
+			// 1. Must use channel-agnostic Markdown parse mode
+			assert.Equal(t, "Markdown", out.ParseMode, "Command %s must emit Markdown ParseMode", cmd)
+
+			// 2. Must not contain raw HTML formatting tags
+			assert.NotContains(t, out.Text, "<b>", "Command %s must not contain <b>", cmd)
+			assert.NotContains(t, out.Text, "</b>", "Command %s must not contain </b>", cmd)
+			assert.NotContains(t, out.Text, "<code>", "Command %s must not contain <code>", cmd)
+			assert.NotContains(t, out.Text, "</code>", "Command %s must not contain </code>", cmd)
+			assert.NotContains(t, out.Text, "<i>", "Command %s must not contain <i>", cmd)
+			assert.NotContains(t, out.Text, "</i>", "Command %s must not contain </i>", cmd)
+
+			// 3. Must not contain pre-escaped HTML entities that would cause double-escaping
+			assert.NotContains(t, out.Text, "&lt;", "Command %s must not contain &lt;", cmd)
+			assert.NotContains(t, out.Text, "&gt;", "Command %s must not contain &gt;", cmd)
+
+			// 4. Must convert to valid, strictly well-formed Telegram HTML that Telegram accepts
+			telegramHTML := telegramAdapter.FormatMarkdownToTelegramHTML(out.Text)
+			assert.NotEmpty(t, telegramHTML, "Command %s must not produce empty HTML", cmd)
+
+			// Wrap in XML root to verify all tags are closed and properly formatted
+			var dummy struct{}
+			xmlErr := xml.Unmarshal([]byte("<root>"+telegramHTML+"</root>"), &dummy)
+			assert.NoError(t, xmlErr, "Command %s produced malformed Telegram HTML: %s", cmd, telegramHTML)
+		})
+	}
 }

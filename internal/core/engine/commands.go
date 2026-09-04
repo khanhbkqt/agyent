@@ -155,7 +155,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		ChatID:           msg.Chat.ID,
 		ThreadID:         msg.Chat.ThreadID,
 		Text:             responseText,
-		ParseMode:        "HTML",
+		ParseMode:        "Markdown",
 		ReplyToMessageID: msg.ID,
 		InlineKeyboard:   inlineKeyboard,
 	}, nil
@@ -772,18 +772,18 @@ func (e *Engine) handleModeCommand(args []string) string {
 		if e.cfg != nil && e.cfg.AGY.QueueMode != "" {
 			currentMode = strings.ToLower(e.cfg.AGY.QueueMode)
 		}
-		return fmt.Sprintf("⚙️ <b>Queue Mode:</b> <code>%s</code>\n\nOptions:\n• <code>/mode fifo</code>: Sequential turn queuing (waits for current turn to complete).\n• <code>/mode append</code>: Real-time steering (smart aborts active turn at checkpoint and runs new prompt).", currentMode)
+		return fmt.Sprintf("⚙️ **Queue Mode:** `%s`\n\nOptions:\n• `/mode fifo`: Sequential turn queuing (waits for current turn to complete).\n• `/mode append`: Real-time steering (smart aborts active turn at checkpoint and runs new prompt).", currentMode)
 	}
 
 	mode := strings.ToLower(args[0])
 	if mode != "fifo" && mode != "append" {
-		return "⚠️ Invalid mode. Please specify <code>/mode fifo</code> or <code>/mode append</code>."
+		return "⚠️ Invalid mode. Please specify `/mode fifo` or `/mode append`."
 	}
 
 	if e.cfg != nil {
 		e.cfg.AGY.QueueMode = mode
 	}
-	return fmt.Sprintf("✅ <b>Queue mode updated to:</b> <code>%s</code>", mode)
+	return fmt.Sprintf("✅ **Queue mode updated to:** `%s`", mode)
 }
 
 func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
@@ -899,7 +899,7 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		}
 
 		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
-			return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the owner of agent <code>@%s</code> or a superadmin can share access.", agentName)
+			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can share access.", agentName)
 		}
 
 		perm := &domain.AgentPermission{
@@ -928,7 +928,7 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		}
 
 		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
-			return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the owner of agent <code>@%s</code> or a superadmin can revoke access.", agentName)
+			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can revoke access.", agentName)
 		}
 
 		if err := e.storage.RevokeAgentAccess(ctx, agentName, targetUserID); err != nil {
@@ -950,7 +950,7 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 
 		allowed, role, _ := e.CheckAccess(ctx, agent, sender.ID)
 		if !allowed {
-			return fmt.Sprintf("⛔ <b>Access Denied:</b> You do not have permission to view info for agent <code>@%s</code>.", agentName)
+			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to view info for agent `@%s`.", agentName)
 		}
 
 		perms, _ := e.storage.ListAgentPermissions(ctx, agentName)
@@ -965,26 +965,26 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("🤖 <b>Agent Information: <code>@%s</code></b>\n", agent.Name))
-		sb.WriteString(fmt.Sprintf("• <b>Description:</b> %s\n", agent.Description))
-		sb.WriteString(fmt.Sprintf("• <b>Status:</b> <code>%s</code>\n", agent.Status))
-		sb.WriteString(fmt.Sprintf("• <b>Visibility:</b> %s\n", visibility))
-		sb.WriteString(fmt.Sprintf("• <b>Owner ID:</b> <code>%s</code>\n", ownerDisplay))
-		sb.WriteString(fmt.Sprintf("• <b>Your Effective Role:</b> <code>%s</code>\n", role))
-		sb.WriteString(fmt.Sprintf("• <b>Workspace Path:</b> <code>%s</code>\n", agent.WorkspacePath))
+		sb.WriteString(fmt.Sprintf("🤖 **Agent Information: `@%s`**\n", agent.Name))
+		sb.WriteString(fmt.Sprintf("• **Description:** %s\n", agent.Description))
+		sb.WriteString(fmt.Sprintf("• **Status:** `%s`\n", agent.Status))
+		sb.WriteString(fmt.Sprintf("• **Visibility:** %s\n", visibility))
+		sb.WriteString(fmt.Sprintf("• **Owner ID:** `%s`\n", ownerDisplay))
+		sb.WriteString(fmt.Sprintf("• **Your Effective Role:** `%s`\n", role))
+		sb.WriteString(fmt.Sprintf("• **Workspace Path:** `%s`\n", agent.WorkspacePath))
 		if agent.DefaultModel != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Default Model:</b> <code>%s</code>\n", agent.DefaultModel))
+			sb.WriteString(fmt.Sprintf("• **Default Model:** `%s`\n", agent.DefaultModel))
 		}
 		if agent.DefaultEffort != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Default Effort:</b> <code>%s</code>\n", agent.DefaultEffort))
+			sb.WriteString(fmt.Sprintf("• **Default Effort:** `%s`\n", agent.DefaultEffort))
 		}
 
-		sb.WriteString(fmt.Sprintf("\n👥 <b>Collaborators (%d):</b>\n", len(perms)))
+		sb.WriteString(fmt.Sprintf("\n👥 **Collaborators (%d):**\n", len(perms)))
 		if len(perms) == 0 {
-			sb.WriteString("  <i>No external collaborators shared.</i>\n")
+			sb.WriteString("  _No external collaborators shared._\n")
 		} else {
 			for _, p := range perms {
-				sb.WriteString(fmt.Sprintf("  • User <code>%s</code> — Role: <code>%s</code> (Granted by: <code>%s</code>)\n", p.UserID, p.Role, p.GrantedBy))
+				sb.WriteString(fmt.Sprintf("  • User `%s` — Role: `%s` (Granted by: `%s`)\n", p.UserID, p.Role, p.GrantedBy))
 			}
 		}
 
@@ -1007,7 +1007,7 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.Sende
 	}
 
 	if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
-		return fmt.Sprintf("⛔ <b>Access Denied:</b> Only the agent owner (User ID: <code>%s</code>) or an administrator can re-trigger Genesis Bootstrap.", agent.OwnerID)
+		return fmt.Sprintf("⛔ **Access Denied:** Only the agent owner (User ID: `%s`) or an administrator can re-trigger Genesis Bootstrap.", agent.OwnerID)
 	}
 
 	agent.Status = domain.StatusUninitialized
@@ -1522,20 +1522,20 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 		}
 
 		var sb strings.Builder
-		sb.WriteString("⚡ <b>AI Model Selection</b>\n")
-		sb.WriteString(fmt.Sprintf("• <b>Active Model:</b> <code>%s</code> (%s)\n", resolvedModel, source))
+		sb.WriteString("⚡ **AI Model Selection**\n")
+		sb.WriteString(fmt.Sprintf("• **Active Model:** `%s` (%s)\n", resolvedModel, source))
 		if resolvedEffort != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Reasoning Effort:</b> <code>%s</code>\n", resolvedEffort))
+			sb.WriteString(fmt.Sprintf("• **Reasoning Effort:** `%s`\n", resolvedEffort))
 		}
-		sb.WriteString("\n<b>Available Model Tiers:</b>\n")
+		sb.WriteString("\n**Available Model Tiers:**\n")
 		for _, cap := range domain.DefaultModelCapabilities {
 			effDesc := "No thinking"
 			if len(cap.SupportedEfforts) > 0 {
 				effDesc = strings.Join(cap.SupportedEfforts, ", ")
 			}
-			sb.WriteString(fmt.Sprintf("• <b>%s</b> (<code>%s</code>) — Effort: [%s]\n", cap.DisplayName, cap.ID, effDesc))
+			sb.WriteString(fmt.Sprintf("• **%s** (`%s`) — Effort: [%s]\n", cap.DisplayName, cap.ID, effDesc))
 		}
-		sb.WriteString("\n<i>💡 Click a button below or type <code>/model &lt;name&gt;</code> to switch model.</i>")
+		sb.WriteString("\n_💡 Click a button below or type `/model <name>` to switch model._")
 
 		inlineKb := domain.InlineKeyboard{
 			{
@@ -1561,7 +1561,7 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 			return fmt.Sprintf("⚠️ Failed to reset model: %v", err), nil
 		}
 		resolvedModel, _, source := e.ResolveExecutionParams("", "", session, agentObj)
-		return fmt.Sprintf("🔄 <b>Model override reset.</b>\nNow using <code>%s</code> (%s).", resolvedModel, source), nil
+		return fmt.Sprintf("🔄 **Model override reset.**\nNow using `%s` (%s).", resolvedModel, source), nil
 	}
 
 	var customAliases map[string]string
@@ -1580,10 +1580,10 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 
 	customNote := ""
 	if isCustom {
-		customNote = "\n<i>(Custom model pass-through to agy CLI)</i>"
+		customNote = "\n_(Custom model pass-through to agy CLI)_"
 	}
 
-	return fmt.Sprintf("⚡ <b>Active model switched to:</b> <code>%s</code> for this session.%s", canonicalModel, customNote), nil
+	return fmt.Sprintf("⚡ **Active model switched to:** `%s` for this session.%s", canonicalModel, customNote), nil
 }
 
 func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
@@ -1599,17 +1599,17 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 		}
 
 		var sb strings.Builder
-		sb.WriteString("🧠 <b>Reasoning Effort Selection</b>\n")
-		sb.WriteString(fmt.Sprintf("• <b>Current Effort:</b> <code>%s</code>\n", resolvedEffort))
+		sb.WriteString("🧠 **Reasoning Effort Selection**\n")
+		sb.WriteString(fmt.Sprintf("• **Current Effort:** `%s`\n", resolvedEffort))
 		if resolvedModel != "" {
-			sb.WriteString(fmt.Sprintf("• <b>Active Model:</b> <code>%s</code>\n", resolvedModel))
+			sb.WriteString(fmt.Sprintf("• **Active Model:** `%s`\n", resolvedModel))
 		}
-		sb.WriteString("\n<b>Effort Levels:</b>\n")
-		sb.WriteString("• <b>low</b> 🟢 — Quick thinking budget, low latency\n")
-		sb.WriteString("• <b>medium</b> 🟡 — Balanced reasoning budget\n")
-		sb.WriteString("• <b>high</b> 🔴 — Maximum thinking depth & verification\n")
-		sb.WriteString("• <b>none</b> ⚪ — Disable thinking tokens (direct output)\n")
-		sb.WriteString("\n<i>💡 Click a button below or type <code>/effort &lt;level&gt;</code> to switch.</i>")
+		sb.WriteString("\n**Effort Levels:**\n")
+		sb.WriteString("• **low** 🟢 — Quick thinking budget, low latency\n")
+		sb.WriteString("• **medium** 🟡 — Balanced reasoning budget\n")
+		sb.WriteString("• **high** 🔴 — Maximum thinking depth & verification\n")
+		sb.WriteString("• **none** ⚪ — Disable thinking tokens (direct output)\n")
+		sb.WriteString("\n_💡 Click a button below or type `/effort <level>` to switch._")
 
 		inlineKb := domain.InlineKeyboard{
 			{
@@ -1635,7 +1635,7 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 			return fmt.Sprintf("⚠️ Failed to reset effort: %v", err), nil
 		}
 		_, resolvedEffort, source := e.ResolveExecutionParams("", "", session, agentObj)
-		return fmt.Sprintf("🔄 <b>Reasoning effort reset.</b>\nNow using <code>%s</code> (%s).", resolvedEffort, source), nil
+		return fmt.Sprintf("🔄 **Reasoning effort reset.**\nNow using `%s` (%s).", resolvedEffort, source), nil
 	}
 
 	if target != "low" && target != "medium" && target != "high" && target != "none" && target != "off" {
@@ -1657,7 +1657,7 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 	var warningNote string
 	if exists {
 		if len(cap.SupportedEfforts) == 0 {
-			warningNote = fmt.Sprintf("\n⚠️ <i>Note: Model <code>%s</code> does not support reasoning effort. The <code>--effort</code> flag will be automatically omitted during execution.</i>", resolvedModel)
+			warningNote = fmt.Sprintf("\n⚠️ _Note: Model `%s` does not support reasoning effort. The `--effort` flag will be automatically omitted during execution._", resolvedModel)
 		} else {
 			supported := false
 			for _, se := range cap.SupportedEfforts {
@@ -1667,13 +1667,13 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 				}
 			}
 			if !supported {
-				warningNote = fmt.Sprintf("\n⚠️ <i>Note: Model <code>%s</code> only supports [%s]. Requested effort <code>%s</code> will be clamped to <code>%s</code> during execution.</i>",
+				warningNote = fmt.Sprintf("\n⚠️ _Note: Model `%s` only supports [%s]. Requested effort `%s` will be clamped to `%s` during execution._",
 					resolvedModel, strings.Join(cap.SupportedEfforts, ", "), target, cap.DefaultEffort)
 			}
 		}
 	}
 
-	return fmt.Sprintf("🧠 <b>Reasoning effort set to:</b> <code>%s</code> for this session.%s", target, warningNote), nil
+	return fmt.Sprintf("🧠 **Reasoning effort set to:** `%s` for this session.%s", target, warningNote), nil
 }
 
 func formatTimeAgo(t time.Time) string {
@@ -1704,11 +1704,11 @@ func (e *Engine) handleTasksCommand(ctx context.Context, session *domain.Session
 		return fmt.Sprintf("⚠️ Failed to list tasks: %v", err), nil
 	}
 	if total == 0 {
-		return "📋 <b>No background sub-agent tasks found for this session.</b>\n\nMain Agent automatically delegates long-running tasks via <code>dispatch_subagent</code>.", nil
+		return "📋 **No background sub-agent tasks found for this session.**\n\nMain Agent automatically delegates long-running tasks via `dispatch_subagent`.", nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 <b>Sub-Agent Tasks (%d total):</b>\n\n", total))
+	sb.WriteString(fmt.Sprintf("📋 **Sub-Agent Tasks (%d total):**\n\n", total))
 
 	var keyboard domain.InlineKeyboard
 	for _, t := range tasks {
@@ -1726,14 +1726,14 @@ func (e *Engine) handleTasksCommand(ctx context.Context, session *domain.Session
 			badge = "⚡"
 		}
 
-		sb.WriteString(fmt.Sprintf("%s <b><code>%s</code></b> | @%s\n", badge, t.ID, t.AgentName))
-		sb.WriteString(fmt.Sprintf("   • <b>Title:</b> %s\n", t.Title))
-		sb.WriteString(fmt.Sprintf("   • <b>Status:</b> <code>%s</code>", t.Status))
+		sb.WriteString(fmt.Sprintf("%s **`%s`** | @%s\n", badge, t.ID, t.AgentName))
+		sb.WriteString(fmt.Sprintf("   • **Title:** %s\n", t.Title))
+		sb.WriteString(fmt.Sprintf("   • **Status:** `%s`", t.Status))
 		if t.DurationSeconds > 0 {
 			sb.WriteString(fmt.Sprintf(" (%.1fs)", t.DurationSeconds))
 		}
 		if t.Status == domain.TaskStatusWaitingInput && t.PendingQuestion != "" {
-			sb.WriteString(fmt.Sprintf("\n   • ❓ <b>Question:</b> <i>%s</i>", t.PendingQuestion))
+			sb.WriteString(fmt.Sprintf("\n   • ❓ **Question:** _%s_", t.PendingQuestion))
 		}
 		sb.WriteString("\n\n")
 
@@ -1751,7 +1751,7 @@ func (e *Engine) handleTasksCommand(ctx context.Context, session *domain.Session
 		}
 	}
 
-	sb.WriteString("💡 <i>Use <code>/task &lt;id&gt;</code> to inspect details or <code>/task reply &lt;id&gt; &lt;input&gt;</code> to respond.</i>")
+	sb.WriteString("💡 _Use `/task <id>` to inspect details or `/task reply <id> <input>` to respond._")
 	return sb.String(), keyboard
 }
 
@@ -1768,65 +1768,65 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 	switch subcmd {
 	case "cancel":
 		if len(args) < 2 {
-			return "⚠️ Usage: <code>/task cancel &lt;task_id&gt;</code>", nil
+			return "⚠️ Usage: `/task cancel <task_id>`", nil
 		}
 		taskID := args[1]
 		if err := e.subagentDispatcher.CancelTask(ctx, taskID); err != nil {
-			return fmt.Sprintf("⚠️ Failed to cancel task <code>%s</code>: %v", taskID, err), nil
+			return fmt.Sprintf("⚠️ Failed to cancel task `%s`: %v", taskID, err), nil
 		}
-		return fmt.Sprintf("🛑 <b>Task <code>%s</code> has been cancelled</b> and its process tree terminated.", taskID), nil
+		return fmt.Sprintf("🛑 **Task `%s` has been cancelled** and its process tree terminated.", taskID), nil
 
 	case "reply":
 		if len(args) < 3 {
-			return "⚠️ Usage: <code>/task reply &lt;task_id&gt; &lt;your response&gt;</code>", nil
+			return "⚠️ Usage: `/task reply <task_id> <your response>`", nil
 		}
 		taskID := args[1]
 		replyText := strings.Join(args[2:], " ")
 		if err := e.subagentDispatcher.SendTaskInput(ctx, taskID, replyText); err != nil {
-			return fmt.Sprintf("⚠️ Failed to send reply to task <code>%s</code>: %v", taskID, err), nil
+			return fmt.Sprintf("⚠️ Failed to send reply to task `%s`: %v", taskID, err), nil
 		}
-		return fmt.Sprintf("✅ <b>Reply injected into Task <code>%s</code>!</b> Sub-Agent has resumed background execution.", taskID), nil
+		return fmt.Sprintf("✅ **Reply injected into Task `%s`!** Sub-Agent has resumed background execution.", taskID), nil
 
 	case "clean", "purge":
 		purged, err := e.storage.PurgeSubagentTasks(ctx, 0)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to purge tasks: %v", err), nil
 		}
-		return fmt.Sprintf("🧹 <b>Cleaned up %d completed/failed/cancelled subagent tasks.</b>", purged), nil
+		return fmt.Sprintf("🧹 **Cleaned up %d completed/failed/cancelled subagent tasks.**", purged), nil
 
 	default:
 		// Assume args[0] is task_id
 		taskID := args[0]
 		task, err := e.subagentDispatcher.GetTask(ctx, taskID)
 		if err != nil {
-			return fmt.Sprintf("⚠️ Task <code>%s</code> not found: %v", taskID, err), nil
+			return fmt.Sprintf("⚠️ Task `%s` not found: %v", taskID, err), nil
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("📋 <b>Sub-Agent Task Details: <code>%s</code></b>\n\n", task.ID))
-		sb.WriteString(fmt.Sprintf("• <b>Agent:</b> <code>@%s</code>\n", task.AgentName))
-		sb.WriteString(fmt.Sprintf("• <b>Title:</b> %s\n", task.Title))
-		sb.WriteString(fmt.Sprintf("• <b>Status:</b> <code>%s</code>\n", task.Status))
-		sb.WriteString(fmt.Sprintf("• <b>Model / Effort:</b> <code>%s</code> (<code>%s</code>)\n", task.Model, task.Effort))
-		sb.WriteString(fmt.Sprintf("• <b>Workspace Mode:</b> <code>%s</code>\n", task.WorkspaceMode))
-		sb.WriteString(fmt.Sprintf("• <b>Callback Mode:</b> <code>%s</code>\n", task.CallbackMode))
-		sb.WriteString(fmt.Sprintf("• <b>Duration:</b> <code>%.2fs</code>\n", task.DurationSeconds))
-		sb.WriteString(fmt.Sprintf("• <b>Tokens Used:</b> <code>%d</code>\n", task.Usage.TotalTokens))
+		sb.WriteString(fmt.Sprintf("📋 **Sub-Agent Task Details: `%s`**\n\n", task.ID))
+		sb.WriteString(fmt.Sprintf("• **Agent:** `@%s`\n", task.AgentName))
+		sb.WriteString(fmt.Sprintf("• **Title:** %s\n", task.Title))
+		sb.WriteString(fmt.Sprintf("• **Status:** `%s`\n", task.Status))
+		sb.WriteString(fmt.Sprintf("• **Model / Effort:** `%s` (`%s`)\n", task.Model, task.Effort))
+		sb.WriteString(fmt.Sprintf("• **Workspace Mode:** `%s`\n", task.WorkspaceMode))
+		sb.WriteString(fmt.Sprintf("• **Callback Mode:** `%s`\n", task.CallbackMode))
+		sb.WriteString(fmt.Sprintf("• **Duration:** `%.2fs`\n", task.DurationSeconds))
+		sb.WriteString(fmt.Sprintf("• **Tokens Used:** `%d`\n", task.Usage.TotalTokens))
 
 		if task.Status == domain.TaskStatusRunning {
-			sb.WriteString(fmt.Sprintf("\n⚡ <b>Live Execution:</b> Step %d | Tool: <code>%s</code>\n%s\n", task.CurrentStep, task.CurrentTool, task.ProgressMessage))
+			sb.WriteString(fmt.Sprintf("\n⚡ **Live Execution:** Step %d | Tool: `%s`\n%s\n", task.CurrentStep, task.CurrentTool, task.ProgressMessage))
 		}
 
 		if task.Status == domain.TaskStatusWaitingInput {
-			sb.WriteString(fmt.Sprintf("\n⏸️ <b>Waiting for Input:</b>\n❓ <i>%s</i>\n\n👉 <b>To reply:</b> <code>/task reply %s &lt;your response&gt;</code>\n", task.PendingQuestion, task.ID))
+			sb.WriteString(fmt.Sprintf("\n⏸️ **Waiting for Input:**\n❓ _%s_\n\n👉 **To reply:** `/task reply %s <your response>`\n", task.PendingQuestion, task.ID))
 		}
 
 		if task.Status == domain.TaskStatusCompleted && task.ResultSummary != "" {
-			sb.WriteString("\n📝 <b>Result Summary:</b>\n" + task.ResultSummary + "\n")
+			sb.WriteString("\n📝 **Result Summary:**\n" + task.ResultSummary + "\n")
 		}
 
 		if task.Status == domain.TaskStatusFailed && task.ErrorMessage != "" {
-			sb.WriteString("\n❌ <b>Error:</b> " + task.ErrorMessage + "\n")
+			sb.WriteString("\n❌ **Error:** " + task.ErrorMessage + "\n")
 		}
 
 		var keyboard domain.InlineKeyboard
@@ -1843,33 +1843,9 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 	}
 }
 
-func (e *Engine) isSenderAdmin(sender domain.SenderUser) bool {
-	if e.cfg == nil {
-		return true
-	}
-	if len(e.cfg.Telegram.AdminUserIDs) == 0 && len(e.cfg.Security.AdminUserIDs) == 0 {
-		return true
-	}
-	id, err := strconv.ParseInt(sender.ID, 10, 64)
-	if err != nil {
-		return false
-	}
-	for _, admin := range e.cfg.Telegram.AdminUserIDs {
-		if admin == id {
-			return true
-		}
-	}
-	for _, admin := range e.cfg.Security.AdminUserIDs {
-		if admin == id {
-			return true
-		}
-	}
-	return false
-}
-
 func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey string, args []string) (string, domain.InlineKeyboard) {
 	if e.securityManager == nil {
-		return "⚠️ <b>Security Gateway is not active.</b>", nil
+		return "⚠️ **Security Gateway is not active.**", nil
 	}
 
 	// Resolve active agent and baseline security preset for current session
@@ -1890,22 +1866,22 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 	}
 
 	if len(args) > 0 {
-		if !e.isSenderAdmin(sender) {
-			return "⛔ <b>Unauthorized: Only administrators can modify security gateway settings.</b>", nil
+		if !e.IsSuperAdmin(sender.ID) {
+			return "⛔ **Unauthorized: Only administrators can modify security gateway settings.**", nil
 		}
 
 		subcmd := strings.ToLower(args[0])
 		switch subcmd {
 		case "preset":
 			if len(args) < 2 {
-				return "⚠️ Usage: <code>/security preset &lt;unrestricted|developer|balanced|strict|read_only&gt;</code>", nil
+				return "⚠️ Usage: `/security preset <unrestricted|developer|balanced|strict|read_only>`", nil
 			}
 			preset := domain.SecurityPreset(strings.ToLower(args[1]))
 			switch preset {
 			case domain.PresetUnrestricted, domain.PresetDeveloper, domain.PresetBalanced, domain.PresetStrict, domain.PresetReadOnly:
 				// Valid preset name
 			default:
-				return fmt.Sprintf("⚠️ Invalid security preset: <code>%s</code>. Valid options: <code>unrestricted, developer, balanced, strict, read_only</code>", args[1]), nil
+				return fmt.Sprintf("⚠️ Invalid security preset: `%s`. Valid options: `unrestricted`, `developer`, `balanced`, `strict`, `read_only`", args[1]), nil
 			}
 
 			// Validate monotonic upgrade rule: cannot switch to less secure level than baseline
@@ -1913,9 +1889,9 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 				allowedPresets := domain.GetAllowedPresets(baselinePreset)
 				var allowedStrs []string
 				for _, p := range allowedPresets {
-					allowedStrs = append(allowedStrs, fmt.Sprintf("<code>%s</code>", p))
+					allowedStrs = append(allowedStrs, fmt.Sprintf("`%s`", p))
 				}
-				return fmt.Sprintf("⛔ <b>Cannot downgrade security preset:</b> Agent <code>%s</code> current baseline security level is <code>%s</code>. You can only switch to equal or more secure presets (allowed: %s).",
+				return fmt.Sprintf("⛔ **Cannot downgrade security preset:** Agent `%s` current baseline security level is `%s`. You can only switch to equal or more secure presets (allowed: %s).",
 					activeAgentName, baselinePreset, strings.Join(allowedStrs, ", ")), nil
 			}
 
@@ -1925,23 +1901,23 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 				agent.UpdatedAt = time.Now()
 				_ = e.storage.SaveAgent(context.Background(), agent)
 			}
-			return fmt.Sprintf("🛡️ <b>Security preset successfully switched to:</b> <code>%s</code> for agent <code>%s</code>", preset, activeAgentName), nil
+			return fmt.Sprintf("🛡️ **Security preset successfully switched to:** `%s` for agent `%s`", preset, activeAgentName), nil
 
 		case "grant":
 			if len(args) < 2 {
-				return "⚠️ Usage: <code>/security grant &lt;pattern|scope&gt;</code>", nil
+				return "⚠️ Usage: `/security grant <pattern|scope>`", nil
 			}
 			pattern := args[1]
 			e.securityManager.GrantSessionPermission(sessionKey, pattern)
-			return fmt.Sprintf("🛡️ <b>Temporary permission granted for session:</b> <code>%s</code> (valid for 15 minutes)", pattern), nil
+			return fmt.Sprintf("🛡️ **Temporary permission granted for session:** `%s` (valid for 15 minutes)", pattern), nil
 
 		case "redact":
 			if len(args) < 2 {
-				return "⚠️ Usage: <code>/security redact &lt;strict|permissive|audit_only&gt;</code>", nil
+				return "⚠️ Usage: `/security redact <strict|permissive|audit_only>`", nil
 			}
 			mode := domain.RedactionMode(strings.ToLower(args[1]))
 			e.securityManager.SetRedactionMode(mode)
-			return fmt.Sprintf("🎭 <b>Secret Redaction mode switched to:</b> <code>%s</code>", mode), nil
+			return fmt.Sprintf("🎭 **Secret Redaction mode switched to:** `%s`", mode), nil
 		}
 	}
 
@@ -1950,18 +1926,18 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 	summary.Preset = baselinePreset
 
 	var sb strings.Builder
-	sb.WriteString("🛡️ <b>[Agyent Security Gateway Dashboard]</b>\n")
+	sb.WriteString("🛡️ **[Agyent Security Gateway Dashboard]**\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("🤖 <b>Active Agent</b>      : <code>%s</code>\n", activeAgentName))
-	sb.WriteString(fmt.Sprintf("📍 <b>Active Preset</b>     : <code>%s</code>\n", summary.Preset))
-	sb.WriteString(fmt.Sprintf("📂 <b>Workspace Jail</b>    : <code>%s</code>\n", summary.ActiveJail))
-	sb.WriteString(fmt.Sprintf("🎭 <b>Redaction Mode</b>    : <code>%s</code>\n", summary.RedactionMode))
-	sb.WriteString(fmt.Sprintf("⚙️ <b>Delegated Config</b>  : <code>%t</code>\n", summary.ConfigDelegated))
-	sb.WriteString(fmt.Sprintf("🛑 <b>Blocked Today</b>     : <code>%d</code> events\n", summary.BlockedToday))
-	sb.WriteString(fmt.Sprintf("✅ <b>Approved Today</b>    : <code>%d</code> events\n", summary.ApprovedToday))
-	sb.WriteString(fmt.Sprintf("⚡ <b>Total Evaluations</b> : <code>%d</code> checks\n", summary.TotalEvaluations))
+	sb.WriteString(fmt.Sprintf("🤖 **Active Agent**      : `%s`\n", activeAgentName))
+	sb.WriteString(fmt.Sprintf("📍 **Active Preset**     : `%s`\n", summary.Preset))
+	sb.WriteString(fmt.Sprintf("📂 **Workspace Jail**    : `%s`\n", summary.ActiveJail))
+	sb.WriteString(fmt.Sprintf("🎭 **Redaction Mode**    : `%s`\n", summary.RedactionMode))
+	sb.WriteString(fmt.Sprintf("⚙️ **Delegated Config**  : `%t`\n", summary.ConfigDelegated))
+	sb.WriteString(fmt.Sprintf("🛑 **Blocked Today**     : `%d` events\n", summary.BlockedToday))
+	sb.WriteString(fmt.Sprintf("✅ **Approved Today**    : `%d` events\n", summary.ApprovedToday))
+	sb.WriteString(fmt.Sprintf("⚡ **Total Evaluations** : `%d` checks\n", summary.TotalEvaluations))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("💡 <i>Use buttons below to switch profiles or toggle redaction.</i>")
+	sb.WriteString("💡 _Use buttons below to switch profiles or toggle redaction._")
 
 	presetButtons := map[domain.SecurityPreset]domain.InlineButton{
 		domain.PresetUnrestricted: {
@@ -2021,17 +1997,17 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 
 func (e *Engine) handleWhitelistCommand(sender domain.SenderUser, sessionKey string, args []string) string {
 	if e.securityManager == nil {
-		return "⚠️ <b>Security Gateway is not active.</b>"
+		return "⚠️ **Security Gateway is not active.**"
 	}
 
 	if len(args) >= 2 && strings.ToLower(args[0]) == "add" {
-		if !e.isSenderAdmin(sender) {
-			return "⛔ <b>Unauthorized: Only administrators can modify security whitelist rules.</b>"
+		if !e.IsSuperAdmin(sender.ID) {
+			return "⛔ **Unauthorized: Only administrators can modify security whitelist rules.**"
 		}
 		entry := strings.Join(args[1:], " ")
 		e.securityManager.AddWhitelistEntry(entry)
-		return fmt.Sprintf("✅ <b>Added custom whitelist rule:</b> <code>%s</code>", entry)
+		return fmt.Sprintf("✅ **Added custom whitelist rule:** `%s`", entry)
 	}
 
-	return "⚠️ Usage: <code>/whitelist add &lt;command_or_path&gt;</code>\nExample: <code>/whitelist add \"npm run build\"</code>"
+	return "⚠️ Usage: `/whitelist add <command_or_path>`\nExample: `/whitelist add \"npm run build\"`"
 }

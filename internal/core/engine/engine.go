@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -265,7 +264,7 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 						ChatID:           msg.Chat.ID,
 						ThreadID:         msg.Chat.ThreadID,
 						Text:             "⚠️ **Usage:** `/ask <prompt>`\n*Example:* `/ask Write regex to validate IPv6 in Go`\n\n_Questions are answered independently without polluting the main conversation history._",
-						ParseMode:        "HTML",
+						ParseMode:        "Markdown",
 						ReplyToMessageID: msg.ID,
 					})
 				}
@@ -328,7 +327,7 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
 				Text:             "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation.",
-				ParseMode:        "HTML",
+				ParseMode:        "Markdown",
 				ReplyToMessageID: msg.ID,
 			})
 		}
@@ -366,24 +365,7 @@ func (e *Engine) IsSuperAdmin(senderID string) bool {
 	if e.cfg == nil {
 		return true
 	}
-	if len(e.cfg.Telegram.AdminUserIDs) == 0 && len(e.cfg.Security.AdminUserIDs) == 0 {
-		return true
-	}
-	id, err := strconv.ParseInt(senderID, 10, 64)
-	if err != nil {
-		return false
-	}
-	for _, admin := range e.cfg.Telegram.AdminUserIDs {
-		if admin == id {
-			return true
-		}
-	}
-	for _, admin := range e.cfg.Security.AdminUserIDs {
-		if admin == id {
-			return true
-		}
-	}
-	return false
+	return e.cfg.IsAdmin(senderID)
 }
 
 // CheckAccess evaluates whether a sender has access to interact with an agent profile.
@@ -547,8 +529,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			BotID:            msg.BotID,
 			ChatID:           msg.Chat.ID,
 			ThreadID:         msg.Chat.ThreadID,
-			Text:             fmt.Sprintf("⛔ <b>Access Denied (403):</b> You do not have permission to access agent <code>@%s</code>.\nAsk the agent owner (User ID: <code>%s</code>) to grant you access via:\n<code>/a share %s %s [role]</code>", agent.Name, ownerDesc, agent.Name, msg.Sender.ID),
-			ParseMode:        "HTML",
+			Text:             fmt.Sprintf("⛔ **Access Denied (403):** You do not have permission to access agent `@%s`.\nAsk the agent owner (User ID: `%s`) to grant you access via:\n`/a share %s %s [role]`", agent.Name, ownerDesc, agent.Name, msg.Sender.ID),
+			ParseMode:        "Markdown",
 			ReplyToMessageID: msg.ID,
 		})
 		return nil
@@ -840,7 +822,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				ChatID:           msg.Chat.ID,
 				ThreadID:         msg.Chat.ThreadID,
 				Text:             responseText,
-				ParseMode:        "HTML",
+				ParseMode:        "Markdown",
 				Attachments:      outboundAtts,
 				ReplyToMessageID: msg.ID,
 			})
@@ -1130,7 +1112,11 @@ func (e *Engine) subscribeSubagentEvents() {
 		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
 		channel := parsedKey.Channel
 		if channel == "" {
-			channel = "telegram"
+			if e.channel != nil && e.channel.Name() != "composite" {
+				channel = e.channel.Name()
+			} else {
+				channel = "telegram" // Safe canonical default fallback
+			}
 		}
 		chatID := parsedKey.ChatID
 		if chatID == "" {
@@ -1178,7 +1164,11 @@ func (e *Engine) subscribeSubagentEvents() {
 		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
 		channel := parsedKey.Channel
 		if channel == "" {
-			channel = "telegram"
+			if e.channel != nil && e.channel.Name() != "composite" {
+				channel = e.channel.Name()
+			} else {
+				channel = "telegram" // Safe canonical default fallback
+			}
 		}
 		chatID := parsedKey.ChatID
 		if chatID == "" {
@@ -1209,9 +1199,9 @@ func (e *Engine) subscribeSubagentEvents() {
 				BotID:    parsedKey.BotID,
 				ChatID:   chatID,
 				ThreadID: parsedKey.ThreadID,
-				Text: fmt.Sprintf("✅ <b>Sub-Agent @%s completed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⏱️ <b>Duration:</b> %.2fs | 🪙 <b>Tokens:</b> %d\n\n%s",
+				Text: fmt.Sprintf("✅ **Sub-Agent @%s completed!**\n📌 **Task:** %s (`%s`)\n⏱️ **Duration:** %.2fs | 🪙 **Tokens:** %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
-				ParseMode: "HTML",
+				ParseMode: "Markdown",
 			})
 		}
 	})
@@ -1226,7 +1216,11 @@ func (e *Engine) subscribeSubagentEvents() {
 		parsedKey, _ := domain.ParseSessionKey(task.ParentSessionKey)
 		channel := parsedKey.Channel
 		if channel == "" {
-			channel = "telegram"
+			if e.channel != nil && e.channel.Name() != "composite" {
+				channel = e.channel.Name()
+			} else {
+				channel = "telegram" // Safe canonical default fallback
+			}
 		}
 		chatID := parsedKey.ChatID
 		if chatID == "" {
@@ -1257,9 +1251,9 @@ func (e *Engine) subscribeSubagentEvents() {
 				BotID:    parsedKey.BotID,
 				ChatID:   chatID,
 				ThreadID: parsedKey.ThreadID,
-				Text: fmt.Sprintf("❌ <b>Sub-Agent @%s failed!</b>\n📌 <b>Task:</b> %s (<code>%s</code>)\n⚠️ <b>Error:</b> %s\n⏱️ <b>Duration:</b> %.2fs",
+				Text: fmt.Sprintf("❌ **Sub-Agent @%s failed!**\n📌 **Task:** %s (`%s`)\n⚠️ **Error:** %s\n⏱️ **Duration:** %.2fs",
 					task.AgentName, task.Title, task.ID, task.ErrorMessage, task.DurationSeconds),
-				ParseMode: "HTML",
+				ParseMode: "Markdown",
 			})
 		}
 	})

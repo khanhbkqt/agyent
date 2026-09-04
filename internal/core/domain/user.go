@@ -11,7 +11,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Group represents an authorized Telegram supergroup or group chat.
+// Group represents an authorized supergroup or group chat across messaging channels.
 type Group struct {
 	GroupID    string    `json:"group_id"`
 	GroupTitle string    `json:"group_title,omitempty"`

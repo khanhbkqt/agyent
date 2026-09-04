@@ -18,7 +18,7 @@ type ChatContext struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"` // e.g. "private", "group", "supergroup", "channel"
 	Title    string `json:"title,omitempty"`
-	ThreadID int64  `json:"thread_id,omitempty"` // For Telegram forum topics / threads
+	ThreadID int64  `json:"thread_id,omitempty"` // For forum topics / threads
 }
 
 // Attachment represents an inbound media or file attachment.
@@ -100,12 +100,8 @@ func (o *OutboundMessage) TargetContext() TargetContext {
 	if botID == "" && o.BotID > 0 {
 		botID = strconv.FormatInt(o.BotID, 10)
 	}
-	channel := o.Channel
-	if channel == "" {
-		channel = "telegram"
-	}
 	return TargetContext{
-		Channel:  channel,
+		Channel:  o.Channel,
 		BotID:    botID,
 		ChatID:   o.ChatID,
 		ThreadID: o.ThreadID,

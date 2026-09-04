@@ -107,6 +107,7 @@ func TestAdapter_SendAndSendFile(t *testing.T) {
 	defer adapter.Stop()
 
 	// 1. Send OutboundMessage
+	// 1. Send OutboundMessage with MarkdownV2
 	outMsg := domain.OutboundMessage{
 		ChatID:    "123456",
 		Text:      "Hello from agyent core!",
@@ -115,10 +116,35 @@ func TestAdapter_SendAndSendFile(t *testing.T) {
 	err = adapter.Send(context.Background(), outMsg)
 	require.NoError(t, err)
 
+	// 1b. Send OutboundMessage with channel-agnostic Markdown (should be converted to HTML)
+	outMarkdownMsg := domain.OutboundMessage{
+		ChatID:    "123456",
+		Text:      "Here is **bold** text and `inline code`.",
+		ParseMode: "Markdown",
+	}
+	err = adapter.Send(context.Background(), outMarkdownMsg)
+	require.NoError(t, err)
+
+	// 1c. Send OutboundMessage with empty ParseMode (defaults to HTML conversion)
+	outDefaultMsg := domain.OutboundMessage{
+		ChatID: "123456",
+		Text:   "Default **message** formatting.",
+	}
+	err = adapter.Send(context.Background(), outDefaultMsg)
+	require.NoError(t, err)
+
 	mockServer.mu.Lock()
-	require.Equal(t, 1, len(mockServer.SentMessages))
+	require.Equal(t, 3, len(mockServer.SentMessages))
 	assert.Equal(t, int64(123456), mockServer.SentMessages[0].ChatID)
 	assert.Equal(t, "Hello from agyent core!", mockServer.SentMessages[0].Text)
+	assert.Equal(t, "MarkdownV2", mockServer.SentMessages[0].ParseMode)
+
+	assert.Equal(t, "HTML", mockServer.SentMessages[1].ParseMode)
+	assert.Contains(t, mockServer.SentMessages[1].Text, "<b>bold</b>")
+	assert.Contains(t, mockServer.SentMessages[1].Text, "<code>inline code</code>")
+
+	assert.Equal(t, "HTML", mockServer.SentMessages[2].ParseMode)
+	assert.Contains(t, mockServer.SentMessages[2].Text, "<b>message</b>")
 	mockServer.mu.Unlock()
 
 	target := domain.TargetContext{

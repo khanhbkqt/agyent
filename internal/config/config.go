@@ -596,6 +596,35 @@ func (c *Config) String() string {
 		c.Server, c.Telegram.String(), c.AGY, c.Storage, c.Logging, c.Evolution, c.Subagent)
 }
 
+// IsAdmin checks whether the given senderID has administrator privileges.
+// It encapsulates admin checks across c.Security.AdminUserIDs (canonical gateway admin list)
+// and c.Telegram.AdminUserIDs (backward-compatible override).
+// Safely parses numeric string IDs while supporting string comparison for non-numeric platforms.
+// Returns true if no admin IDs are configured anywhere (open local-dev mode).
+func (c *Config) IsAdmin(senderID string) bool {
+	if c == nil {
+		return true
+	}
+	if len(c.Security.AdminUserIDs) == 0 && len(c.Telegram.AdminUserIDs) == 0 {
+		return true
+	}
+	if senderID == "" {
+		return false
+	}
+	id, err := strconv.ParseInt(senderID, 10, 64)
+	for _, admin := range c.Security.AdminUserIDs {
+		if (err == nil && admin == id) || strconv.FormatInt(admin, 10) == senderID {
+			return true
+		}
+	}
+	for _, admin := range c.Telegram.AdminUserIDs {
+		if (err == nil && admin == id) || strconv.FormatInt(admin, 10) == senderID {
+			return true
+		}
+	}
+	return false
+}
+
 // Validate checks required fields and configuration constraints.
 func (c *Config) Validate() error {
 	normalizedBots := c.Telegram.GetNormalizedBots()

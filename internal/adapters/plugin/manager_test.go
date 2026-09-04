@@ -296,4 +296,3 @@ func TestPluginManager_ToggleEmbeddedPluginAutoExtract(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &manifest))
 	assert.True(t, manifest.Enabled)
 }
-
