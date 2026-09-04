@@ -72,7 +72,8 @@ func SanitizeFilename(name string) string {
 	}
 
 	// 1. Remove directory traversal tokens and delimiters
-	cleaned := filepath.Base(name)
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	cleaned := filepath.Base(normalized)
 	cleaned = strings.ReplaceAll(cleaned, "..", "")
 	cleaned = strings.ReplaceAll(cleaned, "/", "_")
 	cleaned = strings.ReplaceAll(cleaned, "\\", "_")

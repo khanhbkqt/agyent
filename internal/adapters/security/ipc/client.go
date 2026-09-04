@@ -77,3 +77,70 @@ func (c *Client) SendHookRequest(req domain.HookRequest, timeout time.Duration) 
 
 	return resp, nil
 }
+
+// ActionResponse represents the response envelope for an IPC action.
+type ActionResponse struct {
+	Success bool            `json:"success"`
+	Data    json.RawMessage `json:"data,omitempty"`
+	Error   string          `json:"error,omitempty"`
+}
+
+// SendAction sends a custom action request to the gateway daemon.
+func (c *Client) SendAction(action string, params any, timeout time.Duration) (ActionResponse, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	conn, err := net.DialTimeout("tcp", c.addr, 2*time.Second)
+	if err != nil {
+		return ActionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to connect to gateway IPC daemon (%v)", err),
+		}, err
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	payload := map[string]interface{}{
+		"action": action,
+		"params": params,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return ActionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to serialize action payload: %v", err),
+		}, err
+	}
+
+	if _, err := conn.Write(append(payloadBytes, '\n')); err != nil {
+		return ActionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to write to daemon: %v", err),
+		}, err
+	}
+
+	scanner := bufio.NewScanner(conn)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	if !scanner.Scan() {
+		return ActionResponse{
+			Success: false,
+			Error:   "No response received from daemon",
+		}, fmt.Errorf("empty response from daemon")
+	}
+
+	var resp ActionResponse
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		return ActionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Malformed action response from daemon: %v", err),
+		}, err
+	}
+
+	return resp, nil
+}
+

@@ -133,3 +133,120 @@ func TestIPCClient_OfflineDefaultDeny(t *testing.T) {
 	assert.Equal(t, "deny", resp.Decision)
 	assert.Contains(t, resp.Reason, "Fail-safe Default-Deny")
 }
+
+type mockScheduler struct {
+	createScheduleFn     func(ctx context.Context, task domain.ScheduleTask) (*domain.ScheduleTask, error)
+	listSchedulesFn      func(ctx context.Context, agentName string, status domain.ScheduleStatus) ([]domain.ScheduleTask, error)
+	cancelScheduleFn     func(ctx context.Context, taskID string) error
+	configureHeartbeatFn func(ctx context.Context, cfg domain.HeartbeatConfig, prompt string) error
+	getHeartbeatFn       func(ctx context.Context, agentName string) (*domain.HeartbeatConfig, string, error)
+	triggerHeartbeatFn   func(ctx context.Context, agentName string) error
+}
+
+func (m *mockScheduler) CreateSchedule(ctx context.Context, task domain.ScheduleTask) (*domain.ScheduleTask, error) {
+	if m.createScheduleFn != nil {
+		return m.createScheduleFn(ctx, task)
+	}
+	task.ID = "sched-test-1"
+	return &task, nil
+}
+func (m *mockScheduler) ListSchedules(ctx context.Context, agentName string, status domain.ScheduleStatus) ([]domain.ScheduleTask, error) {
+	if m.listSchedulesFn != nil {
+		return m.listSchedulesFn(ctx, agentName, status)
+	}
+	return []domain.ScheduleTask{{ID: "sched-test-1", Title: "Mock Task"}}, nil
+}
+func (m *mockScheduler) CancelSchedule(ctx context.Context, taskID string) error {
+	if m.cancelScheduleFn != nil {
+		return m.cancelScheduleFn(ctx, taskID)
+	}
+	return nil
+}
+func (m *mockScheduler) ConfigureHeartbeat(ctx context.Context, cfg domain.HeartbeatConfig, prompt string) error {
+	if m.configureHeartbeatFn != nil {
+		return m.configureHeartbeatFn(ctx, cfg, prompt)
+	}
+	return nil
+}
+func (m *mockScheduler) GetHeartbeat(ctx context.Context, agentName string) (*domain.HeartbeatConfig, string, error) {
+	if m.getHeartbeatFn != nil {
+		return m.getHeartbeatFn(ctx, agentName)
+	}
+	return &domain.HeartbeatConfig{AgentName: agentName, Enabled: true, IntervalSeconds: 1800}, "Heartbeat prompt", nil
+}
+func (m *mockScheduler) TriggerHeartbeatNow(ctx context.Context, agentName string) error {
+	if m.triggerHeartbeatFn != nil {
+		return m.triggerHeartbeatFn(ctx, agentName)
+	}
+	return nil
+}
+func (m *mockScheduler) Start(ctx context.Context) error { return nil }
+func (m *mockScheduler) Stop(ctx context.Context) error  { return nil }
+
+func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
+	addr := "127.0.0.1:49989"
+	mockMgr := &mockSecurityManager{}
+	mockSched := &mockScheduler{}
+
+	server := NewServer(mockMgr, addr, nil)
+	server.SetScheduler(mockSched)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+
+	client := NewClient(addr)
+
+	// 1. Test schedule_task
+	schedResp, err := client.SendAction("schedule_task", map[string]interface{}{
+		"title":           "Daily Backup",
+		"prompt":          "Perform automated backup",
+		"time_expression": "0 2 * * *",
+		"schedule_type":   "cron",
+		"agent_name":      "coder",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, schedResp.Success)
+	assert.Contains(t, string(schedResp.Data), "Daily Backup")
+
+	// 2. Test list_schedules
+	listResp, err := client.SendAction("list_schedules", map[string]interface{}{
+		"agent_name": "coder",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, listResp.Success)
+	assert.Contains(t, string(listResp.Data), "Mock Task")
+
+	// 3. Test cancel_schedule
+	cancelResp, err := client.SendAction("cancel_schedule", map[string]interface{}{
+		"task_id": "sched-test-1",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, cancelResp.Success)
+	assert.Contains(t, string(cancelResp.Data), "CANCELLED")
+
+	// 4. Test configure_heartbeat
+	hbResp, err := client.SendAction("configure_heartbeat", map[string]interface{}{
+		"agent_name": "coder",
+		"enabled":    true,
+		"interval":   "45m",
+		"prompt":     "Review unread alerts",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, hbResp.Success)
+	assert.Contains(t, string(hbResp.Data), "2700")
+
+	// 5. Test trigger_heartbeat
+	trigResp, err := client.SendAction("trigger_heartbeat", map[string]interface{}{
+		"agent_name": "coder",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, trigResp.Success)
+	assert.Contains(t, string(trigResp.Data), "TRIGGERED")
+}
+

@@ -64,9 +64,14 @@ func TestPluginCLI_Update(t *testing.T) {
 
 func TestPluginCLI_Install(t *testing.T) {
 	tempDir := t.TempDir()
-	origHome := os.Getenv("USERPROFILE")
+	origHome := os.Getenv("HOME")
+	origUserProfile := os.Getenv("USERPROFILE")
+	os.Setenv("HOME", tempDir)
 	os.Setenv("USERPROFILE", tempDir)
-	defer os.Setenv("USERPROFILE", origHome)
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("USERPROFILE", origUserProfile)
+	}()
 
 	buf := new(bytes.Buffer)
 	pluginInstallCmd.SetOut(buf)

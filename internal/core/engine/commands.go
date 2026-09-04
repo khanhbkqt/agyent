@@ -97,6 +97,12 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	case "/whitelist":
 		responseText = e.handleWhitelistCommand(msg.Sender, sessionKey, args)
 
+	case "/schedule", "/schedules", "/cron":
+		responseText, inlineKeyboard = e.handleScheduleCommand(ctx, msg.Sender, session, args)
+
+	case "/heartbeat", "/hb":
+		responseText, inlineKeyboard = e.handleHeartbeatCommand(ctx, msg.Sender, session, args)
+
 	case "/tasks", "/subagents":
 		responseText, inlineKeyboard = e.handleTasksCommand(ctx, session, args)
 
@@ -177,6 +183,14 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/bootstrap [name]`" + ` (or ` + "`/a bootstrap`" + `) — Force re-trigger Genesis Bootstrap protocol for an agent.
 • ` + "`/force_unlock`" + ` — Emergency unlock session mutex and cancel hanging subprocess.
 • ` + "`/help`" + ` — Show this help message.
+
+**⏰ Schedules & Heartbeats:**
+• ` + "`/schedule`" + ` (or ` + "`/cron`" + `) — View, list, or manage scheduled and recurring tasks.
+• ` + "`/schedule cancel <id>`" + ` — Cancel a scheduled task by ID.
+• ` + "`/heartbeat`" + ` — Inspect active heartbeat status, interval, and directives.
+• ` + "`/heartbeat [on|off]`" + ` — Enable or disable periodic heartbeat wakeups.
+• ` + "`/heartbeat interval <duration>`" + ` — Set heartbeat interval (e.g. ` + "`30m`" + `, ` + "`2h`" + `).
+• ` + "`/heartbeat trigger`" + ` — Trigger an immediate heartbeat wakeup now.
 
 **🧵 Conversation & Context:**
 • ` + "`/ask <prompt>`" + ` — Ask an isolated ephemeral question without polluting active context.
@@ -2011,3 +2025,196 @@ func (e *Engine) handleWhitelistCommand(sender domain.SenderUser, sessionKey str
 
 	return "⚠️ Usage: `/whitelist add <command_or_path>`\nExample: `/whitelist add \"npm run build\"`"
 }
+
+func (e *Engine) handleScheduleCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	if e.scheduler == nil {
+		return "⚠️ **Scheduler engine is not initialized.**", nil
+	}
+
+	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+	if err == nil && agent != nil {
+		allowed, _, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed {
+			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to view or manage schedules for agent `@%s`.", agent.Name), nil
+		}
+	}
+
+	// /schedule cancel <id>
+	if len(args) >= 2 && (strings.ToLower(args[0]) == "cancel" || strings.ToLower(args[0]) == "delete" || strings.ToLower(args[0]) == "del") {
+		taskID := strings.TrimSpace(args[1])
+		if err := e.scheduler.CancelSchedule(ctx, taskID); err != nil {
+			return fmt.Sprintf("⚠️ Failed to cancel schedule `%s`: %v", taskID, err), nil
+		}
+		return fmt.Sprintf("🗑️ **Schedule cancelled:** `%s` has been removed.", taskID), nil
+	}
+
+	// List schedules
+	tasks, err := e.scheduler.ListSchedules(ctx, session.ActiveAgent, "")
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to query schedules: %v", err), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("⏰ **Scheduled & Cron Tasks (@%s)**\n\n", session.ActiveAgent))
+
+	if len(tasks) == 0 {
+		sb.WriteString("No scheduled tasks found.\n\n")
+		sb.WriteString("_💡 To schedule a task naturally, prompt your agent:_\n*\"Remind me in 30 minutes to check deployment\"* or *\"Every day at 9am summarize hacker news\"*.")
+		return sb.String(), nil
+	}
+
+	var keyboard domain.InlineKeyboard
+	for _, t := range tasks {
+		statusIcon := "🟢"
+		if t.Status == domain.ScheduleStatusRunning {
+			statusIcon = "⚡"
+		} else if t.Status == domain.ScheduleStatusPaused {
+			statusIcon = "⏸️"
+		} else if t.Status == domain.ScheduleStatusFailed {
+			statusIcon = "❌"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s **%s** (`%s`)\n", statusIcon, t.Title, t.ID))
+		sb.WriteString(fmt.Sprintf("   • **Type:** `%s` (%s)\n", t.ScheduleType, t.ScheduleExpr))
+		sb.WriteString(fmt.Sprintf("   • **Next Run:** `%s`\n", t.NextRunAt.Format("2006-01-02 15:04:05 MST")))
+		if t.LastError != "" {
+			sb.WriteString(fmt.Sprintf("   • **Last Error:** _%s_\n", t.LastError))
+		}
+		sb.WriteString("\n")
+
+		keyboard = append(keyboard, []domain.InlineButton{
+			{
+				Text:         fmt.Sprintf("❌ Cancel %s", t.ID),
+				CallbackData: fmt.Sprintf("sched:cancel:%s", t.ID),
+			},
+		})
+	}
+
+	return sb.String(), keyboard
+}
+
+func (e *Engine) handleHeartbeatCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
+	if e.scheduler == nil {
+		return "⚠️ **Scheduler engine is not initialized.**", nil
+	}
+
+	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+	if err == nil && agent != nil {
+		allowed, _, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed {
+			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to view or manage heartbeat for agent `@%s`.", agent.Name), nil
+		}
+	}
+
+	cfg, prompt, err := e.scheduler.GetHeartbeat(ctx, session.ActiveAgent)
+	if err != nil {
+		return fmt.Sprintf("⚠️ Failed to load heartbeat configuration: %v", err), nil
+	}
+
+	subCmd := ""
+	if len(args) > 0 {
+		subCmd = strings.ToLower(args[0])
+	}
+
+	switch subCmd {
+	case "on", "enable":
+		cfg.Enabled = true
+		cfg.TargetSessionKey = session.SessionKey
+		parsedKey, _ := domain.ParseSessionKey(session.SessionKey)
+		cfg.ChatID = parsedKey.ChatID
+		if parsedKey.ThreadID > 0 {
+			cfg.ThreadID = strconv.FormatInt(parsedKey.ThreadID, 10)
+		}
+		cfg.Channel = parsedKey.Channel
+		if cfg.Channel == "" {
+			cfg.Channel = "telegram"
+		}
+		if err := e.scheduler.ConfigureHeartbeat(ctx, *cfg, prompt); err != nil {
+			return fmt.Sprintf("⚠️ Failed to enable heartbeat: %v", err), nil
+		}
+		return fmt.Sprintf("💓 **Heartbeat Enabled for @%s**\n• Interval: `%s`\n• Next Wakeup: `%s`",
+			session.ActiveAgent, formatIntervalDuration(cfg.IntervalSeconds), cfg.NextRunAt.Format("15:04:05 MST")), nil
+
+	case "off", "disable":
+		cfg.Enabled = false
+		if err := e.scheduler.ConfigureHeartbeat(ctx, *cfg, prompt); err != nil {
+			return fmt.Sprintf("⚠️ Failed to disable heartbeat: %v", err), nil
+		}
+		return fmt.Sprintf("💔 **Heartbeat Disabled for @%s**", session.ActiveAgent), nil
+
+	case "interval":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/heartbeat interval <duration>` (e.g. `/heartbeat interval 30m`, `/heartbeat interval 2h`)", nil
+		}
+		d, err := time.ParseDuration(strings.ToLower(args[1]))
+		if err != nil || d <= 0 {
+			return fmt.Sprintf("⚠️ Invalid duration %q. Example: `15m`, `1h`, `30m`", args[1]), nil
+		}
+		cfg.IntervalSeconds = int(d.Seconds())
+		if err := e.scheduler.ConfigureHeartbeat(ctx, *cfg, prompt); err != nil {
+			return fmt.Sprintf("⚠️ Failed to update heartbeat interval: %v", err), nil
+		}
+		return fmt.Sprintf("⏱️ **Heartbeat Interval Updated (@%s):** `%s`", session.ActiveAgent, args[1]), nil
+
+	case "trigger", "run", "now":
+		if err := e.scheduler.TriggerHeartbeatNow(ctx, session.ActiveAgent); err != nil {
+			return fmt.Sprintf("⚠️ Failed to trigger heartbeat: %v", err), nil
+		}
+		return fmt.Sprintf("⚡ **Heartbeat Wakeup Triggered:** Agent `@%s` is executing directives in background...", session.ActiveAgent), nil
+
+	default:
+		statusStr := "🔴 **Disabled**"
+		if cfg.Enabled {
+			statusStr = "🟢 **Enabled**"
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("💓 **Agent Heartbeat Status (@%s)**\n\n", session.ActiveAgent))
+		sb.WriteString(fmt.Sprintf("• **Status:** %s\n", statusStr))
+		sb.WriteString(fmt.Sprintf("• **Interval:** `%s`\n", formatIntervalDuration(cfg.IntervalSeconds)))
+		if cfg.Enabled && !cfg.NextRunAt.IsZero() {
+			sb.WriteString(fmt.Sprintf("• **Next Wakeup:** `%s`\n", cfg.NextRunAt.Format("2006-01-02 15:04:05 MST")))
+		}
+		if !cfg.LastRunAt.IsZero() {
+			sb.WriteString(fmt.Sprintf("• **Last Run:** `%s`\n", cfg.LastRunAt.Format("2006-01-02 15:04:05 MST")))
+		}
+		if cfg.LastError != "" {
+			sb.WriteString(fmt.Sprintf("• **Last Error:** _%s_\n", cfg.LastError))
+		}
+
+		sb.WriteString("\n📄 **Prompt Directives (`HEARTBEAT.md`):**\n")
+		promptSnippet := prompt
+		if len(promptSnippet) > 300 {
+			promptSnippet = promptSnippet[:300] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("```markdown\n%s\n```\n", promptSnippet))
+		sb.WriteString("\n_Commands: `/heartbeat [on|off]` • `/heartbeat interval <duration>` • `/heartbeat trigger`_")
+
+		var keyboard domain.InlineKeyboard
+		toggleBtnText := "🟢 Enable Heartbeat"
+		toggleAction := "hb:on"
+		if cfg.Enabled {
+			toggleBtnText = "🔴 Disable Heartbeat"
+			toggleAction = "hb:off"
+		}
+		keyboard = append(keyboard, []domain.InlineButton{
+			{Text: toggleBtnText, CallbackData: toggleAction},
+			{Text: "⚡ Trigger Now", CallbackData: "hb:trigger"},
+		})
+
+		return sb.String(), keyboard
+	}
+}
+
+func formatIntervalDuration(seconds int) string {
+	if seconds <= 0 {
+		return "1h"
+	}
+	if seconds%3600 == 0 {
+		return fmt.Sprintf("%dh", seconds/3600)
+	}
+	if seconds%60 == 0 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+

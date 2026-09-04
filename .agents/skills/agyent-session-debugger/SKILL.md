@@ -27,7 +27,7 @@ go run scripts/debug_session.go --session "telegram:8718145628:8544450322"
 
 The tool automatically evaluates:
 - **Token context bloat** (> 1,000,000 tokens).
-- **Subprocess timeout watchdog violations** (duration >= 300s).
+- **Subprocess timeout watchdog violations** (duration >= 1800s).
 - **Session lock bottlenecks** (FIFO lock / active turns).
 - **Subagent task lifecycle** (failures, timeouts, path errors).
 - **Brain transcript location** (`~/.gemini/antigravity/brain/<conv_id>`).
@@ -85,9 +85,9 @@ ORDER BY created_at DESC LIMIT 10;
 
 ## 4. Common Failure Modes & Solutions
 
-### Mode A: Context Length Overload (> 1M tokens) & 5-Minute Timeout
-- **Symptom:** Logs show `total_tokens` > 1,000,000, duration > 3000s, followed by `AGY stream execution timed out timeout=5m0s` (`context deadline exceeded`).
-- **Root Cause:** As Antigravity conversation context approaches 1.5M–2M tokens, inference latency and tool execution per step increase, exceeding the default 300s watchdog.
+### Mode A: Context Length Overload (> 1M tokens) & 30-Minute Timeout
+- **Symptom:** Logs show `total_tokens` > 1,000,000, duration > 1800s, followed by `AGY stream execution timed out timeout=30m0s` (`context deadline exceeded`).
+- **Root Cause:** As Antigravity conversation context approaches 1.5M–2M tokens, inference latency and tool execution per step increase, exceeding the default 1800s watchdog.
 - **Fix:**
   1. Tell the user to send `/new` or `/reset` in the Telegram/Discord chat to start a fresh conversation.
   2. The prompt cache will reset to 0 tokens and response time will return to < 5 seconds.

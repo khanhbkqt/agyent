@@ -30,6 +30,16 @@ const (
 	EventSubagentFailed       EventType = "subagent.failed"
 	EventSubagentCancelled    EventType = "subagent.cancelled"
 
+	// Schedule & Cron Lifecycle Events
+	EventScheduleTriggered EventType = "schedule.triggered"
+	EventScheduleCompleted EventType = "schedule.completed"
+	EventScheduleFailed    EventType = "schedule.failed"
+
+	// Heartbeat Lifecycle Events
+	EventHeartbeatTriggered EventType = "heartbeat.triggered"
+	EventHeartbeatCompleted EventType = "heartbeat.completed"
+	EventHeartbeatFailed    EventType = "heartbeat.failed"
+
 	// Control & Cancellation Events
 	EventForceKillRequested EventType = "execution.force_kill"
 )

@@ -30,9 +30,21 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live binary e2e tests in short mode")
 	}
-	exePath := filepath.Join("..", "..", "bin", "agyent.exe")
-	if _, err := os.Stat(exePath); err != nil {
-		exePath = filepath.Join("bin", "agyent.exe")
+	candidates := []string{
+		filepath.Join("..", "..", "bin", "agyent"),
+		filepath.Join("bin", "agyent"),
+		filepath.Join("..", "..", "bin", "agyent.exe"),
+		filepath.Join("bin", "agyent.exe"),
+	}
+	var exePath string
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			exePath = cand
+			break
+		}
+	}
+	if exePath == "" {
+		exePath = filepath.Join("bin", "agyent")
 	}
 	require.FileExists(t, exePath, "compiled binary must exist at %s", exePath)
 

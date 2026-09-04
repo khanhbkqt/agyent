@@ -113,7 +113,7 @@ flowchart TD
 ## 4. Timeout Handling & Process Tree Zombie Cleanup
 
 1. **Context Watchdog & Process Group Killing:**
-   - When execution exceeds timeout (default 300s) or receives Context cancellation:
+   - When execution exceeds timeout (default 1800s) or receives Context cancellation:
      - **On Linux/macOS:** Group processes via `SysProcAttr: &syscall.SysProcAttr{Setpgid: true}` and dispatch `syscall.SIGKILL` to the negative PID (`-cmd.Process.Pid`), guaranteeing no orphan child processes survive.
      - **On Windows:** Attach to **Windows Job Objects** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) or fallback to tree termination via `exec.Command("taskkill", "/F", "/T", "/PID", pid).Run()` to eliminate all spawned child processes (node, python, git, etc.).
 2. **Emergency Unlock Command (`/force_unlock`):**

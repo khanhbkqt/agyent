@@ -150,7 +150,7 @@ telegram:
 
 agy:
   binary_path: "agy"           # Or absolute path "C:\\...\\agy.exe"
-  default_timeout_seconds: 300
+  default_timeout_seconds: 1800
   default_effort: "high"       # "low" | "medium" | "high"
   default_mode: "accept-edits" # "accept-edits" | "plan"
   dangerously_skip_permissions: true

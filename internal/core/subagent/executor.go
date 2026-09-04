@@ -36,7 +36,7 @@ type taskExecutor struct {
 
 func newTaskExecutor(binaryPath string, defaultTimeout time.Duration) *taskExecutor {
 	if defaultTimeout <= 0 {
-		defaultTimeout = 300 * time.Second
+		defaultTimeout = 1800 * time.Second
 	}
 	return &taskExecutor{
 		binaryPath:     binaryPath,

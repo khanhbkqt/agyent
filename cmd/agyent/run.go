@@ -25,6 +25,7 @@ import (
 	"agyent/internal/core/domain"
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
+	"agyent/internal/core/scheduler"
 	"agyent/internal/core/subagent"
 	"agyent/internal/logger"
 
@@ -156,7 +157,13 @@ var runCmd = &cobra.Command{
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
 		eng.SetSecurityManager(secMgr)
-		eng.SetWorkspaceManager(workspaceAdapter.NewManager(mainLogger))
+		wsMgr := workspaceAdapter.NewManager(mainLogger)
+		eng.SetWorkspaceManager(wsMgr)
+
+		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
+		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
+		eng.SetScheduler(sched)
+		ipcServer.SetScheduler(sched)
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
 		eng.SetSubagentDispatcher(subDispatcher)

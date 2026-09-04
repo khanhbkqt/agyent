@@ -31,6 +31,7 @@ var (
 	_ ports.AuditRepository        = (*SQLiteStore)(nil)
 	_ ports.ConversationRepository = (*SQLiteStore)(nil)
 	_ ports.SubagentRepository     = (*SQLiteStore)(nil)
+	_ ports.ScheduleRepository     = (*SQLiteStore)(nil)
 )
 
 // SQLiteStore implements ports.StoragePort using a Pure-Go SQLite backend in WAL mode with Dual-Pool architecture.

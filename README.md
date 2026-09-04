@@ -298,7 +298,7 @@ telegram:
 # Antigravity CLI (AGY) Brain Configuration
 agy:
   binary_path: "agy"                                  # Command or absolute path to agy CLI
-  default_timeout_seconds: 300
+  default_timeout_seconds: 1800
   default_model: "pro"                                # "pro", "flash", "flash-lite", or model alias
   default_effort: "high"                              # "low", "medium", "high", "none"
   default_mode: "accept-edits"
@@ -315,7 +315,7 @@ storage:
 # Sub-Agent Background Dispatcher & Worker Pool
 subagent:
   max_concurrent_workers: 3                           # Parallel background sub-agent workers
-  default_timeout_seconds: 300
+  default_timeout_seconds: 1800
   default_model: "flash"
   default_effort: "low"
 

@@ -17,4 +17,10 @@ type WorkspacePort interface {
 
 	// EnsureWorkspaceUploadsDir ensures that <workspaceDir>/uploads exists and has a .gitignore.
 	EnsureWorkspaceUploadsDir(workspaceDir string) (string, error)
+
+	// ReadHeartbeat reads and parses HEARTBEAT.md YAML frontmatter and prompt directives from the agent workspace.
+	ReadHeartbeat(ctx context.Context, workspaceDir string) (*domain.HeartbeatConfig, string, error)
+
+	// WriteHeartbeat serializes and writes HEARTBEAT.md with YAML frontmatter to the agent workspace.
+	WriteHeartbeat(ctx context.Context, workspaceDir string, cfg domain.HeartbeatConfig, prompt string) error
 }

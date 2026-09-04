@@ -128,8 +128,9 @@ func SanitizeFilename(name string) string {
 		return "file"
 	}
 
-	// Remove path separators and relative directory tokens
-	cleaned := filepath.Base(name)
+	// Remove path separators and relative directory tokens across platforms
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	cleaned := filepath.Base(normalized)
 	cleaned = strings.ReplaceAll(cleaned, "..", "")
 	cleaned = strings.ReplaceAll(cleaned, "/", "_")
 	cleaned = strings.ReplaceAll(cleaned, "\\", "_")

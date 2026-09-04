@@ -91,7 +91,7 @@ When `queue_mode: "append"` is configured (or toggled via `/mode append`), incom
 ### Stage 4: Per-Session Concurrency Locking
 - Each `SessionKey` is protected by a dedicated `sync.Mutex` and reference-counted `lockEntry`.
 - In `fifo` mode (default), subsequent turns wait sequentially on `sem`. In `append` mode, the active turn drains at its safe checkpoint before the waiting turn acquires the lock.
-- If an execution exceeds 300s, the timeout watchdog automatically terminates the subprocess and releases the lock. The `/force_unlock` slash command is supported for emergency releases.
+- If an execution exceeds 1800s, the timeout watchdog automatically terminates the subprocess and releases the lock. The `/force_unlock` slash command is supported for emergency releases.
 
 ---
 

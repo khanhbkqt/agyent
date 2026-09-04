@@ -18,7 +18,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 8080, cfg.Server.Port)
 	assert.Equal(t, "polling", cfg.Telegram.Mode)
 	assert.Equal(t, "agy", cfg.AGY.BinaryPath)
-	assert.Equal(t, 300, cfg.AGY.DefaultTimeoutSeconds)
+	assert.Equal(t, 1800, cfg.AGY.DefaultTimeoutSeconds)
 	assert.Equal(t, "high", cfg.AGY.DefaultEffort)
 	assert.Equal(t, "accept-edits", cfg.AGY.DefaultMode)
 	assert.True(t, cfg.AGY.DangerouslySkipPermissions)

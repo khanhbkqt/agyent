@@ -461,7 +461,7 @@ func (dt *DeliveryThrottler) runSessionWorker(ctx context.Context, sess *StreamS
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Inactivity timeout: 5 minutes without any stream activity
+	// Inactivity timeout: 30 minutes without any stream activity
 	inactivityCheck := time.NewTicker(30 * time.Second)
 	defer inactivityCheck.Stop()
 
@@ -493,7 +493,7 @@ func (dt *DeliveryThrottler) runSessionWorker(ctx context.Context, sess *StreamS
 			sess.Mu.Lock()
 			lastAct := sess.LastActivity
 			sess.Mu.Unlock()
-			if time.Since(lastAct) > 5*time.Minute {
+			if time.Since(lastAct) > 30*time.Minute {
 				dt.flushFinalSession(sess)
 				dt.sessions.Delete(sess.SessionKey)
 				return

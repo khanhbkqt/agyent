@@ -199,7 +199,7 @@ func main() {
 	if totalTokensLastTurn > 1000000 {
 		issuesFound++
 		fmt.Printf("⚠️  [HIGH TOKEN CONTEXT]: Conversation context has accumulated %d tokens (>1.0M tokens).\n", totalTokensLastTurn)
-		fmt.Println("   • Impact: High LLM inference latency, increased risk of hitting the 300s timeout watchdog.")
+		fmt.Println("   • Impact: High LLM inference latency, increased risk of hitting the 1800s timeout watchdog.")
 		fmt.Println("   • Remediation: In Telegram chat, send `/new` or `/reset` to start a clean conversation session.")
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,16 +18,18 @@ import (
 // DefaultIPCAddress is the standard local IPC endpoint.
 const DefaultIPCAddress = "127.0.0.1:49215"
 
-// Server implements ports.HookIPCPort to receive and evaluate Antigravity hook requests.
+// Server implements ports.HookIPCPort to receive and evaluate Antigravity hook requests
+// and process management IPC actions from local plugins.
 type Server struct {
-	addr     string
-	manager  ports.SecurityManagerPort
-	listener net.Listener
-	logger   *slog.Logger
-	mu       sync.RWMutex
-	running  bool
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	addr      string
+	manager   ports.SecurityManagerPort
+	scheduler ports.SchedulerPort
+	listener  net.Listener
+	logger    *slog.Logger
+	mu        sync.RWMutex
+	running   bool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 // NewServer constructs a new IPC server instance.
@@ -42,6 +45,13 @@ func NewServer(manager ports.SecurityManagerPort, addr string, logger *slog.Logg
 		manager: manager,
 		logger:  logger,
 	}
+}
+
+// SetScheduler sets the scheduler port for handling schedule/heartbeat IPC actions.
+func (s *Server) SetScheduler(sched ports.SchedulerPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduler = sched
 }
 
 // Start opens the IPC listener and handles incoming hook requests in the background.
@@ -137,17 +147,27 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	var req domain.HookRequest
-	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-		s.logger.Error("Failed to unmarshal hook request", "error", err)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+		s.logger.Error("Failed to unmarshal IPC payload", "error", err)
 		resp := domain.HookResponse{
 			Decision: string(domain.DecisionDeny),
-			Reason:   "Malformed hook JSON payload",
+			Reason:   "Malformed JSON payload",
 		}
 		respBytes, _ := json.Marshal(resp)
 		_, _ = conn.Write(append(respBytes, '\n'))
 		return
 	}
+
+	// 1. Check if this is a custom IPC action request (e.g. from scheduler plugin)
+	if action, ok := raw["action"].(string); ok && action != "" {
+		s.handleAction(ctx, conn, action, raw)
+		return
+	}
+
+	// 2. Otherwise process as standard HookRequest
+	var req domain.HookRequest
+	_ = json.Unmarshal(scanner.Bytes(), &req)
 
 	resp, err := s.HandleHookRequest(ctx, req)
 	if err != nil {
@@ -160,6 +180,259 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	respBytes, _ := json.Marshal(resp)
 	_, _ = conn.Write(append(respBytes, '\n'))
+}
+
+func (s *Server) handleAction(ctx context.Context, conn net.Conn, action string, raw map[string]interface{}) {
+	params, _ := raw["params"].(map[string]interface{})
+	if params == nil {
+		params = raw
+	}
+
+	var (
+		res any
+		err error
+	)
+
+	switch action {
+	case "schedule_task", "create_schedule":
+		res, err = s.handleScheduleTask(ctx, params)
+	case "list_schedules":
+		res, err = s.handleListSchedules(ctx, params)
+	case "cancel_schedule", "delete_schedule":
+		res, err = s.handleCancelSchedule(ctx, params)
+	case "configure_heartbeat":
+		res, err = s.handleConfigureHeartbeat(ctx, params)
+	case "get_heartbeat":
+		res, err = s.handleGetHeartbeat(ctx, params)
+	case "trigger_heartbeat":
+		res, err = s.handleTriggerHeartbeat(ctx, params)
+	default:
+		err = fmt.Errorf("unsupported action %q", action)
+	}
+
+	respMap := map[string]interface{}{
+		"success": err == nil,
+		"data":    res,
+	}
+	if err != nil {
+		respMap["error"] = err.Error()
+	}
+
+	respBytes, _ := json.Marshal(respMap)
+	_, _ = conn.Write(append(respBytes, '\n'))
+}
+
+func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	prompt, _ := p["prompt"].(string)
+	if strings.TrimSpace(prompt) == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	title, _ := p["title"].(string)
+	if strings.TrimSpace(title) == "" {
+		title = prompt
+		if len(title) > 40 {
+			title = title[:37] + "..."
+		}
+	}
+	agentName, _ := p["agent_name"].(string)
+	if strings.TrimSpace(agentName) == "" {
+		agentName = "agyent"
+	}
+
+	schedExpr, _ := p["schedule_expr"].(string)
+	if schedExpr == "" {
+		schedExpr, _ = p["time_expression"].(string)
+	}
+	if schedExpr == "" {
+		schedExpr, _ = p["expression"].(string)
+	}
+	schedExpr = strings.TrimSpace(schedExpr)
+	if schedExpr == "" {
+		return nil, fmt.Errorf("time_expression or schedule_expr is required")
+	}
+
+	schedTypeStr, _ := p["schedule_type"].(string)
+	schedTypeStr = strings.ToLower(strings.TrimSpace(schedTypeStr))
+	var schedType domain.ScheduleType
+	switch schedTypeStr {
+	case "cron":
+		schedType = domain.ScheduleTypeCron
+	case "once", "one_off", "one-off":
+		schedType = domain.ScheduleTypeOnce
+	default:
+		if strings.HasPrefix(schedExpr, "@") || len(strings.Fields(schedExpr)) == 5 {
+			schedType = domain.ScheduleTypeCron
+		} else {
+			schedType = domain.ScheduleTypeOnce
+		}
+	}
+
+	sessionKey, _ := p["session_key"].(string)
+	targetSessionKey, _ := p["target_session_key"].(string)
+	if targetSessionKey == "" {
+		targetSessionKey = sessionKey
+	}
+	overlap, _ := p["overlap_policy"].(string)
+	if overlap == "" {
+		overlap = string(domain.OverlapPolicySkip)
+	}
+	channel, _ := p["channel"].(string)
+	chatID, _ := p["chat_id"].(string)
+	threadID, _ := p["thread_id"].(string)
+
+	task := domain.ScheduleTask{
+		AgentName:        agentName,
+		Title:            title,
+		Prompt:           prompt,
+		ScheduleType:     schedType,
+		ScheduleExpr:     schedExpr,
+		TargetSessionKey: targetSessionKey,
+		Channel:          channel,
+		ChatID:           chatID,
+		ThreadID:         threadID,
+		OverlapPolicy:    domain.OverlapPolicy(overlap),
+	}
+
+	return sched.CreateSchedule(ctx, task)
+}
+
+func (s *Server) handleListSchedules(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	agentName, _ := p["agent_name"].(string)
+	statusStr, _ := p["status"].(string)
+	return sched.ListSchedules(ctx, agentName, domain.ScheduleStatus(statusStr))
+}
+
+func (s *Server) handleCancelSchedule(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	taskID, _ := p["task_id"].(string)
+	if strings.TrimSpace(taskID) == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+	if err := sched.CancelSchedule(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return map[string]string{"task_id": taskID, "status": "CANCELLED"}, nil
+}
+
+func (s *Server) handleConfigureHeartbeat(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	agentName, _ := p["agent_name"].(string)
+	if strings.TrimSpace(agentName) == "" {
+		agentName = "agyent"
+	}
+
+	existingCfg, existingPrompt, _ := sched.GetHeartbeat(ctx, agentName)
+	cfg := domain.HeartbeatConfig{
+		AgentName:       agentName,
+		Enabled:         true,
+		IntervalSeconds: 3600,
+	}
+	prompt := existingPrompt
+	if existingCfg != nil {
+		cfg = *existingCfg
+	}
+
+	if enabledVal, ok := p["enabled"]; ok {
+		if b, ok := enabledVal.(bool); ok {
+			cfg.Enabled = b
+		}
+	}
+
+	if promptVal, ok := p["prompt"].(string); ok && strings.TrimSpace(promptVal) != "" {
+		prompt = promptVal
+	}
+
+	if intervalVal, ok := p["interval"].(string); ok && strings.TrimSpace(intervalVal) != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(intervalVal)); err == nil && d > 0 {
+			cfg.IntervalSeconds = int(d.Seconds())
+		}
+	} else if secVal, ok := p["interval_seconds"].(float64); ok && secVal > 0 {
+		cfg.IntervalSeconds = int(secVal)
+	}
+
+	if targetKey, ok := p["target_session_key"].(string); ok && targetKey != "" {
+		cfg.TargetSessionKey = targetKey
+	}
+
+	if err := sched.ConfigureHeartbeat(ctx, cfg, prompt); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"agent_name":       cfg.AgentName,
+		"enabled":          cfg.Enabled,
+		"interval_seconds": cfg.IntervalSeconds,
+	}, nil
+}
+
+func (s *Server) handleGetHeartbeat(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	agentName, _ := p["agent_name"].(string)
+	if strings.TrimSpace(agentName) == "" {
+		agentName = "agyent"
+	}
+
+	cfg, prompt, err := sched.GetHeartbeat(ctx, agentName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"config": cfg,
+		"prompt": prompt,
+	}, nil
+}
+
+func (s *Server) handleTriggerHeartbeat(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sched := s.scheduler
+	s.mu.RUnlock()
+	if sched == nil {
+		return nil, fmt.Errorf("scheduler is not initialized")
+	}
+
+	agentName, _ := p["agent_name"].(string)
+	if strings.TrimSpace(agentName) == "" {
+		agentName = "agyent"
+	}
+
+	if err := sched.TriggerHeartbeatNow(ctx, agentName); err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"agent_name": agentName,
+		"status":     "TRIGGERED",
+	}, nil
 }
 
 // HandleHookRequest processes a domain.HookRequest and returns a domain.HookResponse.

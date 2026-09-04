@@ -45,7 +45,7 @@ type Harness struct {
 func NewHarness(cfg config.AGYConfig, bus ...ports.EventBusPort) *Harness {
 	timeout := time.Duration(cfg.DefaultTimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 300 * time.Second
+		timeout = 1800 * time.Second
 	}
 	effort := cfg.DefaultEffort
 	if effort == "" {

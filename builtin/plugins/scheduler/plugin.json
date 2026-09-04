@@ -1,0 +1,9 @@
+{
+  "name": "scheduler",
+  "version": "1.0.0",
+  "description": "Agent heartbeat monitor, cron task scheduling, and one-off delayed prompt execution engine",
+  "author": "agyent team",
+  "publisher": "agyent",
+  "enabled": true,
+  "tags": ["scheduler", "cron", "heartbeat", "automation", "timer"]
+}

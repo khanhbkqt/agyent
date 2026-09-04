@@ -205,7 +205,7 @@ func DefaultConfig() *Config {
 		},
 		AGY: AGYConfig{
 			BinaryPath:                       "agy",
-			DefaultTimeoutSeconds:            300,
+			DefaultTimeoutSeconds:            1800,
 			DefaultModel:                     "",
 			DefaultEffort:                    "high",
 			DefaultMode:                      "accept-edits",
@@ -240,7 +240,7 @@ func DefaultConfig() *Config {
 		},
 		Subagent: SubagentConfig{
 			MaxConcurrentWorkers:  3,
-			DefaultTimeoutSeconds: 300,
+			DefaultTimeoutSeconds: 1800,
 			DefaultModel:          "flash",
 			DefaultEffort:         "low",
 		},

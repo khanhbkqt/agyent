@@ -169,7 +169,7 @@ func (d *DoctorRunner) CheckStorage(ctx context.Context) []CheckResult {
 			if tokens > 1000000 {
 				highContextHits++
 			}
-			if dur >= 300 || strings.Contains(lowerErr, "timed out") || strings.Contains(lowerErr, "deadline exceeded") {
+			if dur >= 1800 || strings.Contains(lowerErr, "timed out") || strings.Contains(lowerErr, "deadline exceeded") {
 				timeoutHits++
 			}
 		}
@@ -199,7 +199,7 @@ func (d *DoctorRunner) CheckStorage(ctx context.Context) []CheckResult {
 				Name:        "Watchdog Timeout Triage",
 				Category:    CategoryStorage,
 				Status:      StatusWarn,
-				Message:     fmt.Sprintf("Detected %d turn timeout watchdog violation(s) (>= 300s)", timeoutHits),
+				Message:     fmt.Sprintf("Detected %d turn timeout watchdog violation(s) (>= 1800s)", timeoutHits),
 				Remediation: "Run '/new' to reduce prompt context or check network latency to Google Antigravity servers.",
 			})
 		}

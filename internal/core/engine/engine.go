@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ type Engine struct {
 	subagentDispatcher ports.SubagentDispatcherPort
 	securityManager    ports.SecurityManagerPort
 	workspaceManager   ports.WorkspacePort
+	scheduler          ports.SchedulerPort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -150,6 +152,16 @@ func (e *Engine) GetWorkspaceManager() ports.WorkspacePort {
 	return e.workspaceManager
 }
 
+// SetScheduler injects the background task and cron scheduler.
+func (e *Engine) SetScheduler(s ports.SchedulerPort) {
+	e.scheduler = s
+}
+
+// GetScheduler returns the active scheduler instance.
+func (e *Engine) GetScheduler() ports.SchedulerPort {
+	return e.scheduler
+}
+
 // SetPendingCompactionDigest records a continuity digest for a session to be injected on the next turn.
 func (e *Engine) SetPendingCompactionDigest(sessionKey, digest string) {
 	e.compactionMu.Lock()
@@ -190,6 +202,14 @@ func (e *Engine) Start(ctx context.Context) error {
 			slog.Warn("failed to start subagent dispatcher", "error", err)
 		}
 		e.subscribeSubagentEvents()
+	}
+
+	// 2.1. Start scheduler daemon if present
+	if e.scheduler != nil {
+		if err := e.scheduler.Start(e.ctx); err != nil {
+			slog.Warn("failed to start scheduler daemon", "error", err)
+		}
+		e.subscribeSchedulerEvents()
 	}
 
 	// 2. Consume from inbound queue and ingest into Debouncer
@@ -396,7 +416,7 @@ func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID 
 func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, isEphemeralOpt ...bool) error {
 	isEphemeral := len(isEphemeralOpt) > 0 && isEphemeralOpt[0]
 	sessionKey := msg.SessionKey()
-	timeout := 300 * time.Second
+	timeout := 1800 * time.Second
 	if e.cfg != nil && e.cfg.AGY.DefaultTimeoutSeconds > 0 {
 		timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
 	}
@@ -1022,6 +1042,10 @@ func (e *Engine) Stop(ctx context.Context) error {
 		_ = e.subagentDispatcher.Stop(ctx)
 	}
 
+	if e.scheduler != nil {
+		_ = e.scheduler.Stop(ctx)
+	}
+
 	e.turnsMu.Lock()
 	for k, entry := range e.activeTurns {
 		entry.cancel()
@@ -1248,6 +1272,128 @@ func (e *Engine) subscribeSubagentEvents() {
 				ParseMode: "Markdown",
 			})
 		}
+	})
+}
+
+func (e *Engine) subscribeSchedulerEvents() {
+	if e.eventBus == nil || e.channel == nil {
+		return
+	}
+
+	// 1. Scheduled Task Completed
+	e.eventBus.SubscribeAsync(domain.EventScheduleCompleted, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.ScheduleEventPayload)
+		if !ok {
+			return
+		}
+		task := payload.Task
+		if task.ChatID == "" {
+			return
+		}
+
+		channel := task.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
+
+		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
+
+		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:  channel,
+			ChatID:   task.ChatID,
+			ThreadID: threadID,
+			Text: fmt.Sprintf("⏰ **Scheduled Task #%s Completed:** %s\n🤖 **Agent:** `@%s`\n\n📌 **Instructions:** %s",
+				task.ID, task.Title, task.AgentName, task.Prompt),
+			ParseMode: "Markdown",
+		})
+	})
+
+	// 2. Scheduled Task Failed
+	e.eventBus.SubscribeAsync(domain.EventScheduleFailed, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.ScheduleEventPayload)
+		if !ok {
+			return
+		}
+		task := payload.Task
+		if task.ChatID == "" {
+			return
+		}
+
+		channel := task.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
+
+		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
+
+		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:  channel,
+			ChatID:   task.ChatID,
+			ThreadID: threadID,
+			Text: fmt.Sprintf("⚠️ **Scheduled Task #%s Failed:** %s\n🤖 **Agent:** `@%s`\n❌ **Error:** %s",
+				task.ID, task.Title, task.AgentName, task.LastError),
+			ParseMode: "Markdown",
+		})
+	})
+
+	// 3. Heartbeat Completed
+	e.eventBus.SubscribeAsync(domain.EventHeartbeatCompleted, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.HeartbeatEventPayload)
+		if !ok {
+			return
+		}
+		hb := payload.Config
+		if hb.ChatID == "" {
+			return
+		}
+
+		channel := hb.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
+
+		respText := strings.TrimSpace(payload.Response)
+		if respText == "" {
+			respText = "No findings to report. All checks completed successfully."
+		}
+
+		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
+
+		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:  channel,
+			ChatID:   hb.ChatID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
+			ParseMode: "Markdown",
+		})
+	})
+
+	// 4. Heartbeat Failed
+	e.eventBus.SubscribeAsync(domain.EventHeartbeatFailed, func(ctx context.Context, evt domain.Event) {
+		payload, ok := evt.Payload.(domain.HeartbeatEventPayload)
+		if !ok {
+			return
+		}
+		hb := payload.Config
+		if hb.ChatID == "" {
+			return
+		}
+
+		channel := hb.Channel
+		if channel == "" {
+			channel = "telegram"
+		}
+
+		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
+
+		_ = e.channel.Send(ctx, domain.OutboundMessage{
+			Channel:  channel,
+			ChatID:   hb.ChatID,
+			ThreadID: threadID,
+			Text: fmt.Sprintf("💔 **Heartbeat Failed (@%s):**\n⚠️ %s",
+				hb.AgentName, payload.Error),
+			ParseMode: "Markdown",
+		})
 	})
 }
 

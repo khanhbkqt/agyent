@@ -43,7 +43,7 @@ func NewDispatcher(
 		cfg.MaxConcurrentWorkers = 3
 	}
 	if cfg.DefaultTimeoutSeconds <= 0 {
-		cfg.DefaultTimeoutSeconds = 300
+		cfg.DefaultTimeoutSeconds = 1800
 	}
 
 	queueCap := cfg.MaxConcurrentWorkers * 10
