@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.24] - 2026-09-04
+
+### Added
+- **Autonomous Scheduling, Cron & Proactive Heartbeats (Pillar 6):**
+  - **Proactive Heartbeat Engine:** Added autonomous background health, status, and proactive wakeups configured via `HEARTBEAT.md` with interval and active hour evaluation.
+  - **Schedule & Cron Engine:** Added recurring cron and one-shot scheduled execution with `skip_to_latest` misfire policy and overlap suppression.
+  - **Prefix KV-Cache Optimization:** Level 4 temporal prompt injection for due tasks, guaranteeing zero invalidation of Level 0–3 system runtime and directive prefixes.
+  - **New Slash Commands & Interactive Callbacks:** Added `/schedule`, `/cron`, `/heartbeat` commands with RBAC authorization and Telegram inline keyboard callbacks (`sched:cancel:`, `hb:on`, `hb:off`, `hb:trigger`).
+  - **Scheduler MCP Plugin & IPC API:** Introduced builtin scheduler MCP tools and IPC action handlers enabling autonomous natural language tool calling by the agent.
+  - **Pillar 6 Runtime Foundation:** Updated Level 0 System Runtime Foundation and Genesis onboarding bootstrap to include autonomous scheduling and heartbeat directives.
+- **3-Tier Plugin Integrity & VirtualEnv Auto-Discovery:**
+  - Added automatic resolution for active `VIRTUAL_ENV` and `~/.agyent/camoufox/venv` in `ResolveCommandPath`.
+  - Added `--check` and `--health` self-probe flags across all builtin plugins (`browser-camoufox`, `database-sqlite`, `system-diagnostics`).
+  - Integrated automated plugin syntax, typing, and environment verification into `agyent doctor` and `make lint-plugins`.
+
+### Changed
+- **Strict Hexagonal Architecture Boundary Enforcement:**
+  - Purified domain models by removing direct OS filesystem I/O from `Agent` entity.
+  - Relocated CLI stdout parsing from `domain/model.go` to `adapters/harness/agy`.
+  - Moved IPC wire DTOs from `domain/security.go` to `adapters/security/ipc`.
+  - Purified `domain/subagent.go` and relocated subagent execution from Core to `internal/adapters/subagent`, resolving Core->Adapter dependency inversion.
+
+### Fixed
+- **Scheduler Routing, Response Delivery & Concurrency:**
+  - Runner response forwarding to target chat upon scheduled task completion.
+  - Session routing for plugin notifications via IPC.
+  - Fast-path read lock optimization (`AcquireDueSchedules` and `AcquireDueHeartbeats`) preventing write lock contention.
+  - Thread-safe in-flight task cancellation using atomic `CompareAndDelete`.
+  - User workspace timezone detection wired into the scheduler instance.
+- **Security Manager Concurrency & Test Race Hardening:** Thread-safe snapshotting of whitelist patterns in `SecurityManager` preventing data race during concurrent evaluations, and race-free task lookup in subagent engine test.
+
+---
+
 ## [1.0.23] - 2026-09-04
 
 ### Added

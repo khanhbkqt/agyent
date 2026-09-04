@@ -78,11 +78,11 @@ func TestSubagentTools_HandleSubagentToolCall(t *testing.T) {
 	}
 
 	// 4. Test check_subagent_progress on existing task
-	activeTasks, err := dispatcher.ListActiveTasks(ctx, sessionKey)
-	if err != nil || len(activeTasks) == 0 {
-		t.Fatalf("expected at least 1 active task, got %d (err: %v)", len(activeTasks), err)
+	tasks, _, err := dispatcher.ListTasks(ctx, sessionKey, 10, 0)
+	if err != nil || len(tasks) == 0 {
+		t.Fatalf("expected at least 1 task, got %d (err: %v)", len(tasks), err)
 	}
-	taskID := activeTasks[0].ID
+	taskID := tasks[0].ID
 
 	checkParams := map[string]any{
 		"task_id": taskID,

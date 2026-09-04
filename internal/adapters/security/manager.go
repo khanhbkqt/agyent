@@ -398,7 +398,12 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 	}
 
 	// 4. Check Whitelist Patterns
-	for _, wl := range bundle.whitelistPatterns {
+	m.mu.RLock()
+	wlPatterns := make([]*regexp.Regexp, len(bundle.whitelistPatterns))
+	copy(wlPatterns, bundle.whitelistPatterns)
+	m.mu.RUnlock()
+
+	for _, wl := range wlPatterns {
 		if wl.MatchString(cmd) || strings.HasPrefix(cmd, wl.String()) {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionAllow,
@@ -501,7 +506,9 @@ func (m *Manager) AddWhitelistEntry(entry string) {
 	for _, bundle := range m.evaluators {
 		bundle.cfg.Commands.CustomWhitelist = append(bundle.cfg.Commands.CustomWhitelist, entry)
 		if err == nil {
-			bundle.whitelistPatterns = append(bundle.whitelistPatterns, re)
+			newPatterns := make([]*regexp.Regexp, len(bundle.whitelistPatterns), len(bundle.whitelistPatterns)+1)
+			copy(newPatterns, bundle.whitelistPatterns)
+			bundle.whitelistPatterns = append(newPatterns, re)
 		}
 	}
 	m.logger.Info("Added custom whitelist entry", "entry", entry)
