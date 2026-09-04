@@ -51,9 +51,11 @@ class TestServerRPC(unittest.TestCase):
             "camoufox_session_close",
             "camoufox_screenshot",
             "camoufox_pdf_export",
+            "camoufox_sniff_media",
+            "camoufox_download_media",
         ]
 
-        self.assertEqual(len(tools), 14)
+        self.assertEqual(len(tools), 16)
         for expected in expected_12:
             self.assertIn(expected, tool_names)
 

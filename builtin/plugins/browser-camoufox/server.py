@@ -44,6 +44,10 @@ try:
         handle_pdf_export,
         handle_screenshot,
     )
+    from handlers.media_handler import (
+        handle_download_media,
+        handle_sniff_media,
+    )
     CAMOUFOX_AVAILABLE = True
     CAMOUFOX_IMPORT_ERROR = None
 except Exception as e:
@@ -517,6 +521,96 @@ TOOL_DEFINITIONS = [
                 }
             }
         }
+    },
+    {
+        "name": "camoufox_sniff_media",
+        "description": "Stealthily inspects and intercepts video and audio streams from the target URL or active session. Escalates quality to 1080p/4K via player DOM APIs and captures decrypted CDN streams, adaptive tracks, and HLS/DASH manifests.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Target webpage URL containing video/audio content"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional active session ID to sniff media from"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional persistent profile name for authenticated media inspection"
+                },
+                "target_quality": {
+                    "type": "string",
+                    "enum": ["highest", "4k", "1440p", "1080p", "720p", "480p", "audio_only"],
+                    "default": "highest",
+                    "description": "Target quality level to trigger on the video player"
+                },
+                "wait_time_ms": {
+                    "type": "integer",
+                    "default": 4000,
+                    "description": "Duration in milliseconds to allow player buffer playback and CDN request capture"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "default": 30000,
+                    "description": "Overall navigation and inspection timeout in milliseconds"
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "camoufox_download_media",
+        "description": "Downloads, multiplexes (audio+video), or trims media streams captured via camoufox_sniff_media. Executes FFmpeg with full Camoufox stealth session headers (cookies, User-Agent) and precise timestamp synchronization.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "video_url": {
+                    "type": "string",
+                    "description": "Direct URL or manifest URL of the video stream"
+                },
+                "audio_url": {
+                    "type": "string",
+                    "description": "Direct URL of the audio stream (required for dual_adaptive streams)"
+                },
+                "output_filename": {
+                    "type": "string",
+                    "description": "Target output filename (e.g. 'highlight.mp4'). If not provided, automatically generated."
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Target directory. Defaults to agent workspace downloads directory."
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": "Optional trimming start time in HH:MM:SS or integer seconds (e.g. '00:01:15' or '75')"
+                },
+                "duration": {
+                    "type": "string",
+                    "description": "Optional clipping duration in HH:MM:SS or integer seconds (e.g. '00:00:30' or '30')"
+                },
+                "accurate_trim": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, uses ultrafast re-encoding for frame-accurate cuts. If false, uses lossless stream copy."
+                },
+                "custom_headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Optional custom HTTP headers to pass to FFmpeg"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session ID to inherit User-Agent and Cookies from"
+                },
+                "profile_name": {
+                    "type": "string",
+                    "description": "Optional profile name to inherit cookies from"
+                }
+            },
+            "required": ["video_url"]
+        }
     }
 ]
 
@@ -654,6 +748,32 @@ def execute_tool_local(name: str, args: Dict[str, Any]) -> Any:
             agent_name=agent_name,
             workspace_dir=workspace_dir,
         )
+    elif name == "camoufox_sniff_media":
+        return handle_sniff_media(
+            url=args.get("url", ""),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            target_quality=args.get("target_quality", "highest"),
+            wait_time_ms=args.get("wait_time_ms", 4000),
+            timeout_ms=args.get("timeout_ms", 30000),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
+        )
+    elif name == "camoufox_download_media":
+        return handle_download_media(
+            video_url=args.get("video_url", ""),
+            audio_url=args.get("audio_url"),
+            output_filename=args.get("output_filename"),
+            output_dir=args.get("output_dir"),
+            start_time=args.get("start_time"),
+            duration=args.get("duration"),
+            accurate_trim=args.get("accurate_trim", False),
+            custom_headers=args.get("custom_headers"),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            agent_name=agent_name,
+            workspace_dir=workspace_dir,
+        )
     else:
         raise ValueError(f"Tool '{name}' not found")
 
@@ -673,12 +793,22 @@ def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=35.0) as resp:
-        body = resp.read().decode("utf-8")
-        data = json.loads(body)
-        if data.get("error"):
-            raise RuntimeError(data["error"])
-        return data.get("result")
+    try:
+        with urllib.request.urlopen(req, timeout=35.0) as resp:
+            body = resp.read().decode("utf-8")
+            data = json.loads(body)
+            if data.get("error"):
+                raise RuntimeError(data["error"])
+            return data.get("result")
+    except urllib.error.HTTPError as he:
+        try:
+            err_body = he.read().decode("utf-8", errors="replace")
+            err_data = json.loads(err_body)
+            if err_data.get("error"):
+                raise RuntimeError(err_data["error"])
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP Error {he.code}: {he.reason}")
 
 
 def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
@@ -693,7 +823,7 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Any:
         except Exception as e:
             log(f"Daemon RPC failed ({e}). Returning error directly to prevent pipeline hang.")
             return {
-                "error": f"Camoufox daemon RPC execution failed: {e}",
+                "error": str(e),
                 "tool": name,
             }
     return execute_tool_local(name, args)

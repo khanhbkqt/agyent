@@ -1,7 +1,7 @@
 ---
 name: web-browse-camoufox
 description: >-
-  Continuous Stealth Web Perception & Automation Engine powered by Camoufox C++ anti-detect kernel, background session daemon, human kinematics, and network sniffer. Use this skill for all external web search, multi-turn continuous browsing, trend analysis, SPA scraping, form filling, and interactive tasks without losing session or login state.
+  Continuous Stealth Web Perception & Automation Engine powered by Camoufox C++ anti-detect kernel, background session daemon, human kinematics, and stealth media sniffer/downloader. Use this skill for external web search, multi-turn continuous browsing, trend analysis, SPA scraping, form filling, interactive tasks, and downloading high-resolution media (YouTube 1080p/4K, TikTok, Facebook, Instagram, HLS/DASH) with lossless FFmpeg remuxing and trimming.
 ---
 
 # Autonomous Continuous Stealth Web Browsing with Camoufox
@@ -66,11 +66,107 @@ For multi-step tasks (logging in, filling forms, multi-turn shopping, pagination
 7. **Close When Completely Done**:
    Call `camoufox_session_close(session_id=session_id)` when the entire multi-turn task is finished.
 
+### Pattern E: Stealth Media Sniffing & Downloader (YouTube, TikTok, Facebook, HLS/DASH)
+Use this pattern whenever the user asks to download, extract, inspect, or clip videos/audio from media sites (YouTube, TikTok, Facebook, Instagram, Twitter/X, Vimeo, HLS/DASH streams, or direct HTML5 media).
+
+#### Step 1: Sniff Media Streams
+Call `camoufox_sniff_media` to let Camoufox navigate to the page, execute JS player scripts, bypass anti-bot tokens, escalate resolution to 1080p/4K, and capture pre-authenticated decrypted CDN URLs:
+```json
+{
+  "name": "camoufox_sniff_media",
+  "arguments": {
+    "url": "https://www.youtube.com/watch?v=VIDEO_ID",
+    "target_quality": "highest",
+    "wait_time_ms": 4000
+  }
+}
+```
+
+The tool returns structured metadata and stream categories:
+- `title`: Video title from DOM or player response.
+- `stream_topology`: `"dual_adaptive"`, `"single_muxed"`, or `"manifest"`.
+- `recommended_pairs`: Ready-to-download pairs of best video track + best audio track (for YouTube/DASH).
+- `video_streams`: List of available video formats (resolutions, itags, codecs, bitrates).
+- `audio_streams`: List of available audio tracks.
+- `direct_streams`: List of standalone media container URLs (TikTok, Instagram, direct MP4).
+- `manifest_streams`: List of HLS (`.m3u8`) or DASH (`.mpd`) playlists.
+
+---
+
+#### Step 2: Download & Multiplex via FFmpeg
+
+Select the appropriate download strategy based on `stream_topology`:
+
+##### Scenario A: YouTube 1080p / 2K / 4K (Dual Adaptive Muxing)
+YouTube separates video and audio tracks at 1080p and higher. Pass both `video_url` and `audio_url` from `recommended_pairs[0]`:
+```json
+{
+  "name": "camoufox_download_media",
+  "arguments": {
+    "video_url": "https://rr3---sn-....googlevideo.com/videoplayback?...",
+    "audio_url": "https://rr3---sn-....googlevideo.com/videoplayback?...",
+    "output_filename": "my_video_1080p.mp4"
+  }
+}
+```
+*FFmpeg automatically runs lossless stream copy (`-c:v copy -c:a copy -map 0:v:0 -map 1:a:0 -avoid_negative_ts make_zero`), completing the download and remuxing in seconds without CPU re-encoding.*
+
+##### Scenario B: TikTok, Facebook Reels, Direct MP4 (Single Muxed)
+Platforms like TikTok provide a single container URL containing both audio and video:
+```json
+{
+  "name": "camoufox_download_media",
+  "arguments": {
+    "video_url": "https://v16-webapp-prime.tiktokcdn.com/...",
+    "output_filename": "tiktok_clip.mp4"
+  }
+}
+```
+
+##### Scenario C: Extract Audio Track Only
+To download just the audio (podcast, song, speech):
+```json
+{
+  "name": "camoufox_download_media",
+  "arguments": {
+    "video_url": "https://rr3---sn-....googlevideo.com/videoplayback?mime=audio%2Fmp4...",
+    "output_filename": "audio_track.m4a"
+  }
+}
+```
+
+##### Scenario D: Precise Highlight Trimming & Clipping
+To cut a specific snippet (e.g. from second 30 to second 50):
+```json
+{
+  "name": "camoufox_download_media",
+  "arguments": {
+    "video_url": "https://...",
+    "audio_url": "https://...",
+    "start_time": "00:00:30",
+    "duration": "20",
+    "accurate_trim": true,
+    "output_filename": "highlight_clip.mp4"
+  }
+}
+```
+> [!TIP]
+> - `accurate_trim: false` (default): Fast lossless seek and copy (`-avoid_negative_ts make_zero`).
+> - `accurate_trim: true`: Re-encodes with ultrafast preset (`-preset ultrafast -crf 20`) to prevent frozen initial frames or audio desync when cutting on non-keyframes.
+
+##### Scenario E: Authenticated / Age-Restricted / Member Videos
+If a video requires login (YouTube Premium, age confirmation, member-only):
+1. First, authenticate in a named profile (e.g. `profile_name="google_main"`).
+2. Pass `profile_name="google_main"` to both `camoufox_sniff_media` and `camoufox_download_media`. Camoufox will automatically pass authenticated session cookies and headers to both the browser and FFmpeg.
+
 ---
 
 ## 3. Invariants & Best Practices
 - **Never Worry About Subprocess Exits**: The browser lives in the background daemon. Your session remains open across turns.
-- **Profile Reuse**: Always use specific `profile_name`s (e.g. `shopee_vn`, `tiktok_de`, `amazon_us`) so logins and auth cookies persist across days.
+- **Profile Reuse**: Always use specific `profile_name`s (e.g. `shopee_vn`, `tiktok_de`, `amazon_us`, `google_main`) so logins and auth cookies persist across days.
 - **Auto-Rehydration Recovery**: If a session was auto-rehydrated after a system reboot, run `camoufox_inspect_dom` once to check current page state.
 - **Token Efficiency**: Use default `extract_mode="markdown"` to save ~75% tokens.
+- **FFmpeg Zero-Setup**: FFmpeg is automatically discovered from PATH or Python's `imageio-ffmpeg` static binary bundle.
+- **Corporate Firewall Handling**: If a target returns `"Application Control Violation"` or `"The URL you requested has been blocked"`, an enterprise firewall (FortiGate / Palo Alto) is blocking social media/streaming at the gateway layer. Advise the user to use a VPN, home network, or VPS connection.
+
 

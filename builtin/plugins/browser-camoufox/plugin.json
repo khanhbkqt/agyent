@@ -1,9 +1,9 @@
 {
   "name": "browser-camoufox",
-  "version": "1.2.4",
-  "description": "Continuous Stealth Web & Perception Engine with background daemon, multi-turn session persistence, and human kinematics",
+  "version": "1.3.0",
+  "description": "Continuous Stealth Web & Perception Engine with background daemon, media sniffer & downloader, multi-turn session persistence, and human kinematics",
   "author": "agyent team",
   "publisher": "agyent",
   "enabled": false,
-  "tags": ["browser", "stealth", "scraping", "camoufox", "perception", "trends", "automation", "persistence", "multi-session"]
+  "tags": ["browser", "stealth", "scraping", "camoufox", "perception", "trends", "automation", "persistence", "multi-session", "media-sniffer", "media-downloader"]
 }

@@ -44,6 +44,10 @@ try:
         handle_pdf_export,
         handle_screenshot,
     )
+    from handlers.media_handler import (
+        handle_download_media,
+        handle_sniff_media,
+    )
     CAMOUFOX_AVAILABLE = True
 except Exception as e:
     CAMOUFOX_AVAILABLE = False
@@ -200,6 +204,32 @@ def execute_tool(
             agent_name=agent,
             workspace_dir=ws_dir,
         )
+    elif name == "camoufox_sniff_media":
+        return handle_sniff_media(
+            url=args.get("url", ""),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            target_quality=args.get("target_quality", "highest"),
+            wait_time_ms=args.get("wait_time_ms", 4000),
+            timeout_ms=args.get("timeout_ms", 30000),
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
+    elif name == "camoufox_download_media":
+        return handle_download_media(
+            video_url=args.get("video_url", ""),
+            audio_url=args.get("audio_url"),
+            output_filename=args.get("output_filename"),
+            output_dir=args.get("output_dir"),
+            start_time=args.get("start_time"),
+            duration=args.get("duration"),
+            accurate_trim=args.get("accurate_trim", False),
+            custom_headers=args.get("custom_headers"),
+            session_id=args.get("session_id"),
+            profile_name=args.get("profile_name"),
+            agent_name=agent,
+            workspace_dir=ws_dir,
+        )
     else:
         raise ValueError(f"Tool '{name}' not found")
 
@@ -253,7 +283,7 @@ class DaemonHTTPHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json_response(200, {"result": res, "error": None})
             except Exception as e:
                 log(f"RPC execution error: {e}\n{traceback.format_exc()}")
-                self._send_json_response(500, {"result": None, "error": str(e)})
+                self._send_json_response(200, {"result": None, "error": str(e)})
 
         elif self.path == "/shutdown":
             log("Received shutdown request via HTTP endpoint.")

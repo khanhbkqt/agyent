@@ -350,6 +350,7 @@ class BrowserManager:
             "timezone_id": ctx_opts.get("timezone_id", "America/New_York"),
             "geolocation": ctx_opts.get("geolocation"),
             "permissions": ctx_opts.get("permissions", ["geolocation"]),
+            "ignore_https_errors": True,
         })
 
         # Launch persistent context

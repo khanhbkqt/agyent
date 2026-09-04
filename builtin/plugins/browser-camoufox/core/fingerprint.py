@@ -78,6 +78,7 @@ def build_camoufox_launch_options(
         "headless": headless,
         "locale": loc_cfg["locale"],
         "enable_cache": True,
+        "config": {"prefs": {"security.enterprise_roots.enabled": True}},
     }
 
     if proxy:
@@ -102,6 +103,7 @@ def build_context_options(
         "geolocation": loc_cfg["geolocation"],
         "permissions": ["geolocation"],
         "viewport": {"width": 1280, "height": 800},
+        "ignore_https_errors": True,
     }
     if storage_state:
         ctx_opts["storage_state"] = storage_state
