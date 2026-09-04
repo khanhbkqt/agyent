@@ -2040,7 +2040,10 @@ func (e *Engine) handleScheduleCommand(ctx context.Context, sender domain.Sender
 	}
 
 	// /schedule cancel <id>
-	if len(args) >= 2 && (strings.ToLower(args[0]) == "cancel" || strings.ToLower(args[0]) == "delete" || strings.ToLower(args[0]) == "del") {
+	if len(args) > 0 && (strings.ToLower(args[0]) == "cancel" || strings.ToLower(args[0]) == "delete" || strings.ToLower(args[0]) == "del") {
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+			return "⚠️ Usage: `/schedule cancel <task_id>`", nil
+		}
 		taskID := strings.TrimSpace(args[1])
 		if err := e.scheduler.CancelSchedule(ctx, taskID); err != nil {
 			return fmt.Sprintf("⚠️ Failed to cancel schedule `%s`: %v", taskID, err), nil
@@ -2217,4 +2220,3 @@ func formatIntervalDuration(seconds int) string {
 	}
 	return fmt.Sprintf("%ds", seconds)
 }
-

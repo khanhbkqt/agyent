@@ -117,15 +117,15 @@ func (s *SQLiteStore) GetSchedule(ctx context.Context, id string) (*domain.Sched
 	`
 
 	var (
-		t             domain.ScheduleTask
-		schedTypeStr  string
-		statusStr     string
-		overlapStr    string
-		misfireStr    string
-		nextRunAt     FlexTime
-		lastRunAt     FlexTime
-		createdAt     FlexTime
-		updatedAt     FlexTime
+		t            domain.ScheduleTask
+		schedTypeStr string
+		statusStr    string
+		overlapStr   string
+		misfireStr   string
+		nextRunAt    FlexTime
+		lastRunAt    FlexTime
+		createdAt    FlexTime
+		updatedAt    FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, id).Scan(
@@ -228,15 +228,15 @@ func (s *SQLiteStore) ListSchedules(ctx context.Context, agentName string, statu
 	var results []domain.ScheduleTask
 	for rows.Next() {
 		var (
-			t             domain.ScheduleTask
-			schedTypeStr  string
-			statusStr     string
-			overlapStr    string
-			misfireStr    string
-			nextRunAt     FlexTime
-			lastRunAt     FlexTime
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			t            domain.ScheduleTask
+			schedTypeStr string
+			statusStr    string
+			overlapStr   string
+			misfireStr   string
+			nextRunAt    FlexTime
+			lastRunAt    FlexTime
+			createdAt    FlexTime
+			updatedAt    FlexTime
 		)
 
 		err := rows.Scan(
@@ -265,10 +265,24 @@ func (s *SQLiteStore) ListSchedules(ctx context.Context, agentName string, statu
 	return results, totalCount, nil
 }
 
-// AcquireDueSchedules atomically claims due ACTIVE schedules up to nowUnixMs and transitions them to RUNNING.
+// AcquireDueSchedules atomically claims due ACTIVE (or RUNNING recurring) schedules up to nowUnixMs and transitions them to RUNNING.
 func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, limit int) ([]domain.ScheduleTask, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+
+	// Fast-path read check to avoid locking single-writer WAL DB pool when nothing is due
+	var count int
+	checkQuery := `
+		SELECT COUNT(*)
+		FROM agent_schedules
+		WHERE (status = 'ACTIVE' OR (status = 'RUNNING' AND schedule_type = 'cron')) AND next_run_at <= ?
+	`
+	if err := s.reader().QueryRowContext(ctx, checkQuery, nowUnixMs).Scan(&count); err != nil {
+		return nil, fmt.Errorf("failed to check due schedules count: %w", err)
+	}
+	if count == 0 {
+		return nil, nil
 	}
 
 	tx, err := s.writer().BeginTx(ctx, nil)
@@ -284,7 +298,7 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 		       next_run_at, last_run_at, run_count, max_runs,
 		       last_error, created_by, created_at, updated_at
 		FROM agent_schedules
-		WHERE status = 'ACTIVE' AND next_run_at <= ?
+		WHERE (status = 'ACTIVE' OR (status = 'RUNNING' AND schedule_type = 'cron')) AND next_run_at <= ?
 		ORDER BY next_run_at ASC
 		LIMIT ?
 	`
@@ -300,15 +314,15 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 
 	for rows.Next() {
 		var (
-			t             domain.ScheduleTask
-			schedTypeStr  string
-			statusStr     string
-			overlapStr    string
-			misfireStr    string
-			nextRunAt     FlexTime
-			lastRunAt     FlexTime
-			createdAt     FlexTime
-			updatedAt     FlexTime
+			t            domain.ScheduleTask
+			schedTypeStr string
+			statusStr    string
+			overlapStr   string
+			misfireStr   string
+			nextRunAt    FlexTime
+			lastRunAt    FlexTime
+			createdAt    FlexTime
+			updatedAt    FlexTime
 		)
 
 		err := rows.Scan(
@@ -384,6 +398,22 @@ func (s *SQLiteStore) UpdateScheduleRun(ctx context.Context, id string, nextRunA
 	return nil
 }
 
+// AdvanceScheduleNextRun updates only next_run_at for in-flight or recurring schedules.
+func (s *SQLiteStore) AdvanceScheduleNextRun(ctx context.Context, id string, nextRunAt int64) error {
+	nowMs := time.Now().UnixMilli()
+	query := `
+		UPDATE agent_schedules
+		SET next_run_at = ?,
+		    updated_at = ?
+		WHERE id = ?
+	`
+	_, err := s.writer().ExecContext(ctx, query, nextRunAt, nowMs, id)
+	if err != nil {
+		return fmt.Errorf("failed to advance next run for schedule %s: %w", id, err)
+	}
+	return nil
+}
+
 // SanitizeInterruptedSchedules recovers tasks that were in RUNNING state when the daemon shut down or crashed.
 func (s *SQLiteStore) SanitizeInterruptedSchedules(ctx context.Context) error {
 	nowMs := time.Now().UnixMilli()
@@ -415,12 +445,12 @@ func (s *SQLiteStore) GetHeartbeat(ctx context.Context, agentName string) (*doma
 	`
 
 	var (
-		hb        domain.HeartbeatConfig
+		hb         domain.HeartbeatConfig
 		enabledInt int
-		statusStr string
-		lastRunAt FlexTime
-		nextRunAt FlexTime
-		updatedAt FlexTime
+		statusStr  string
+		lastRunAt  FlexTime
+		nextRunAt  FlexTime
+		updatedAt  FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, agentName).Scan(
@@ -514,6 +544,20 @@ func (s *SQLiteStore) AcquireDueHeartbeats(ctx context.Context, nowUnixMs int64,
 		limit = 10
 	}
 
+	// Fast-path read check to avoid locking single-writer WAL DB pool when nothing is due
+	var count int
+	checkQuery := `
+		SELECT COUNT(*)
+		FROM agent_heartbeats
+		WHERE enabled = 1 AND status = 'IDLE' AND next_run_at <= ?
+	`
+	if err := s.reader().QueryRowContext(ctx, checkQuery, nowUnixMs).Scan(&count); err != nil {
+		return nil, fmt.Errorf("failed to check due heartbeats count: %w", err)
+	}
+	if count == 0 {
+		return nil, nil
+	}
+
 	tx, err := s.writer().BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin tx for acquire due heartbeats: %w", err)
@@ -540,12 +584,12 @@ func (s *SQLiteStore) AcquireDueHeartbeats(ctx context.Context, nowUnixMs int64,
 
 	for rows.Next() {
 		var (
-			hb        domain.HeartbeatConfig
+			hb         domain.HeartbeatConfig
 			enabledInt int
-			statusStr string
-			lastRunAt FlexTime
-			nextRunAt FlexTime
-			updatedAt FlexTime
+			statusStr  string
+			lastRunAt  FlexTime
+			nextRunAt  FlexTime
+			updatedAt  FlexTime
 		)
 
 		err := rows.Scan(

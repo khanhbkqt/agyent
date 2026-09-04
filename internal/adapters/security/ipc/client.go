@@ -143,4 +143,3 @@ func (c *Client) SendAction(action string, params any, timeout time.Duration) (A
 
 	return resp, nil
 }
-

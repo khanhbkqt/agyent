@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +288,28 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 	chatID, _ := p["chat_id"].(string)
 	threadID, _ := p["thread_id"].(string)
 
+	if targetSessionKey != "" {
+		if parsed, err := domain.ParseSessionKey(targetSessionKey); err == nil {
+			if chatID == "" {
+				chatID = parsed.ChatID
+			}
+			if threadID == "" && parsed.ThreadID > 0 {
+				threadID = strconv.FormatInt(parsed.ThreadID, 10)
+			}
+			if channel == "" {
+				channel = parsed.Channel
+			}
+		}
+	}
+
+	createdBy, _ := p["user_id"].(string)
+	if createdBy == "" {
+		createdBy, _ = p["created_by"].(string)
+	}
+	if createdBy == "" {
+		createdBy = "agent"
+	}
+
 	task := domain.ScheduleTask{
 		AgentName:        agentName,
 		Title:            title,
@@ -298,6 +321,7 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 		ChatID:           chatID,
 		ThreadID:         threadID,
 		OverlapPolicy:    domain.OverlapPolicy(overlap),
+		CreatedBy:        createdBy,
 	}
 
 	return sched.CreateSchedule(ctx, task)
@@ -378,6 +402,22 @@ func (s *Server) handleConfigureHeartbeat(ctx context.Context, p map[string]inte
 
 	if targetKey, ok := p["target_session_key"].(string); ok && targetKey != "" {
 		cfg.TargetSessionKey = targetKey
+	} else if sessionKey, ok := p["session_key"].(string); ok && sessionKey != "" && cfg.TargetSessionKey == "" {
+		cfg.TargetSessionKey = sessionKey
+	}
+
+	if cfg.TargetSessionKey != "" {
+		if parsed, err := domain.ParseSessionKey(cfg.TargetSessionKey); err == nil {
+			if cfg.ChatID == "" {
+				cfg.ChatID = parsed.ChatID
+			}
+			if cfg.ThreadID == "" && parsed.ThreadID > 0 {
+				cfg.ThreadID = strconv.FormatInt(parsed.ThreadID, 10)
+			}
+			if cfg.Channel == "" {
+				cfg.Channel = parsed.Channel
+			}
+		}
 	}
 
 	if err := sched.ConfigureHeartbeat(ctx, cfg, prompt); err != nil {

@@ -62,10 +62,30 @@ func TestParseNextRun_Cron(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Date(2026, 9, 5, 9, 0, 0, 0, loc), t3)
 
+	// Stepped single offset: 0/15 * * * *
+	t4, err := ParseNextRun(domain.ScheduleTypeCron, "0/15 * * * *", base, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 5, 8, 15, 0, 0, loc), t4)
+
+	// Sunday as 7: 0 0 * * 7 (2026-09-05 is Saturday, Sunday is 2026-09-06)
+	t5, err := ParseNextRun(domain.ScheduleTypeCron, "0 0 * * 7", base, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 6, 0, 0, 0, 0, loc), t5)
+
 	// Invalid expressions
 	_, err = ParseNextRun(domain.ScheduleTypeCron, "invalid cron", base, loc)
 	assert.Error(t, err)
 
 	_, err = ParseNextRun(domain.ScheduleTypeCron, "70 * * * *", base, loc) // minute > 59
 	assert.Error(t, err)
+}
+
+func TestParseNextRun_PastTimeRejection(t *testing.T) {
+	loc := time.UTC
+	base := time.Date(2026, 9, 5, 12, 0, 0, 0, loc)
+
+	// Past absolute timestamp should error with ErrPastScheduleTime
+	_, err := ParseNextRun(domain.ScheduleTypeOnce, "2026-09-05T10:00:00Z", base, loc)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPastScheduleTime)
 }

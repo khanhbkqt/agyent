@@ -249,4 +249,3 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	assert.True(t, trigResp.Success)
 	assert.Contains(t, string(trigResp.Data), "TRIGGERED")
 }
-

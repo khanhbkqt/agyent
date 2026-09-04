@@ -72,6 +72,9 @@ func parseOnceTime(expr string, fromTime time.Time, loc *time.Location) (time.Ti
 		}
 
 		if t, err := time.ParseInLocation(format, expr, loc); err == nil {
+			if t.Before(fromTime) {
+				return time.Time{}, fmt.Errorf("%w: %s is in the past", ErrPastScheduleTime, expr)
+			}
 			return t, nil
 		}
 	}
@@ -217,17 +220,31 @@ func parseCronField(field string, min, max int) ([]bool, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid range start %s", subParts[0])
 			}
+			if min == 0 && max == 6 && start == 7 {
+				start = 0
+			}
 			end, err = strconv.Atoi(subParts[1])
 			if err != nil {
 				return nil, fmt.Errorf("invalid range end %s", subParts[1])
+			}
+			if min == 0 && max == 6 && end == 7 {
+				end = 6
+				bits[0] = true
 			}
 		} else {
 			val, err := strconv.Atoi(rangeStr)
 			if err != nil {
 				return nil, fmt.Errorf("invalid integer value %s", rangeStr)
 			}
+			if min == 0 && max == 6 && val == 7 {
+				val = 0
+			}
 			start = val
-			end = val
+			if strings.Contains(part, "/") {
+				end = max
+			} else {
+				end = val
+			}
 		}
 
 		if start < min || end > max || start > end {

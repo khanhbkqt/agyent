@@ -551,10 +551,12 @@ Anh thấy bố cục và mạch luồng này đã ưng ý chưa ạ?`
 	// Verify on Mock Telegram Server:
 	// 1 text message sent and 6 photos sent via sendMediaGroup
 	require.Eventually(t, func() bool {
-		return len(mockServer.SentMessages) >= 1 && len(mockServer.SentMedia) == 6
+		return mockServer.SentMessagesCount() >= 1 && mockServer.SentMediaCount() == 6
 	}, 1*time.Second, 20*time.Millisecond, "Must deliver cleaned text message and media group photos")
 
-	sentText := mockServer.SentMessages[0].Text
+	sentMsgs := mockServer.GetSentMessages()
+	require.NotEmpty(t, sentMsgs)
+	sentText := sentMsgs[0].Text
 	assert.NotContains(t, sentText, "!<code>")
 	assert.NotContains(t, sentText, "&lt;!--")
 	assert.Contains(t, sentText, "📋 Tóm Tắt Từng Luồng Trên Ảnh:")
@@ -801,5 +803,3 @@ func TestMedia_OpenFileWithRetry(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 	assert.Less(t, duration, 100*time.Millisecond, "Non-existent files must fail fast without retrying delays")
 }
-
-

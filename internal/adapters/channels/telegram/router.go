@@ -274,6 +274,15 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 		synthCmd = fmt.Sprintf("/task cancel %s", taskID)
 	case data == "task:clean":
 		synthCmd = "/task clean"
+	case strings.HasPrefix(data, "sched:cancel:"):
+		taskID := strings.TrimPrefix(data, "sched:cancel:")
+		synthCmd = fmt.Sprintf("/schedule cancel %s", taskID)
+	case data == "hb:on":
+		synthCmd = "/heartbeat on"
+	case data == "hb:off":
+		synthCmd = "/heartbeat off"
+	case data == "hb:trigger":
+		synthCmd = "/heartbeat trigger"
 	default:
 		return nil
 	}

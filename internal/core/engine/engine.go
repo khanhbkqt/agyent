@@ -1298,12 +1298,20 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
 
+		body := strings.TrimSpace(payload.Response)
+		msgText := fmt.Sprintf("⏰ **Scheduled Task #%s Completed:** %s\n🤖 **Agent:** `@%s`",
+			task.ID, task.Title, task.AgentName)
+		if body != "" {
+			msgText += fmt.Sprintf("\n\n%s", body)
+		} else {
+			msgText += fmt.Sprintf("\n\n📌 **Instructions:** %s", task.Prompt)
+		}
+
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:  channel,
-			ChatID:   task.ChatID,
-			ThreadID: threadID,
-			Text: fmt.Sprintf("⏰ **Scheduled Task #%s Completed:** %s\n🤖 **Agent:** `@%s`\n\n📌 **Instructions:** %s",
-				task.ID, task.Title, task.AgentName, task.Prompt),
+			Channel:   channel,
+			ChatID:    task.ChatID,
+			ThreadID:  threadID,
+			Text:      msgText,
 			ParseMode: "Markdown",
 		})
 	})
@@ -1326,12 +1334,19 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
 
+		errMsg := strings.TrimSpace(payload.Error)
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(task.LastError)
+		}
+		if errMsg == "" {
+			errMsg = "Unknown execution error"
+		}
+
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:  channel,
-			ChatID:   task.ChatID,
-			ThreadID: threadID,
-			Text: fmt.Sprintf("⚠️ **Scheduled Task #%s Failed:** %s\n🤖 **Agent:** `@%s`\n❌ **Error:** %s",
-				task.ID, task.Title, task.AgentName, task.LastError),
+			Channel:   channel,
+			ChatID:    task.ChatID,
+			ThreadID:  threadID,
+			Text:      fmt.Sprintf("⚠️ **Scheduled Task #%s Failed:** %s\n🤖 **Agent:** `@%s`\n❌ **Error:** %s", task.ID, task.Title, task.AgentName, errMsg),
 			ParseMode: "Markdown",
 		})
 	})
@@ -1360,10 +1375,10 @@ func (e *Engine) subscribeSchedulerEvents() {
 		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:  channel,
-			ChatID:   hb.ChatID,
-			ThreadID: threadID,
-			Text:     fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
+			Channel:   channel,
+			ChatID:    hb.ChatID,
+			ThreadID:  threadID,
+			Text:      fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
 			ParseMode: "Markdown",
 		})
 	})

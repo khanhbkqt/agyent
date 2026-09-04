@@ -46,26 +46,26 @@ type SentMediaRecord struct {
 }
 
 type MockTelegramServer struct {
-	Server             *httptest.Server
-	Token              string
-	mu                 sync.Mutex
-	msgSeq             int64
-	SentMessages       []SentMessageRecord
-	EditMessages       []EditMessageRecord
-	ChatActions        []ChatActionRecord
-	SentMedia          []SentMediaRecord
-	NextErrorStatus    int
-	NextErrorBody      string
-	NextEditError      error
+	Server                *httptest.Server
+	Token                 string
+	mu                    sync.Mutex
+	msgSeq                int64
+	SentMessages          []SentMessageRecord
+	EditMessages          []EditMessageRecord
+	ChatActions           []ChatActionRecord
+	SentMedia             []SentMediaRecord
+	NextErrorStatus       int
+	NextErrorBody         string
+	NextEditError         error
 	Simulate429Once       bool
 	Simulate400Once       bool
 	SimulatePhotoFailOnce bool
 	SimulatePhoto429Once  bool
 	RetryAfterSec         int
-	FilesMap           map[string][]byte
-	GetMeCount         int64
-	RegisteredCommands []gotgbot.BotCommand
-	BotID              int64
+	FilesMap              map[string][]byte
+	GetMeCount            int64
+	RegisteredCommands    []gotgbot.BotCommand
+	BotID                 int64
 }
 
 func NewMockTelegramServer(token string, customBotID ...int64) *MockTelegramServer {
@@ -93,6 +93,34 @@ func (m *MockTelegramServer) Close() {
 	if m.Server != nil {
 		m.Server.Close()
 	}
+}
+
+func (m *MockTelegramServer) SentMessagesCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.SentMessages)
+}
+
+func (m *MockTelegramServer) SentMediaCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.SentMedia)
+}
+
+func (m *MockTelegramServer) GetSentMessages() []SentMessageRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res := make([]SentMessageRecord, len(m.SentMessages))
+	copy(res, m.SentMessages)
+	return res
+}
+
+func (m *MockTelegramServer) GetSentMedia() []SentMediaRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res := make([]SentMediaRecord, len(m.SentMedia))
+	copy(res, m.SentMedia)
+	return res
 }
 
 func (m *MockTelegramServer) NewBot() (*gotgbot.Bot, error) {

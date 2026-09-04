@@ -29,8 +29,9 @@ type Scheduler struct {
 	eventBus  ports.EventBusPort
 	executor  *TaskExecutor
 	logger    *slog.Logger
+	timezone  *time.Location
 
-	inFlight sync.Map // map[string]context.CancelFunc
+	inFlight sync.Map // map[string]*inFlightEntry
 	running  atomic.Bool
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -61,6 +62,16 @@ func NewScheduler(
 		eventBus:  eventBus,
 		executor:  executor,
 		logger:    logger,
+		timezone:  time.Local,
+	}
+}
+
+// SetLocation sets the timezone location for cron and schedule evaluations.
+func (s *Scheduler) SetLocation(loc *time.Location) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if loc != nil {
+		s.timezone = loc
 	}
 }
 
@@ -96,10 +107,14 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
+type inFlightEntry struct {
+	cancel context.CancelFunc
+}
+
 // Stop gracefully stops the scheduler poller and signals cancellation to in-flight tasks within deadline.
 func (s *Scheduler) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	if !s.running.Swap(false) {
+	if !s.running.CompareAndSwap(true, false) {
 		s.mu.Unlock()
 		return nil
 	}
@@ -112,8 +127,8 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 	// Cancel all in-flight task contexts
 	s.inFlight.Range(func(key, value any) bool {
-		if cancelFunc, ok := value.(context.CancelFunc); ok && cancelFunc != nil {
-			cancelFunc()
+		if entry, ok := value.(*inFlightEntry); ok && entry != nil && entry.cancel != nil {
+			entry.cancel()
 		}
 		s.inFlight.Delete(key)
 		return true
@@ -132,9 +147,6 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		s.logger.Warn("Scheduler stop deadline exceeded", "error", ctx.Err())
 		return ctx.Err()
-	case <-time.After(1000 * time.Millisecond):
-		s.logger.Warn("Scheduler forced stop after 1.0s timeout")
-		return nil
 	}
 }
 
@@ -189,18 +201,16 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 		switch task.OverlapPolicy {
 		case domain.OverlapPolicyCancelPrevious:
 			s.logger.Warn("Task overlap: cancelling previous execution", "task_id", task.ID)
-			if cancelFunc, ok := existingCancel.(context.CancelFunc); ok && cancelFunc != nil {
-				cancelFunc()
+			if entry, ok := existingCancel.(*inFlightEntry); ok && entry != nil && entry.cancel != nil {
+				entry.cancel()
 			}
 		case domain.OverlapPolicyQueue:
 			s.logger.Debug("Task overlap: queueing for next run", "task_id", task.ID)
-			// Return to ACTIVE
-			_ = s.storage.UpdateScheduleRun(s.ctx, task.ID, task.NextRunAt.UnixMilli(), "queued behind active run", domain.ScheduleStatusActive)
 			return
 		default: // domain.OverlapPolicySkip
 			s.logger.Warn("Task overlap: skipping concurrent execution", "task_id", task.ID)
-			nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, nil)
-			_ = s.storage.UpdateScheduleRun(s.ctx, task.ID, nextRun.UnixMilli(), "skipped due to overlap", domain.ScheduleStatusActive)
+			nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+			_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextRun.UnixMilli())
 			return
 		}
 	}
@@ -209,20 +219,29 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 	gracePeriod := 15 * time.Minute
 	if now.Sub(task.NextRunAt) > gracePeriod && task.MisfirePolicy == domain.MisfirePolicySkipToLatest && task.ScheduleType == domain.ScheduleTypeCron {
 		s.logger.Warn("Task misfired during downtime: skipping backlog to latest", "task_id", task.ID, "delay", now.Sub(task.NextRunAt))
-		nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, nil)
-		_ = s.storage.UpdateScheduleRun(s.ctx, task.ID, nextRun.UnixMilli(), "misfire backlog skipped to latest", domain.ScheduleStatusActive)
+		nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+		_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextRun.UnixMilli())
 		return
 	}
 
+	// For recurring cron tasks, advance next_run_at in DB immediately so that
+	// subsequent poller ticks do not repeatedly claim this execution while in-flight.
+	if task.ScheduleType == domain.ScheduleTypeCron {
+		if nextOccur, err := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone); err == nil {
+			_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextOccur.UnixMilli())
+		}
+	}
+
 	taskCtx, taskCancel := context.WithCancel(s.ctx)
-	s.inFlight.Store(inFlightKey, taskCancel)
+	entry := &inFlightEntry{cancel: taskCancel}
+	s.inFlight.Store(inFlightKey, entry)
 
 	s.wg.Add(1)
 	concurrency.SafeGo(func() {
 		defer s.wg.Done()
 		defer func() {
 			taskCancel()
-			s.inFlight.Delete(inFlightKey)
+			s.inFlight.CompareAndDelete(inFlightKey, entry)
 		}()
 
 		result, execErr := s.executor.ExecuteSchedule(taskCtx, task)
@@ -248,7 +267,7 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 		} else {
 			// Recurring cron
 			var parseErr error
-			nextRunTime, parseErr = ParseNextRun(task.ScheduleType, task.ScheduleExpr, time.Now(), nil)
+			nextRunTime, parseErr = ParseNextRun(task.ScheduleType, task.ScheduleExpr, time.Now(), s.timezone)
 			if parseErr != nil {
 				s.logger.Error("Failed to calculate next cron run", "task_id", task.ID, "error", parseErr)
 				nextStatus = domain.ScheduleStatusFailed
@@ -273,14 +292,15 @@ func (s *Scheduler) dispatchHeartbeatTask(hb domain.HeartbeatConfig, now time.Ti
 	}
 
 	hbCtx, hbCancel := context.WithCancel(s.ctx)
-	s.inFlight.Store(inFlightKey, hbCancel)
+	entry := &inFlightEntry{cancel: hbCancel}
+	s.inFlight.Store(inFlightKey, entry)
 
 	s.wg.Add(1)
 	concurrency.SafeGo(func() {
 		defer s.wg.Done()
 		defer func() {
 			hbCancel()
-			s.inFlight.Delete(inFlightKey)
+			s.inFlight.CompareAndDelete(inFlightKey, entry)
 		}()
 
 		result, execErr := s.executor.ExecuteHeartbeat(hbCtx, hb)
@@ -319,7 +339,7 @@ func (s *Scheduler) CreateSchedule(ctx context.Context, task domain.ScheduleTask
 	}
 
 	now := time.Now()
-	nextRun, err := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, nil)
+	nextRun, err := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
 	if err != nil {
 		return nil, fmt.Errorf("invalid schedule expression %q: %w", task.ScheduleExpr, err)
 	}
@@ -351,8 +371,8 @@ func (s *Scheduler) CreateSchedule(ctx context.Context, task domain.ScheduleTask
 func (s *Scheduler) CancelSchedule(ctx context.Context, id string) error {
 	inFlightKey := fmt.Sprintf("sched:%s", id)
 	if cancelVal, ok := s.inFlight.Load(inFlightKey); ok {
-		if cancelFunc, ok := cancelVal.(context.CancelFunc); ok && cancelFunc != nil {
-			cancelFunc()
+		if entry, ok := cancelVal.(*inFlightEntry); ok && entry != nil && entry.cancel != nil {
+			entry.cancel()
 		}
 		s.inFlight.Delete(inFlightKey)
 	}
@@ -451,6 +471,10 @@ func (s *Scheduler) GetHeartbeat(ctx context.Context, agentName string) (*domain
 
 // TriggerHeartbeatNow runs a heartbeat check immediately without waiting for interval.
 func (s *Scheduler) TriggerHeartbeatNow(ctx context.Context, agentName string) error {
+	if !s.running.Load() || s.ctx == nil {
+		return errors.New("scheduler daemon is not running")
+	}
+
 	cfg, _, err := s.GetHeartbeat(ctx, agentName)
 	if err != nil {
 		return err

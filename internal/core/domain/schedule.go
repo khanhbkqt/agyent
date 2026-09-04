@@ -92,7 +92,9 @@ type HeartbeatConfig struct {
 
 // ScheduleEventPayload carries event data for scheduled tasks.
 type ScheduleEventPayload struct {
-	Task ScheduleTask `json:"task"`
+	Task     ScheduleTask `json:"task"`
+	Response string       `json:"response,omitempty"`
+	Error    string       `json:"error,omitempty"`
 }
 
 func (p ScheduleEventPayload) GetSessionKey() string {

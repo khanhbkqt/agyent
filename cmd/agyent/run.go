@@ -162,6 +162,7 @@ var runCmd = &cobra.Command{
 
 		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
 		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
+		sched.SetLocation(contextAdapter.DetectUserLocation(starterWS))
 		eng.SetScheduler(sched)
 		ipcServer.SetScheduler(sched)
 

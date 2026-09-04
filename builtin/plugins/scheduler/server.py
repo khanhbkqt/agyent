@@ -188,11 +188,14 @@ def handle_message(msg):
 
         env_agent = os.environ.get("AGYENT_AGENT_NAME", "").strip()
         session_key = os.environ.get("AGYENT_SESSION_KEY", "").strip()
+        user_id = os.environ.get("AGYENT_USER_ID", "").strip()
 
         if not args.get("agent_name") and env_agent:
             args["agent_name"] = env_agent
         if not args.get("session_key") and session_key:
             args["session_key"] = session_key
+        if not args.get("user_id") and user_id:
+            args["user_id"] = user_id
 
         resp = send_ipc_action(tool_name, args)
 

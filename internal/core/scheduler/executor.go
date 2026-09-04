@@ -99,12 +99,18 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 			}
 			task.LastError = errMsg
 			e.eventBus.AsyncEmit(ctx, domain.NewEvent(domain.EventScheduleFailed, domain.ScheduleEventPayload{
-				Task: task,
+				Task:  task,
+				Error: errMsg,
 			}))
 		} else {
 			task.LastError = ""
+			responseText := ""
+			if result != nil {
+				responseText = result.ResponseText
+			}
 			e.eventBus.AsyncEmit(ctx, domain.NewEvent(domain.EventScheduleCompleted, domain.ScheduleEventPayload{
-				Task: task,
+				Task:     task,
+				Response: responseText,
 			}))
 		}
 	}

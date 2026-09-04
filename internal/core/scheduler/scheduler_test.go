@@ -32,7 +32,7 @@ func (m *mockRunner) ExecuteStream(ctx context.Context, req domain.ExecutionRequ
 	return m.Execute(ctx, req)
 }
 func (m *mockRunner) InterruptStream(ctx context.Context, sessionKey string) error { return nil }
-func (m *mockRunner) HealthCheck(ctx context.Context) error                         { return nil }
+func (m *mockRunner) HealthCheck(ctx context.Context) error                        { return nil }
 func (m *mockRunner) ListAvailableModels(ctx context.Context) ([]domain.ModelCapability, error) {
 	return nil, nil
 }

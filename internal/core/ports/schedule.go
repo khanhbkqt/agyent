@@ -15,6 +15,7 @@ type ScheduleRepository interface {
 	ListSchedules(ctx context.Context, agentName string, status domain.ScheduleStatus, limit, offset int) ([]domain.ScheduleTask, int, error)
 	AcquireDueSchedules(ctx context.Context, nowUnixMs int64, limit int) ([]domain.ScheduleTask, error)
 	UpdateScheduleRun(ctx context.Context, id string, nextRunAt int64, lastError string, status domain.ScheduleStatus) error
+	AdvanceScheduleNextRun(ctx context.Context, id string, nextRunAt int64) error
 	SanitizeInterruptedSchedules(ctx context.Context) error
 
 	// Agent heartbeats
