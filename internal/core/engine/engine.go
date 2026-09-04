@@ -1143,13 +1143,16 @@ func (e *Engine) subscribeSubagentEvents() {
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
 		}
+		channelName := parsedKey.Channel
+		if channelName == "" {
+			channelName = "telegram"
+		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
-				ID:        fmt.Sprintf("sub-synth-%s", task.ID),
-				Timestamp: time.Now(),
-				Channel:   channel,
-				BotID:     parsedKey.BotID,
+				ID:      fmt.Sprintf("sub-synth-%s", task.ID),
+				Channel: channel,
+				BotID:   parsedKey.BotID,
 				Chat: domain.ChatContext{
 					ID:       chatID,
 					ThreadID: parsedKey.ThreadID,
@@ -1164,10 +1167,11 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				Channel:  channel,
-				BotID:    parsedKey.BotID,
-				ChatID:   chatID,
-				ThreadID: parsedKey.ThreadID,
+				Channel:    channel,
+				SessionKey: task.ParentSessionKey,
+				BotID:      parsedKey.BotID,
+				ChatID:     chatID,
+				ThreadID:   parsedKey.ThreadID,
 				Text: fmt.Sprintf("⏸️ **Sub-Agent @%s requires clarification:**\n📌 **Task:** %s (`%s`)\n\n❓ **Question:** %s\n\n_Use_ `/task reply %s <your response>` _to continue._",
 					task.AgentName, task.Title, task.ID, task.PendingQuestion, task.ID),
 				ParseMode: "Markdown",
@@ -1195,6 +1199,10 @@ func (e *Engine) subscribeSubagentEvents() {
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
 		}
+		channelName := parsedKey.Channel
+		if channelName == "" {
+			channelName = "telegram"
+		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
@@ -1216,10 +1224,11 @@ func (e *Engine) subscribeSubagentEvents() {
 			}
 		} else if task.CallbackMode == domain.CallbackNotifyUser && e.channel != nil {
 			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				Channel:  channel,
-				BotID:    parsedKey.BotID,
-				ChatID:   chatID,
-				ThreadID: parsedKey.ThreadID,
+				Channel:    channel,
+				SessionKey: task.ParentSessionKey,
+				BotID:      parsedKey.BotID,
+				ChatID:     chatID,
+				ThreadID:   parsedKey.ThreadID,
 				Text: fmt.Sprintf("✅ **Sub-Agent @%s completed!**\n📌 **Task:** %s (`%s`)\n⏱️ **Duration:** %.2fs | 🪙 **Tokens:** %d\n\n%s",
 					task.AgentName, task.Title, task.ID, task.DurationSeconds, task.Usage.TotalTokens, task.ResultSummary),
 				ParseMode: "Markdown",

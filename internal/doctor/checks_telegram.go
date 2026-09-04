@@ -13,12 +13,18 @@ func (d *DoctorRunner) CheckTelegram(ctx context.Context) []CheckResult {
 	var results []CheckResult
 	bots := d.cfg.Telegram.GetNormalizedBots()
 	if len(bots) == 0 {
+		status := StatusFail
+		msg := "No Telegram bot token found in configuration"
+		if len(d.cfg.Zalo.GetNormalizedBots()) > 0 {
+			status = StatusInfo
+			msg = "Telegram bot not configured (Zalo channel active)"
+		}
 		results = append(results, CheckResult{
 			Name:        "Telegram Bot Credentials",
 			Category:    CategoryTelegram,
-			Status:      StatusFail,
-			Message:     "No Telegram bot token found in configuration",
-			Remediation: "Set 'telegram.bot_token' or 'telegram.bots' in ~/.agyent/config.yaml.",
+			Status:      status,
+			Message:     msg,
+			Remediation: "Set 'telegram.bot_token' or 'telegram.bots' in ~/.agyent/config.yaml if Telegram is desired.",
 		})
 		return results
 	}

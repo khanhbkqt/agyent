@@ -438,6 +438,50 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 		}
 		assert.Error(t, cfg.Validate())
 	})
+
+	t.Run("ZaloConfig Validation and String Masking", func(t *testing.T) {
+		zc := config.ZaloConfig{
+			BotToken:     "zalo_secret_token_1234567890",
+			GroupID:      "group_99999",
+			Mode:         "polling",
+			AdminUserIDs: []string{"admin1", "admin2"},
+		}
+		str := zc.String()
+		assert.Contains(t, str, "zalo_s:***")
+		assert.NotContains(t, str, "1234567890")
+		assert.Contains(t, str, "group_99999")
+
+		// Valid Zalo-only config
+		cfg := config.DefaultConfig()
+		cfg.Telegram.BotToken = ""
+		cfg.Telegram.AdminUserIDs = nil
+		cfg.Zalo = zc
+		assert.NoError(t, cfg.Validate())
+
+		// Invalid Zalo webhook without URL
+		cfg.Zalo.Mode = "webhook"
+		cfg.Zalo.WebhookURL = ""
+		assert.Error(t, cfg.Validate())
+	})
+
+	t.Run("Zalo Environment Variable Overrides", func(t *testing.T) {
+		t.Setenv("ZALO_BOT_TOKEN", "env_zalo_token_abc")
+		t.Setenv("ZALO_GROUP_ID", "env_group_123")
+		t.Setenv("ZALO_BOT_ADMIN_ID", "adminA,adminB")
+		t.Setenv("ZALO_BOT_API_URL", "https://custom-bot-api.zalo.me")
+
+		tmpDir := t.TempDir()
+		tmpFile := filepath.Join(tmpDir, "config.yaml")
+		err := os.WriteFile(tmpFile, []byte("{}"), 0600)
+		require.NoError(t, err)
+
+		cfg, err := config.Load(tmpFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "env_zalo_token_abc", cfg.Zalo.BotToken)
+		assert.Equal(t, "env_group_123", cfg.Zalo.GroupID)
+		assert.Equal(t, []string{"adminA", "adminB"}, cfg.Zalo.AdminUserIDs)
+		assert.Equal(t, "https://custom-bot-api.zalo.me", cfg.Zalo.APIURL)
+	})
 }
 
 func TestConfig_IsAdmin(t *testing.T) {

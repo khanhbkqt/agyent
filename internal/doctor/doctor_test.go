@@ -169,3 +169,45 @@ func TestDoctor_ZombiesAndLocks(t *testing.T) {
 	_ = os.Remove(tempLockFile)
 	assert.NoFileExists(t, tempLockFile)
 }
+
+func TestDoctor_CheckZalo(t *testing.T) {
+	opts := Options{
+		SkipNetwork: true,
+	}
+	runner := NewRunner(opts)
+	ctx := context.Background()
+
+	// 1. Not configured
+	runner.cfg = config.DefaultConfig()
+	runner.cfg.Telegram.BotToken = "123456:ABC"
+	res := runner.CheckZalo(ctx)
+	assert.NotEmpty(t, res)
+	assert.Equal(t, StatusInfo, res[0].Status)
+
+	// 2. Configured with token, group, and webhook URL
+	runner.cfg.Zalo.BotToken = "test_zalo_token"
+	runner.cfg.Zalo.GroupID = "group_123"
+	runner.cfg.Zalo.Mode = "webhook"
+	runner.cfg.Zalo.WebhookURL = "https://example.com/zalo/webhook"
+
+	res = runner.CheckZalo(ctx)
+	assert.NotEmpty(t, res)
+
+	hasTokenCheck := false
+	hasGroupCheck := false
+	hasWebhookCheck := false
+	for _, r := range res {
+		if r.Name == "Zalo Bot Token [default]" && r.Status == StatusPass {
+			hasTokenCheck = true
+		}
+		if r.Name == "Zalo Target Group" && r.Status == StatusPass {
+			hasGroupCheck = true
+		}
+		if r.Name == "Zalo Webhook URL" && r.Status == StatusPass {
+			hasWebhookCheck = true
+		}
+	}
+	assert.True(t, hasTokenCheck)
+	assert.True(t, hasGroupCheck)
+	assert.True(t, hasWebhookCheck)
+}

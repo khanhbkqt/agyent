@@ -21,7 +21,10 @@ import (
 	"agyent/internal/core/ports"
 )
 
-var _ ports.ChannelPort = (*Adapter)(nil)
+var (
+	_ ports.ChannelPort      = (*Adapter)(nil)
+	_ ports.HITLApprovalPort = (*Adapter)(nil)
+)
 
 // Adapter implements ports.ChannelPort for Telegram messaging with multi-bot lifecycle support.
 type Adapter struct {
@@ -125,6 +128,40 @@ func (a *Adapter) HITLCoordinator() *HITLCoordinator {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.hitlCoord
+}
+
+// RequestApproval coordinates an interactive approval request over Telegram.
+func (a *Adapter) RequestApproval(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+	coord := a.HITLCoordinator()
+	if coord == nil {
+		return domain.ApprovalDecision{}, errors.New("telegram HITL coordinator not initialized")
+	}
+	return coord.RequestApproval(ctx, req)
+}
+
+// HandleCallback processes inline keyboard clicks satisfying ports.HITLApprovalPort.
+func (a *Adapter) HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error {
+	coord := a.HITLCoordinator()
+	if coord == nil {
+		return nil
+	}
+	return coord.HandleCallback(ctx, callbackID, userID, action)
+}
+
+// CancelPendingRequest terminates a pending approval request.
+func (a *Adapter) CancelPendingRequest(requestID string) {
+	coord := a.HITLCoordinator()
+	if coord != nil {
+		coord.CancelPendingRequest(requestID)
+	}
+}
+
+// CancelPendingRequestsForSession terminates all pending requests for a given session.
+func (a *Adapter) CancelPendingRequestsForSession(sessionKey string) {
+	coord := a.HITLCoordinator()
+	if coord != nil {
+		coord.CancelPendingRequestsForSession(sessionKey)
+	}
 }
 
 func (a *Adapter) getBot(botID int64) *gotgbot.Bot {

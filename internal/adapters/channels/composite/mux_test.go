@@ -1,15 +1,17 @@
-package composite
+package composite_test
 
 import (
 	"context"
 	"sync"
 	"testing"
+	"time"
+
+	"agyent/internal/adapters/channels/composite"
+	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"agyent/internal/core/domain"
-	"agyent/internal/core/ports"
 )
 
 type mockAdapter struct {
@@ -73,14 +75,42 @@ func (m *mockAdapter) Stop() error {
 	return nil
 }
 
+type mockHITLAdapter struct {
+	*mockAdapter
+	hitlCalls int
+}
+
+func (m *mockHITLAdapter) RequestApproval(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+	m.mu.Lock()
+	m.hitlCalls++
+	m.mu.Unlock()
+	return domain.ApprovalDecision{
+		RequestID: req.RequestID,
+		Action:    "approved",
+		Approved:  true,
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (m *mockHITLAdapter) HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error {
+	return nil
+}
+func (m *mockHITLAdapter) CancelPendingRequest(requestID string)             {}
+func (m *mockHITLAdapter) CancelPendingRequestsForSession(sessionKey string) {}
+
+var (
+	_ ports.ChannelPort      = (*mockHITLAdapter)(nil)
+	_ ports.HITLApprovalPort = (*mockHITLAdapter)(nil)
+)
+
 func TestCompositeChannelMux_RoutingAndLifecycle(t *testing.T) {
-	mux := NewMux()
+	mux := composite.NewChannelMux()
 	assert.Equal(t, "composite", mux.Name())
 
 	tg := newMockAdapter("telegram")
-	zl := newMockAdapter("zalo")
+	zl := &mockHITLAdapter{mockAdapter: newMockAdapter("zalo")}
 
-	mux.Register(tg)
+	mux.RegisterAdapter(tg)
 	mux.Register(zl)
 
 	gotTg, ok := mux.Get("telegram")
@@ -95,7 +125,7 @@ func TestCompositeChannelMux_RoutingAndLifecycle(t *testing.T) {
 	assert.True(t, tg.started)
 	assert.True(t, zl.started)
 
-	// Send to Telegram
+	// 1. Send to Telegram via Channel
 	err = mux.Send(ctx, domain.OutboundMessage{
 		Channel: "telegram",
 		ChatID:  "123",
@@ -103,11 +133,11 @@ func TestCompositeChannelMux_RoutingAndLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Send to Zalo
+	// 2. Send to Zalo via SessionKey
 	err = mux.Send(ctx, domain.OutboundMessage{
-		Channel: "zalo",
-		ChatID:  "456",
-		Text:    "Hello Zalo",
+		SessionKey: "zalo:group_zalo",
+		ChatID:     "group_zalo",
+		Text:       "Hello Zalo",
 	})
 	require.NoError(t, err)
 
@@ -121,17 +151,28 @@ func TestCompositeChannelMux_RoutingAndLifecycle(t *testing.T) {
 	assert.Equal(t, "Hello Zalo", zl.sent[0].Text)
 	zl.mu.Unlock()
 
-	// SendTyping to Zalo
+	// 3. SendTyping to Zalo
 	err = mux.SendTyping(ctx, domain.TargetContext{
 		Channel: "zalo",
-		ChatID:  "456",
+		ChatID:  "group_zalo",
 	})
 	require.NoError(t, err)
 	zl.mu.Lock()
 	assert.Equal(t, 1, zl.typingCalls)
 	zl.mu.Unlock()
 
-	// Stop
+	// 4. HITL Approval routing to Zalo
+	decision, err := mux.RequestApproval(ctx, domain.ApprovalRequest{
+		RequestID:  "req-1",
+		SessionKey: "zalo:group_zalo",
+	})
+	require.NoError(t, err)
+	assert.True(t, decision.Approved)
+	zl.mu.Lock()
+	assert.Equal(t, 1, zl.hitlCalls)
+	zl.mu.Unlock()
+
+	// 5. Stop
 	err = mux.Stop()
 	require.NoError(t, err)
 	assert.True(t, tg.stopped)

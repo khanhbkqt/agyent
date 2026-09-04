@@ -82,7 +82,8 @@ type TargetContext struct {
 
 // OutboundMessage represents a standardized response to be sent to a channel.
 type OutboundMessage struct {
-	Channel          string               `json:"channel,omitempty"`    // Originating channel identifier (e.g. "telegram", "zalo")
+	Channel          string               `json:"channel,omitempty"` // Originating channel identifier (e.g. "telegram", "zalo")
+	SessionKey       string               `json:"session_key,omitempty"`
 	BotID            int64                `json:"bot_id,omitempty"`     // Originating bot ID for multi-bot outbound routing
 	BotIDStr         string               `json:"bot_id_str,omitempty"` // String representation of BotID
 	ChatID           string               `json:"chat_id"`
