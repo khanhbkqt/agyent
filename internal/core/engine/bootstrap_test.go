@@ -76,6 +76,7 @@ func TestComposeResolvedTurnPrompt_Level0StaticPrefix(t *testing.T) {
 	assert.Contains(t, prompt, "3. Security Gateway & Policy Remediation:")
 	assert.Contains(t, prompt, "4. Outbound Artifact & Media Delivery Protocol:")
 	assert.Contains(t, prompt, "5. Link Hygiene, Verification & Memory:")
+	assert.Contains(t, prompt, "6. Autonomous Scheduling, Cron & Proactive Heartbeats:")
 	assert.Contains(t, prompt, "Root-Cause Diagnostics:")
 	assert.Contains(t, prompt, "audit_logs")
 	assert.Contains(t, prompt, "Skills Discovery:")
