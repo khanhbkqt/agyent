@@ -805,17 +805,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				responseText = fmt.Sprintf("%s\n\n%s", contextTag, responseText)
 			}
 
-			var outboundAtts []domain.OutboundAttachment
-			for _, att := range execResult.Artifacts {
-				outboundAtts = append(outboundAtts, domain.OutboundAttachment{
-					FilePath: att.FilePath,
-					FileName: att.FileName,
-					MIMEType: att.MIMEType,
-					Type:     att.Type,
-					Caption:  att.FileName,
-				})
-			}
-
+			// Outbound media and artifacts are extracted by the channel adapter
+			// strictly from what the agent explicitly reports in its response text.
 			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
 				Channel:          msg.Channel,
 				BotID:            msg.BotID,
@@ -823,8 +814,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				ThreadID:         msg.Chat.ThreadID,
 				Text:             responseText,
 				ParseMode:        "Markdown",
-				Attachments:      outboundAtts,
 				ReplyToMessageID: msg.ID,
+				WorkspaceDir:     req.WorkspaceDir,
+				ConversationID:   req.ConversationID,
 			})
 		}
 	}

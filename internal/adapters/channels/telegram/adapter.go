@@ -85,6 +85,13 @@ func WithBots(bots ...*gotgbot.Bot) Option {
 	}
 }
 
+// WithMediaManager sets a custom MediaManager (useful for unit tests).
+func WithMediaManager(mm *MediaManager) Option {
+	return func(a *Adapter) {
+		a.mediaMgr = mm
+	}
+}
+
 // NewAdapter constructs a new Telegram channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Adapter {
 	a := &Adapter{
@@ -426,27 +433,44 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 		return fmt.Errorf("invalid chat_id %q: %w", msg.ChatID, err)
 	}
 
+	sentPaths := make(map[string]bool)
+
 	// 1. Send outbound attachments if present
 	if len(msg.Attachments) > 0 && mediaMgr != nil {
 		var domainAtts []domain.Attachment
 		for _, att := range msg.Attachments {
+			normPath := filepath.Clean(filepath.FromSlash(att.FilePath))
+			sentPaths[normPath] = true
 			domainAtts = append(domainAtts, domain.Attachment{
 				FileName: att.FileName,
-				FilePath: att.FilePath,
+				FilePath: normPath,
 				MIMEType: att.MIMEType,
 				Type:     att.Type,
 				Caption:  att.Caption,
 			})
 		}
-		_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot)
+		if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot); err != nil {
+			slog.ErrorContext(ctx, "Failed to upload outbound message attachments", "chat_id", chatID, "error", err)
+		}
 	}
 
 	// 2. Extract any embedded media from text and clean text
 	textToSend := msg.Text
 	if textToSend != "" {
-		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, "", "")
-		if len(extraMedia) > 0 && mediaMgr != nil {
-			_ = mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, extraMedia, bot)
+		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, msg.WorkspaceDir, msg.ConversationID)
+		var unuploadedMedia []domain.Attachment
+		for _, m := range extraMedia {
+			normPath := filepath.Clean(filepath.FromSlash(m.FilePath))
+			if !sentPaths[normPath] {
+				sentPaths[normPath] = true
+				m.FilePath = normPath
+				unuploadedMedia = append(unuploadedMedia, m)
+			}
+		}
+		if len(unuploadedMedia) > 0 && mediaMgr != nil {
+			if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, unuploadedMedia, bot); err != nil {
+				slog.ErrorContext(ctx, "Failed to upload embedded media attachments", "chat_id", chatID, "error", err)
+			}
 		}
 		textToSend = cleanedText
 	}

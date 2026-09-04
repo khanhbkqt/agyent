@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,8 @@ type StreamSession struct {
 	Dirty           bool
 	LastEditTime    time.Time
 	LastActivity    time.Time
+	WorkspaceDir    string
+	SentMediaPaths  map[string]bool
 
 	Mu              sync.Mutex
 	WakeupChan      chan struct{}
@@ -159,6 +162,8 @@ func (dt *DeliveryThrottler) OnStreamInit(ctx context.Context, evt domain.Event)
 		WorkerDone:     make(chan struct{}),
 		CancelWorker:   cancelWorker,
 		LastActivity:   time.Now(),
+		WorkspaceDir:   p.CWD,
+		SentMediaPaths: make(map[string]bool),
 	}
 	sess.Buffer.Grow(1024)
 
@@ -246,28 +251,6 @@ func (dt *DeliveryThrottler) OnStreamTool(ctx context.Context, evt domain.Event)
 		sess.ActiveAction = ""
 		sess.LastActivity = time.Now()
 		sess.Mu.Unlock()
-
-		// If tool is generate_image, trigger instant brain image sync asynchronously
-		if p.ToolName == "generate_image" && dt.mediaMgr != nil {
-			imageName := ""
-			if p.Parameters != nil {
-				if in, ok := p.Parameters["ImageName"].(string); ok {
-					imageName = in
-				} else if in, ok := p.Parameters["image_name"].(string); ok {
-					imageName = in
-				} else if in, ok := p.Parameters["imageName"].(string); ok {
-					imageName = in
-				} else if in, ok := p.Parameters["name"].(string); ok {
-					imageName = in
-				}
-			}
-			bot := dt.getBot(sess.BotID)
-			go func(targetBot *gotgbot.Bot, chatID, threadID int64, convID, imgName string) {
-				if imgPath, err := FindBrainImage(convID, imgName); err == nil && imgPath != "" {
-					_ = dt.mediaMgr.SendBrainImage(context.Background(), chatID, threadID, imgPath, "🎨 Generated Image", targetBot)
-				}
-			}(bot, sess.ChatID, sess.ThreadID, p.ConversationID, imageName)
-		}
 	}
 
 	return nil
@@ -307,35 +290,40 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 		}
 	}
 
+	wsDir := sess.WorkspaceDir
 	// Extract outbound media from markdown response and clean the text
-	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(responseText, "", sess.ConversationID)
+	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(responseText, wsDir, sess.ConversationID)
 	sess.Buffer.Reset()
 	sess.Buffer.WriteString(cleanedText)
 	sess.Dirty = true
+
+	// Filter out any media already sent earlier (e.g. via OnStreamTool instant sync)
+	var allArtifacts []domain.Attachment
+	if sess.SentMediaPaths == nil {
+		sess.SentMediaPaths = make(map[string]bool)
+	}
+	for _, em := range extractedMedia {
+		normPath := filepath.Clean(filepath.FromSlash(em.FilePath))
+		if !sess.SentMediaPaths[normPath] {
+			em.FilePath = normPath
+			allArtifacts = append(allArtifacts, em)
+			sess.SentMediaPaths[normPath] = true
+		}
+	}
 	sess.Mu.Unlock()
 
 	// Trigger worker to finalize
 	sess.closeWorker()
 	<-sess.WorkerDone
 
-	// Combine artifacts from watcher and extracted markdown media
-	allArtifacts := append([]domain.Attachment{}, p.Artifacts...)
-	seenPaths := make(map[string]bool)
-	for _, a := range allArtifacts {
-		seenPaths[a.FilePath] = true
-	}
-	for _, em := range extractedMedia {
-		if !seenPaths[em.FilePath] {
-			allArtifacts = append(allArtifacts, em)
-			seenPaths[em.FilePath] = true
-		}
-	}
-
-	// Outbound turn artifacts auto-upload (async non-blocking)
+	// Outbound turn artifacts: ONLY upload artifacts explicitly reported by the agent
+	// (Raw filesystem snapshot diffs from p.Artifacts are excluded)
 	if len(allArtifacts) > 0 && dt.mediaMgr != nil {
 		bot := dt.getBot(sess.BotID)
 		go func(targetBot *gotgbot.Bot, chatID, threadID int64, arts []domain.Attachment) {
-			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts, targetBot)
+			if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts, targetBot); err != nil {
+				slog.Error("Failed to upload turn artifacts", "chat_id", chatID, "count", len(arts), "error", err)
+			}
 		}(bot, sess.ChatID, sess.ThreadID, allArtifacts)
 	}
 
@@ -624,12 +612,31 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 		return
 	}
 
+	wsDir := sess.WorkspaceDir
+
 	// Clean any remaining markdown image references or comments before final dispatch
-	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, "", convID)
-	if len(extractedMedia) > 0 && dt.mediaMgr != nil {
+	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, wsDir, convID)
+	sess.Mu.Lock()
+	var unuploadedMedia []domain.Attachment
+	for _, em := range extractedMedia {
+		normPath := filepath.Clean(filepath.FromSlash(em.FilePath))
+		if sess.SentMediaPaths == nil || !sess.SentMediaPaths[normPath] {
+			em.FilePath = normPath
+			unuploadedMedia = append(unuploadedMedia, em)
+			if sess.SentMediaPaths == nil {
+				sess.SentMediaPaths = make(map[string]bool)
+			}
+			sess.SentMediaPaths[normPath] = true
+		}
+	}
+	sess.Mu.Unlock()
+
+	if len(unuploadedMedia) > 0 && dt.mediaMgr != nil {
 		go func(targetBot *gotgbot.Bot, cID, tID int64, arts []domain.Attachment) {
-			_ = dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts, targetBot)
-		}(bot, chatID, threadID, extractedMedia)
+			if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts, targetBot); err != nil {
+				slog.Error("Failed to upload turn artifacts from final flush", "chat_id", cID, "count", len(arts), "error", err)
+			}
+		}(bot, chatID, threadID, unuploadedMedia)
 	}
 
 	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, 4000)

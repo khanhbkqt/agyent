@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -267,14 +266,10 @@ func TestMedia_ToolDoneInstantBrainPhoto(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool {
-		mockServer.mu.Lock()
-		defer mockServer.mu.Unlock()
-		if len(mockServer.SentMedia) >= 1 {
-			return mockServer.SentMedia[0].Type == "photo" && strings.Contains(mockServer.SentMedia[0].Caption, "Generated Image")
-		}
-		return false
-	}, 1*time.Second, 10*time.Millisecond, "Instant Brain photo must be sent asynchronously")
+	time.Sleep(50 * time.Millisecond)
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	assert.Empty(t, mockServer.SentMedia, "Tool DONE must NOT prematurely push images before agent reports them in markdown")
 }
 
 // TC-ACT-07: Outbound Turn Artifacts Auto-Upload (Whitelist)
@@ -566,3 +561,245 @@ Anh thấy bố cục và mạch luồng này đã ưng ý chưa ạ?`
 
 	t.Logf("Successfully verified real AGY response comparison and delivery!")
 }
+
+// TC-MEDIA-05: Local Documents & Fuzzy Brain Images Extraction with doc link cleaning
+func TestMedia_ExtractLocalDocumentsAndBrainImages(t *testing.T) {
+	tempWS := t.TempDir()
+	csvPath := filepath.Join(tempWS, "sales_summary.csv")
+	err := os.WriteFile(csvPath, []byte("date,revenue\n2026-09-04,1000"), 0644)
+	require.NoError(t, err)
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	convID := "test-conv-doc-brain-01"
+	brainDir := filepath.Join(homeDir, ".gemini", "antigravity-cli", "brain", convID)
+	err = os.MkdirAll(brainDir, 0755)
+	require.NoError(t, err)
+	defer os.RemoveAll(brainDir)
+
+	brainImgPath := filepath.Join(brainDir, "rocket_logo_1788507992076.jpg")
+	err = os.WriteFile(brainImgPath, []byte("mock jpeg bytes"), 0644)
+	require.NoError(t, err)
+
+	fileURI := "file:///" + filepath.ToSlash(csvPath)
+
+	rawResponse := fmt.Sprintf(`Dưới đây là báo cáo và ảnh minh họa:
+
+![Rocket Logo](rocket_logo.png)
+
+Xem tài liệu chi tiết tại [Tải Báo Cáo CSV](%s)
+
+Tham khảo thêm [Tài Liệu Markdown](AGENTS.md) hoặc [Website](https://google.com)`, fileURI)
+
+	cleanedText, attachments := ExtractAndCleanOutboundMedia(rawResponse, tempWS, convID)
+
+	require.Len(t, attachments, 2, "Must extract 1 image and 1 document")
+
+	var imgAtt, docAtt *domain.Attachment
+	for i := range attachments {
+		if attachments[i].Type == "image" {
+			imgAtt = &attachments[i]
+		} else if attachments[i].Type == "document" {
+			docAtt = &attachments[i]
+		}
+	}
+
+	require.NotNil(t, imgAtt, "Image attachment must be found")
+	assert.Equal(t, "rocket_logo_1788507992076.jpg", imgAtt.FileName)
+	assert.Equal(t, brainImgPath, imgAtt.FilePath)
+	assert.Equal(t, "Rocket Logo", imgAtt.Caption)
+
+	require.NotNil(t, docAtt, "Document attachment must be found")
+	assert.Equal(t, "sales_summary.csv", docAtt.FileName)
+	assert.Equal(t, csvPath, docAtt.FilePath)
+	assert.Equal(t, "Tải Báo Cáo CSV", docAtt.Caption)
+
+	// Verify cleaned text: images removed, doc link converted to icon+name, web & system links preserved
+	assert.NotContains(t, cleanedText, "![Rocket Logo](rocket_logo.png)")
+	assert.Contains(t, cleanedText, "📄 Tải Báo Cáo CSV")
+	assert.Contains(t, cleanedText, "[Tài Liệu Markdown](AGENTS.md)", "System docs must be preserved as plain text links")
+	assert.Contains(t, cleanedText, "[Website](https://google.com)", "External URLs must be preserved")
+}
+
+// TC-THROTTLE-06: Throttler must NOT upload raw unmentioned artifacts from SnapshotWatcher
+func TestThrottler_IgnoresRawArtifacts(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_ignore_raw_01")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	mediaMgr := NewMediaManager(cfg, bot)
+
+	throttler := NewDeliveryThrottler(bot, mediaMgr, 1.5, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:987654:0"
+	convID := "conv_ignore_raw_01"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: convID,
+	}))
+
+	tempFile := filepath.Join(t.TempDir(), "unmentioned_touched_file.txt")
+	_ = os.WriteFile(tempFile, []byte("file touched during execution"), 0644)
+
+	// StreamResult with raw artifacts in p.Artifacts, but unmentioned in p.Response
+	_ = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: convID,
+		Status:         "SUCCESS",
+		Response:       "Tôi đã cập nhật cấu hình hệ thống thành công.",
+		Artifacts: []domain.Attachment{
+			{
+				FilePath: tempFile,
+				FileName: "unmentioned_touched_file.txt",
+				Type:     "document",
+			},
+		},
+	}))
+
+	// Wait for delivery
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) >= 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	assert.Empty(t, mockServer.SentMedia, "Raw unmentioned artifacts must NOT be uploaded to Telegram")
+	assert.Contains(t, mockServer.SentMessages[0].Text, "Tôi đã cập nhật cấu hình hệ thống thành công.")
+}
+
+// TC-MEDIA-06: TelegramAdapter Send extracts media and deduplicates with Attachments
+func TestTelegramSend_OutboundMediaDeduplicationAndExtraction(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_send_dedup_01")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	mediaMgr := NewMediaManager(cfg, bot)
+
+	adapter := NewAdapter(cfg, nil, WithBot(bot), WithMediaManager(mediaMgr))
+
+	tempWS := t.TempDir()
+	docFile := filepath.Join(tempWS, "export.csv")
+	_ = os.WriteFile(docFile, []byte("id,val\n1,100"), 0644)
+
+	ctx := context.Background()
+
+	// OutboundMessage already contains docFile in Attachments, AND text links to it
+	msg := domain.OutboundMessage{
+		BotID:        bot.Id,
+		ChatID:       "123456",
+		WorkspaceDir: tempWS,
+		Text:         fmt.Sprintf("Kết quả xuất dữ liệu: [Bảng CSV](%s)", filepath.ToSlash(docFile)),
+		Attachments: []domain.OutboundAttachment{
+			{
+				FilePath: docFile,
+				FileName: "export.csv",
+				Type:     "document",
+				Caption:  "Bảng CSV",
+			},
+		},
+	}
+
+	err = adapter.Send(ctx, msg)
+	require.NoError(t, err)
+
+	// Check sent media: should only upload ONCE (deduplicated)
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) >= 1 && len(mockServer.SentMedia) == 1
+	}, 1*time.Second, 20*time.Millisecond, "Document must only be uploaded once despite being both in Attachments and Markdown text")
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	assert.Contains(t, mockServer.SentMessages[0].Text, "📄 Bảng CSV")
+}
+
+// TC-ACT-14: SendBrainImage automatically falls back to SendDocument if sendPhoto fails
+func TestMedia_SendBrainImage_FallbackToDocument(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_act_14")
+	mockServer.SimulatePhotoFailOnce = true
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "broken_photo.jpg")
+	err = os.WriteFile(imgPath, []byte("fake jpeg binary"), 0644)
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	mediaMgr := NewMediaManager(cfg, bot)
+
+	err = mediaMgr.SendBrainImage(context.Background(), 123456, 0, imgPath, "Fallback Image", bot)
+	require.NoError(t, err, "Must succeed via SendDocument fallback when SendPhoto fails")
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	require.Equal(t, 1, len(mockServer.SentMedia))
+	assert.Equal(t, "document", mockServer.SentMedia[0].Type, "Should fall back to document delivery")
+	assert.Equal(t, "Fallback Image", mockServer.SentMedia[0].Caption)
+	assert.Equal(t, "broken_photo.jpg", mockServer.SentMedia[0].FileName)
+}
+
+// TC-ACT-15: SendBrainImage gracefully retries on rate limit 429
+func TestMedia_SendBrainImage_RateLimit429Retry(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_act_15")
+	mockServer.SimulatePhoto429Once = true
+	mockServer.RetryAfterSec = 1
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "ratelimit_photo.jpg")
+	err = os.WriteFile(imgPath, []byte("fake jpeg binary"), 0644)
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	mediaMgr := NewMediaManager(cfg, bot)
+
+	err = mediaMgr.SendBrainImage(context.Background(), 123456, 0, imgPath, "429 Retried Photo", bot)
+	require.NoError(t, err, "Must handle 429 and retry photo delivery")
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	require.Equal(t, 1, len(mockServer.SentMedia))
+	assert.Equal(t, "photo", mockServer.SentMedia[0].Type)
+	assert.Equal(t, "429 Retried Photo", mockServer.SentMedia[0].Caption)
+}
+
+// TC-ACT-16: openFileWithRetry opens valid files and fast-fails non-existent files
+func TestMedia_OpenFileWithRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	validPath := filepath.Join(tmpDir, "sample.txt")
+	err := os.WriteFile(validPath, []byte("content"), 0644)
+	require.NoError(t, err)
+
+	f, err := openFileWithRetry(validPath, 3, 10*time.Millisecond)
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	f.Close()
+
+	start := time.Now()
+	_, err = openFileWithRetry(filepath.Join(tmpDir, "missing.txt"), 5, 200*time.Millisecond)
+	duration := time.Since(start)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+	assert.Less(t, duration, 100*time.Millisecond, "Non-existent files must fail fast without retrying delays")
+}
+
+

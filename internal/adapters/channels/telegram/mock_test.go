@@ -57,9 +57,11 @@ type MockTelegramServer struct {
 	NextErrorStatus    int
 	NextErrorBody      string
 	NextEditError      error
-	Simulate429Once    bool
-	Simulate400Once    bool
-	RetryAfterSec      int
+	Simulate429Once       bool
+	Simulate400Once       bool
+	SimulatePhotoFailOnce bool
+	SimulatePhoto429Once  bool
+	RetryAfterSec         int
 	FilesMap           map[string][]byte
 	GetMeCount         int64
 	RegisteredCommands []gotgbot.BotCommand
@@ -371,6 +373,33 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		})
 
 	case "sendPhoto":
+		if m.SimulatePhoto429Once {
+			m.SimulatePhoto429Once = false
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  429,
+				"description": "Too Many Requests: retry after 1",
+				"parameters": map[string]any{
+					"retry_after": m.RetryAfterSec,
+				},
+			})
+			return
+		}
+
+		if m.SimulatePhotoFailOnce {
+			m.SimulatePhotoFailOnce = false
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  400,
+				"description": "Bad Request: IMAGE_PROCESS_FAILED",
+			})
+			return
+		}
+
 		m.msgSeq++
 		msgID := m.msgSeq
 		caption, _ := params["caption"].(string)

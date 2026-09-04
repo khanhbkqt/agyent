@@ -92,6 +92,8 @@ type OutboundMessage struct {
 	Attachments      []OutboundAttachment `json:"attachments,omitempty"`
 	ReplyToMessageID string               `json:"reply_to_message_id,omitempty"`
 	InlineKeyboard   InlineKeyboard       `json:"inline_keyboard,omitempty"`
+	WorkspaceDir     string               `json:"workspace_dir,omitempty"`
+	ConversationID   string               `json:"conversation_id,omitempty"`
 }
 
 // TargetContext returns the TargetContext corresponding to this outbound message.
