@@ -59,10 +59,35 @@ func (t *Throttler) SendThrottled(ctx context.Context, req SendMessageRequest, c
 	return nil
 }
 
+// Prune removes entries from lastSent that are older than maxAge.
+func (t *Throttler) Prune(maxAge time.Duration) int {
+	t.lastSentMu.Lock()
+	defer t.lastSentMu.Unlock()
+	return t.pruneLocked(time.Now(), maxAge)
+}
+
+func (t *Throttler) pruneLocked(now time.Time, maxAge time.Duration) int {
+	cutoff := now.Add(-maxAge)
+	pruned := 0
+	for id, ts := range t.lastSent {
+		if ts.Before(cutoff) {
+			delete(t.lastSent, id)
+			pruned++
+		}
+	}
+	return pruned
+}
+
 func (t *Throttler) waitForSlot(ctx context.Context, chatID string) {
 	t.lastSentMu.Lock()
-	last, ok := t.lastSent[chatID]
 	now := time.Now()
+
+	// Evict stale entries if map size grows beyond threshold to prevent unbounded memory growth
+	if len(t.lastSent) > 256 {
+		t.pruneLocked(now, 10*time.Minute)
+	}
+
+	last, ok := t.lastSent[chatID]
 	var wait time.Duration
 	if ok {
 		elapsed := now.Sub(last)

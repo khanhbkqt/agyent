@@ -2,6 +2,7 @@ package zalo
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,17 +240,20 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 			return
 		}
 
-		// Secret verification if configured
+		// Secret verification if configured (using constant-time comparison to prevent timing attacks)
 		if a.cfg.Zalo.SecretToken != "" {
 			secretHeader := r.Header.Get("X-Secret-Token")
 			if secretHeader == "" {
 				secretHeader = r.Header.Get("X-Bot-Token")
 			}
-			if secretHeader != a.cfg.Zalo.SecretToken {
+			if subtle.ConstantTimeCompare([]byte(secretHeader), []byte(a.cfg.Zalo.SecretToken)) != 1 {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
+
+		// Limit request body to 5MB to prevent memory exhaustion / OOM attacks
+		r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024)
 
 		var update ZaloUpdate
 		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {

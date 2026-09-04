@@ -280,6 +280,16 @@ func TestZaloAdapter_WebhookMode(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for webhook update to reach inbound channel")
 	}
+
+	// 3. Post oversized payload (> 5MB) -> Expect 400 Bad Request due to MaxBytesReader
+	largePayload := bytes.Repeat([]byte("a"), 6*1024*1024)
+	req, _ = http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(largePayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Secret-Token", "my_secret_token_xyz")
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	resp.Body.Close()
 }
 
 func TestZaloAdapter_HITLCoordination(t *testing.T) {

@@ -1143,10 +1143,6 @@ func (e *Engine) subscribeSubagentEvents() {
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
 		}
-		channelName := parsedKey.Channel
-		if channelName == "" {
-			channelName = "telegram"
-		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {
 			syntheticMsg := domain.CanonicalMessage{
@@ -1198,10 +1194,6 @@ func (e *Engine) subscribeSubagentEvents() {
 		chatID := parsedKey.ChatID
 		if chatID == "" {
 			chatID = domain.ExtractChatIDFromSessionKey(task.ParentSessionKey)
-		}
-		channelName := parsedKey.Channel
-		if channelName == "" {
-			channelName = "telegram"
 		}
 
 		if task.CallbackMode == domain.CallbackInvokeMain {

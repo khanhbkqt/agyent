@@ -138,22 +138,17 @@ func (m *Mux) Start(ctx context.Context, inbound chan<- domain.CanonicalMessage)
 	}
 	m.mu.Unlock()
 
-	var startErr error
-	startedCount := 0
+	var startErrs []error
 
 	for name, ch := range adapters {
 		if err := ch.Start(ctx, inbound); err != nil {
 			slog.ErrorContext(ctx, "failed to start channel adapter", "channel", name, "error", err)
-			if startErr == nil {
-				startErr = fmt.Errorf("failed to start channel adapter %q: %w", name, err)
-			}
-		} else {
-			startedCount++
+			startErrs = append(startErrs, fmt.Errorf("channel adapter %q: %w", name, err))
 		}
 	}
 
-	if startedCount == 0 && startErr != nil {
-		return startErr
+	if len(startErrs) > 0 {
+		return errors.Join(startErrs...)
 	}
 	return nil
 }
@@ -260,7 +255,17 @@ func (m *Mux) RequestApproval(ctx context.Context, req domain.ApprovalRequest) (
 		}
 	}
 
-	// Fallback to primary or first available HITL coordinator
+	// Fallback deterministically: primary first, then canonical channels (telegram, zalo)
+	if m.primary != nil {
+		if hitl, ok := m.hitlAdapters[m.primary.Name()]; ok {
+			return hitl.RequestApproval(ctx, req)
+		}
+	}
+	for _, name := range []string{"telegram", "zalo"} {
+		if hitl, ok := m.hitlAdapters[name]; ok {
+			return hitl.RequestApproval(ctx, req)
+		}
+	}
 	for _, hitl := range m.hitlAdapters {
 		return hitl.RequestApproval(ctx, req)
 	}

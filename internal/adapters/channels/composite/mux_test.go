@@ -23,6 +23,7 @@ type mockAdapter struct {
 	fileCalls   int
 	started     bool
 	stopped     bool
+	startErr    error
 }
 
 var _ ports.ChannelPort = (*mockAdapter)(nil)
@@ -36,6 +37,9 @@ func (m *mockAdapter) Name() string { return m.name }
 func (m *mockAdapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.startErr != nil {
+		return m.startErr
+	}
 	m.started = true
 	return nil
 }
@@ -177,4 +181,45 @@ func TestCompositeChannelMux_RoutingAndLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, tg.stopped)
 	assert.True(t, zl.stopped)
+}
+
+func TestCompositeChannelMux_StartPartialFailure(t *testing.T) {
+	mux := composite.NewChannelMux()
+
+	tg := newMockAdapter("telegram")
+	zl := newMockAdapter("zalo")
+	zl.startErr = assert.AnError
+
+	mux.Register(tg)
+	mux.Register(zl)
+
+	inbound := make(chan domain.CanonicalMessage, 5)
+	err := mux.Start(context.Background(), inbound)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "channel adapter \"zalo\"")
+}
+
+func TestCompositeChannelMux_DeterministicHITLFallback(t *testing.T) {
+	mux := composite.NewChannelMux()
+
+	tg := &mockHITLAdapter{mockAdapter: newMockAdapter("telegram")}
+	zl := &mockHITLAdapter{mockAdapter: newMockAdapter("zalo")}
+
+	mux.Register(tg)
+	mux.Register(zl)
+
+	// An approval request without session key or channel should deterministically route to primary (or telegram)
+	decision, err := mux.RequestApproval(context.Background(), domain.ApprovalRequest{
+		RequestID: "req-fallback",
+	})
+	require.NoError(t, err)
+	assert.True(t, decision.Approved)
+
+	tg.mu.Lock()
+	assert.Equal(t, 1, tg.hitlCalls)
+	tg.mu.Unlock()
+
+	zl.mu.Lock()
+	assert.Equal(t, 0, zl.hitlCalls)
+	zl.mu.Unlock()
 }
