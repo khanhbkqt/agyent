@@ -161,6 +161,36 @@ func runMockAGYHelper() {
 		fmt.Println(`{"conversation_id":"c-claude-success","status":"SUCCESS","response":"Claude model executed cleanly without effort","duration_seconds":0.5}`)
 		os.Exit(0)
 
+	case "verify_print_timeout_flags":
+		var timeoutVal string
+		isStream := false
+		for i, arg := range args {
+			if arg == "--print-timeout" && i+1 < len(args) {
+				timeoutVal = args[i+1]
+			}
+			if arg == "--output-format" && i+1 < len(args) && args[i+1] == "stream-json" {
+				isStream = true
+			}
+		}
+		if timeoutVal == "" {
+			fmt.Fprintf(os.Stderr, "missing expected --print-timeout flag, args: %v\n", args)
+			os.Exit(1)
+		}
+		if isStream {
+			fmt.Println(`{"event":"init","conversation_id":"c-timeout-stream"}`)
+			fmt.Printf(`{"event":"result","result":{"conversation_id":"c-timeout-stream","status":"SUCCESS","response":"Print timeout stream verified: %s"}}`+"\n", timeoutVal)
+			os.Exit(0)
+		}
+		respMap := map[string]any{
+			"conversation_id":  "c-timeout-verified",
+			"status":           "SUCCESS",
+			"response":         fmt.Sprintf("Print timeout verified: %s", timeoutVal),
+			"duration_seconds": 0.2,
+		}
+		data, _ := json.Marshal(respMap)
+		fmt.Println(string(data))
+		os.Exit(0)
+
 	default: // "success" or standard
 		fmt.Println(`{"conversation_id":"c-mock-success","status":"SUCCESS","response":"Hello from mock AGY!","duration_seconds":0.8,"num_turns":1,"usage":{"input_tokens":150,"output_tokens":45,"thinking_tokens":20,"total_tokens":215}}`)
 		os.Exit(0)
@@ -685,3 +715,47 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 		assert.Contains(t, res.ResponseText, "Claude model executed cleanly without effort")
 	})
 }
+
+func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "verify_print_timeout_flags")
+
+	// Harness configured with DefaultTimeoutSeconds: 3000 (3000s)
+	harness := newTestHarness("verify_print_timeout_flags", 3000)
+
+	t.Run("Execute batch mode forwards --print-timeout from request", func(t *testing.T) {
+		req := domain.ExecutionRequest{
+			Prompt:  "test timeout",
+			Timeout: 3000 * time.Second,
+		}
+		res, err := harness.Execute(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.True(t, res.Success)
+		assert.Contains(t, res.ResponseText, "Print timeout verified: 3000s")
+	})
+
+	t.Run("Execute batch mode falls back to defaultTimeout when req.Timeout is 0", func(t *testing.T) {
+		req := domain.ExecutionRequest{
+			Prompt: "test timeout fallback",
+		}
+		res, err := harness.Execute(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.True(t, res.Success)
+		assert.Contains(t, res.ResponseText, "Print timeout verified: 3000s")
+	})
+
+	t.Run("ExecuteStream mode forwards --print-timeout", func(t *testing.T) {
+		req := domain.ExecutionRequest{
+			Prompt:  "test timeout stream",
+			Timeout: 2400 * time.Second,
+		}
+		res, err := harness.ExecuteStream(context.Background(), req, "test-stream-timeout")
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.True(t, res.Success)
+		assert.Contains(t, res.ResponseText, "Print timeout stream verified: 2400s")
+	})
+}
+

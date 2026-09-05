@@ -55,7 +55,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		sessionKey = fmt.Sprintf("sched:%s:%s", task.AgentName, task.ID)
 	}
 
-	timeout := 300 * time.Second
+	timeout := 1800 * time.Second
 	if e.cfg != nil && e.cfg.AGY.DefaultTimeoutSeconds > 0 {
 		timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
 	}

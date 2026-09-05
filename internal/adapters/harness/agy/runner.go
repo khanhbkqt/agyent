@@ -145,6 +145,10 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		args = append(args, "--model", model)
 	}
 
+	if timeout > 0 {
+		args = append(args, "--print-timeout", fmt.Sprintf("%ds", int(timeout.Seconds())))
+	}
+
 	cmd := exec.CommandContext(execCtx, h.binaryPath, args...)
 	if req.WorkspaceDir != "" {
 		cmd.Dir = req.WorkspaceDir
@@ -319,6 +323,10 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+
+	if timeout > 0 {
+		args = append(args, "--print-timeout", fmt.Sprintf("%ds", int(timeout.Seconds())))
 	}
 
 	inboundMsg := map[string]any{

@@ -149,6 +149,10 @@ func (e *taskExecutor) executeTurn(
 		args = append(args, "--conversation", convID)
 	}
 
+	if e.defaultTimeout > 0 {
+		args = append(args, "--print-timeout", fmt.Sprintf("%ds", int(e.defaultTimeout.Seconds())))
+	}
+
 	inboundMsg := map[string]any{
 		"event": "user",
 		"message": map[string]any{

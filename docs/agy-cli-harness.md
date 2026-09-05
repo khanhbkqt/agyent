@@ -120,7 +120,9 @@ flowchart TD
    - When execution exceeds timeout (default 1800s) or receives Context cancellation:
      - **On Linux/macOS:** Group processes via `SysProcAttr: &syscall.SysProcAttr{Setpgid: true}` and dispatch `syscall.SIGKILL` to the negative PID (`-cmd.Process.Pid`). OS-specific tests must verify that descendants terminate.
      - **On Windows:** Attach to **Windows Job Objects** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) or fallback to tree termination via `exec.Command("taskkill", "/F", "/T", "/PID", pid).Run()` to eliminate all spawned child processes (node, python, git, etc.).
-2. **Emergency Unlock Command (`/force_unlock`):**
+2. **CLI `--print-timeout` Propagation:**
+   - Subprocesses are spawned with `--print-timeout <duration>` matching the resolved turn timeout, preventing `agy`'s internal 5-minute (`5m0s`) default wait deadline from terminating long-running turns prematurely.
+3. **Emergency Unlock Command (`/force_unlock`):**
    - If a background process hangs or locks unexpectedly, Admins can issue `/force_unlock` on Telegram to immediately release the `SessionLockManager`.
 
 ---
