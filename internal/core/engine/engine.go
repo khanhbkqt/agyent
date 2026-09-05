@@ -209,8 +209,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		if err := e.scheduler.Start(e.ctx); err != nil {
 			slog.Warn("failed to start scheduler daemon", "error", err)
 		}
-		e.subscribeSchedulerEvents()
 	}
+	e.subscribeSchedulerEvents()
 
 	// 2. Consume from inbound queue and ingest into Debouncer
 	e.wg.Add(1)
@@ -1317,13 +1317,16 @@ func (e *Engine) subscribeSchedulerEvents() {
 		}
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:   channel,
-			BotID:     botID,
-			AgentName: task.AgentName,
-			ChatID:    task.ChatID,
-			ThreadID:  threadID,
-			Text:      msgText,
-			ParseMode: "Markdown",
+			Channel:        channel,
+			BotID:          botID,
+			AgentName:      task.AgentName,
+			ChatID:         task.ChatID,
+			ThreadID:       threadID,
+			Text:           msgText,
+			ParseMode:      "Markdown",
+			WorkspaceDir:   payload.WorkspaceDir,
+			ConversationID: payload.ConversationID,
+			Attachments:    domain.ToOutboundAttachments(payload.Artifacts),
 		})
 	})
 
@@ -1402,13 +1405,16 @@ func (e *Engine) subscribeSchedulerEvents() {
 		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:   channel,
-			BotID:     botID,
-			AgentName: hb.AgentName,
-			ChatID:    hb.ChatID,
-			ThreadID:  threadID,
-			Text:      fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
-			ParseMode: "Markdown",
+			Channel:        channel,
+			BotID:          botID,
+			AgentName:      hb.AgentName,
+			ChatID:         hb.ChatID,
+			ThreadID:       threadID,
+			Text:           fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
+			ParseMode:      "Markdown",
+			WorkspaceDir:   payload.WorkspaceDir,
+			ConversationID: payload.ConversationID,
+			Attachments:    domain.ToOutboundAttachments(payload.Artifacts),
 		})
 	})
 

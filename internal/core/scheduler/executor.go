@@ -114,12 +114,19 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		} else {
 			task.LastError = ""
 			responseText := ""
+			convID := ""
+			var artifacts []domain.Attachment
 			if result != nil {
 				responseText = result.ResponseText
+				convID = result.ConversationID
+				artifacts = result.Artifacts
 			}
 			e.eventBus.AsyncEmit(ctx, domain.NewEvent(domain.EventScheduleCompleted, domain.ScheduleEventPayload{
-				Task:     task,
-				Response: responseText,
+				Task:           task,
+				Response:       responseText,
+				ConversationID: convID,
+				WorkspaceDir:   agentWS,
+				Artifacts:      artifacts,
 			}))
 		}
 	}
@@ -215,9 +222,18 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 			}))
 		} else {
 			hb.LastError = ""
+			convID := ""
+			var artifacts []domain.Attachment
+			if result != nil {
+				convID = result.ConversationID
+				artifacts = result.Artifacts
+			}
 			e.eventBus.AsyncEmit(ctx, domain.NewEvent(domain.EventHeartbeatCompleted, domain.HeartbeatEventPayload{
-				Config:   hb,
-				Response: responseText,
+				Config:         hb,
+				Response:       responseText,
+				ConversationID: convID,
+				WorkspaceDir:   agentWS,
+				Artifacts:      artifacts,
 			}))
 		}
 	}
@@ -277,7 +293,7 @@ func formatBackgroundPrompt(title, prompt string) string {
 	}
 	sb.WriteString("Instructions:\n")
 	sb.WriteString(prompt)
-	sb.WriteString("\n\nExecute all requested steps, generate required output or updates, and summarize your final report clearly.")
+	sb.WriteString("\n\nExecute all requested steps, generate required output or updates, and summarize your final report clearly. If you generate images, charts, or deliverable files, embed or link them directly in your response text (e.g. ![Description](image_path) or [Document Title](file_path)) so they are delivered directly to the user.")
 	return sb.String()
 }
 
@@ -287,6 +303,6 @@ func formatHeartbeatPrompt(agentName, directives string) string {
 	sb.WriteString(fmt.Sprintf("[SYSTEM DIRECTIVE: PERIODIC AGENT HEARTBEAT WAKEUP (@%s)]\n\n", agentName))
 	sb.WriteString("Active Heartbeat Directives from HEARTBEAT.md:\n")
 	sb.WriteString(directives)
-	sb.WriteString("\n\nExecute your checks according to these directives. Formulate your report to be sent to the user.")
+	sb.WriteString("\n\nExecute your checks according to these directives. Formulate your report to be sent to the user. If you generate reports, charts, or images, embed or link them directly in your response text so they are delivered directly to the user.")
 	return sb.String()
 }

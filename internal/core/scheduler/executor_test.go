@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
@@ -105,4 +106,82 @@ func TestTaskExecutor_EffortRejectionRecovery(t *testing.T) {
 	require.Len(t, runner.receivedReqs, 2)
 	assert.NotEmpty(t, runner.receivedReqs[0].Effort)
 	assert.Empty(t, runner.receivedReqs[1].Effort)
+}
+
+type artifactReturningRunner struct {
+	convID    string
+	artifacts []domain.Attachment
+}
+
+func (r *artifactReturningRunner) Name() string { return "artifact-runner" }
+func (r *artifactReturningRunner) Execute(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+	return &domain.ExecutionResult{
+		Success:        true,
+		ConversationID: r.convID,
+		ResponseText:   "Dạ em gửi anh ảnh nè: ![Bé Na](be_na.png)",
+		Artifacts:      r.artifacts,
+	}, nil
+}
+func (r *artifactReturningRunner) ExecuteStream(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+	return r.Execute(ctx, req)
+}
+func (r *artifactReturningRunner) InterruptStream(ctx context.Context, sessionKey string) error {
+	return nil
+}
+func (r *artifactReturningRunner) HealthCheck(ctx context.Context) error { return nil }
+func (r *artifactReturningRunner) ListAvailableModels(ctx context.Context) ([]domain.ModelCapability, error) {
+	return nil, nil
+}
+
+func TestTaskExecutor_ExecuteSchedule_EmitsArtifactsAndContext(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	expectedConvID := "conv-sched-123456"
+	expectedArtifacts := []domain.Attachment{
+		{
+			FileName: "be_na.png",
+			FilePath: "/tmp/be_na.png",
+			Type:     "image",
+		},
+	}
+
+	runner := &artifactReturningRunner{
+		convID:    expectedConvID,
+		artifacts: expectedArtifacts,
+	}
+
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	payloadChan := make(chan domain.ScheduleEventPayload, 1)
+	bus.SubscribeAsync(domain.EventScheduleCompleted, func(ctx context.Context, evt domain.Event) {
+		if p, ok := evt.Payload.(domain.ScheduleEventPayload); ok {
+			payloadChan <- p
+		}
+	})
+
+	exec := NewTaskExecutor(cfg, runner, nil, bus, nil)
+
+	task := domain.ScheduleTask{
+		ID:        "sched-test-media",
+		AgentName: "agyent",
+		Title:     "Send Photo Task",
+		Prompt:    "Generate and send a photo",
+	}
+
+	res, err := exec.ExecuteSchedule(context.Background(), task)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	select {
+	case payload := <-payloadChan:
+		assert.Equal(t, task.ID, payload.Task.ID)
+		assert.Equal(t, expectedConvID, payload.ConversationID, "ConversationID must be propagated in payload")
+		assert.NotEmpty(t, payload.WorkspaceDir, "WorkspaceDir must be populated in payload")
+		require.Len(t, payload.Artifacts, 1, "Artifacts must be propagated in payload")
+		assert.Equal(t, "be_na.png", payload.Artifacts[0].FileName)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for EventScheduleCompleted")
+	}
 }

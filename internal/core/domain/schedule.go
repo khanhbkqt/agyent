@@ -92,9 +92,12 @@ type HeartbeatConfig struct {
 
 // ScheduleEventPayload carries event data for scheduled tasks.
 type ScheduleEventPayload struct {
-	Task     ScheduleTask `json:"task"`
-	Response string       `json:"response,omitempty"`
-	Error    string       `json:"error,omitempty"`
+	Task           ScheduleTask `json:"task"`
+	Response       string       `json:"response,omitempty"`
+	ConversationID string       `json:"conversation_id,omitempty"`
+	WorkspaceDir   string       `json:"workspace_dir,omitempty"`
+	Artifacts      []Attachment `json:"artifacts,omitempty"`
+	Error          string       `json:"error,omitempty"`
 }
 
 func (p ScheduleEventPayload) GetSessionKey() string {
@@ -103,9 +106,12 @@ func (p ScheduleEventPayload) GetSessionKey() string {
 
 // HeartbeatEventPayload carries event data for heartbeat tasks.
 type HeartbeatEventPayload struct {
-	Config   HeartbeatConfig `json:"config"`
-	Response string          `json:"response,omitempty"`
-	Error    string          `json:"error,omitempty"`
+	Config         HeartbeatConfig `json:"config"`
+	Response       string          `json:"response,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	WorkspaceDir   string          `json:"workspace_dir,omitempty"`
+	Artifacts      []Attachment    `json:"artifacts,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
 
 func (p HeartbeatEventPayload) GetSessionKey() string {

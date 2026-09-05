@@ -59,6 +59,24 @@ type OutboundAttachment struct {
 	Type     string `json:"type"` // "image", "document", etc.
 }
 
+// ToOutboundAttachments converts domain.Attachment slice to domain.OutboundAttachment slice.
+func ToOutboundAttachments(atts []Attachment) []OutboundAttachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	res := make([]OutboundAttachment, len(atts))
+	for i, att := range atts {
+		res[i] = OutboundAttachment{
+			FilePath: att.FilePath,
+			FileName: att.FileName,
+			MIMEType: att.MIMEType,
+			Caption:  att.Caption,
+			Type:     att.Type,
+		}
+	}
+	return res
+}
+
 // InlineButton represents an interactive button in a messaging UI.
 type InlineButton struct {
 	Text         string `json:"text"`

@@ -344,16 +344,17 @@ func ExtractAndCleanOutboundMedia(text string, workspaceDir string, convID strin
 			return match
 		}
 
+		attType := "document"
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || ext == ".svg" {
+			attType = "image"
+		} else if ext == ".mp4" {
+			attType = "video"
+		} else if ext == ".mp3" || ext == ".wav" || ext == ".ogg" {
+			attType = "audio"
+		}
+
 		if !seenPaths[resolvedPath] {
 			seenPaths[resolvedPath] = true
-			attType := "document"
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || ext == ".svg" {
-				attType = "image"
-			} else if ext == ".mp4" {
-				attType = "video"
-			} else if ext == ".mp3" || ext == ".wav" || ext == ".ogg" {
-				attType = "audio"
-			}
 
 			mimeType := mime.TypeByExtension(ext)
 			if mimeType == "" {
@@ -387,8 +388,9 @@ func ExtractAndCleanOutboundMedia(text string, workspaceDir string, convID strin
 			})
 		}
 
-		// If image embed (![caption](path)), strip completely from message text
-		if isImage {
+		// If image embed (![caption](path)) or an image file linked via [caption](path.png),
+		// strip completely from message text because it will be uploaded directly as a photo
+		if isImage || attType == "image" {
 			return ""
 		}
 

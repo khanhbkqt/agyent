@@ -221,8 +221,12 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 			res.Artifacts = artifacts
 		}
 	}
-	if req.ConversationID != "" {
-		brainArts := h.watcher.DetectBrainArtifacts(req.ConversationID, beforeBrainSnapshot)
+	targetConvID := req.ConversationID
+	if targetConvID == "" && res != nil {
+		targetConvID = res.ConversationID
+	}
+	if targetConvID != "" {
+		brainArts := h.watcher.DetectBrainArtifacts(targetConvID, beforeBrainSnapshot)
 		res.Artifacts = append(res.Artifacts, brainArts...)
 	}
 
@@ -531,8 +535,12 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 				res.Artifacts = append(res.Artifacts, artifacts...)
 			}
 		}
-		if req.ConversationID != "" {
-			brainArts := h.watcher.DetectBrainArtifacts(req.ConversationID, beforeBrainSnapshot)
+		targetConvID := req.ConversationID
+		if targetConvID == "" && res != nil {
+			targetConvID = res.ConversationID
+		}
+		if targetConvID != "" {
+			brainArts := h.watcher.DetectBrainArtifacts(targetConvID, beforeBrainSnapshot)
 			res.Artifacts = append(res.Artifacts, brainArts...)
 		}
 	}

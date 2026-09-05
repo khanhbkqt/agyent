@@ -1626,3 +1626,58 @@ func TestEngine_Commands_ChannelAgnosticMarkdown(t *testing.T) {
 		})
 	}
 }
+
+func TestEngine_SchedulerEvents_PropagatesMediaContext(t *testing.T) {
+	eng, _, channel, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	err := eng.Start(ctx)
+	require.NoError(t, err)
+
+	expectedConvID := "conv-sched-9cf7c252"
+	expectedWS := "/Users/test/workspace"
+	expectedArtifacts := []domain.Attachment{
+		{
+			FileName: "be_na_photo.png",
+			FilePath: "/Users/test/workspace/be_na_photo.png",
+			Type:     "image",
+		},
+	}
+
+	task := domain.ScheduleTask{
+		ID:        "sched-9cf7c252",
+		AgentName: "agyent",
+		Title:     "Send Photo Task",
+		Prompt:    "Take a cute photo and send it",
+		ChatID:    "12345678",
+		Channel:   "telegram",
+	}
+
+	// 1. Trigger EventScheduleCompleted
+	eng.EventBus().AsyncEmit(ctx, domain.NewEvent(domain.EventScheduleCompleted, domain.ScheduleEventPayload{
+		Task:           task,
+		Response:       "Dạ em gửi anh ảnh nè!",
+		ConversationID: expectedConvID,
+		WorkspaceDir:   expectedWS,
+		Artifacts:      expectedArtifacts,
+	}))
+
+	// Wait for event handler to call channel.Send
+	require.Eventually(t, func() bool {
+		channel.mu.Lock()
+		defer channel.mu.Unlock()
+		return len(channel.sent) >= 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	channel.mu.Lock()
+	sentMsg := channel.sent[len(channel.sent)-1]
+	channel.mu.Unlock()
+
+	assert.Equal(t, expectedConvID, sentMsg.ConversationID, "OutboundMessage must contain ConversationID")
+	assert.Equal(t, expectedWS, sentMsg.WorkspaceDir, "OutboundMessage must contain WorkspaceDir")
+	require.Len(t, sentMsg.Attachments, 1, "OutboundMessage must contain Attachments")
+	assert.Equal(t, "be_na_photo.png", sentMsg.Attachments[0].FileName)
+	assert.Equal(t, "agyent", sentMsg.AgentName)
+	assert.Equal(t, "12345678", sentMsg.ChatID)
+}

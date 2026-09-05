@@ -495,26 +495,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 
 	sentPaths := make(map[string]bool)
 
-	// 1. Send outbound attachments if present
-	if len(msg.Attachments) > 0 && mediaMgr != nil {
-		var domainAtts []domain.Attachment
-		for _, att := range msg.Attachments {
-			normPath := filepath.Clean(filepath.FromSlash(att.FilePath))
-			sentPaths[normPath] = true
-			domainAtts = append(domainAtts, domain.Attachment{
-				FileName: att.FileName,
-				FilePath: normPath,
-				MIMEType: att.MIMEType,
-				Type:     att.Type,
-				Caption:  att.Caption,
-			})
-		}
-		if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot); err != nil {
-			slog.ErrorContext(ctx, "Failed to upload outbound message attachments", "chat_id", chatID, "error", err)
-		}
-	}
-
-	// 2. Extract any embedded media from text and clean text
+	// 1. Extract any embedded media from text and clean text first (preserves human markdown captions)
 	textToSend := msg.Text
 	if textToSend != "" {
 		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, msg.WorkspaceDir, msg.ConversationID)
@@ -533,6 +514,29 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 			}
 		}
 		textToSend = cleanedText
+	}
+
+	// 2. Send any remaining unreferenced outbound attachments from msg.Attachments
+	if len(msg.Attachments) > 0 && mediaMgr != nil {
+		var domainAtts []domain.Attachment
+		for _, att := range msg.Attachments {
+			normPath := filepath.Clean(filepath.FromSlash(att.FilePath))
+			if !sentPaths[normPath] {
+				sentPaths[normPath] = true
+				domainAtts = append(domainAtts, domain.Attachment{
+					FileName: att.FileName,
+					FilePath: normPath,
+					MIMEType: att.MIMEType,
+					Type:     att.Type,
+					Caption:  att.Caption,
+				})
+			}
+		}
+		if len(domainAtts) > 0 {
+			if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot); err != nil {
+				slog.ErrorContext(ctx, "Failed to upload outbound message attachments", "chat_id", chatID, "error", err)
+			}
+		}
 	}
 
 	if textToSend == "" {
