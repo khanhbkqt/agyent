@@ -1643,12 +1643,11 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
 
-		errMsg := strings.TrimSpace(payload.Error)
-		if errMsg == "" {
-			errMsg = strings.TrimSpace(task.LastError)
-		}
-		if errMsg == "" {
-			errMsg = "Unknown execution error"
+		errMsg := formatScheduleFailureError(payload.Error)
+		if errMsg == "" || errMsg == "Execution timed out or aborted without diagnostic output" {
+			if task.LastError != "" {
+				errMsg = formatScheduleFailureError(task.LastError)
+			}
 		}
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
@@ -1746,4 +1745,23 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 func extractChatIDFromSessionKey(sessionKey string) string {
 	return domain.ExtractChatIDFromSessionKey(sessionKey)
+}
+
+func formatScheduleFailureError(rawErr string) string {
+	raw := strings.TrimSpace(rawErr)
+	if raw == "" {
+		return "Execution timed out or aborted without diagnostic output"
+	}
+	switch {
+	case strings.Contains(raw, "context deadline exceeded") || strings.Contains(raw, "signal: killed"):
+		return fmt.Sprintf("Execution timed out: %s", raw)
+	case strings.Contains(raw, "TOOL_DEADLINE_EXCEEDED"):
+		return fmt.Sprintf("Tool deadline exceeded: %s", raw)
+	case strings.Contains(raw, "database is locked") || strings.Contains(raw, "busy_timeout"):
+		return fmt.Sprintf("Database lock contention: %s", raw)
+	case strings.Contains(raw, "session lock"):
+		return fmt.Sprintf("Session lock acquisition failed: %s", raw)
+	default:
+		return raw
+	}
 }

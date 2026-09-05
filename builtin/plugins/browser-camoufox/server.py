@@ -905,7 +905,7 @@ def execute_tool_via_daemon(port: int, name: str, args: Dict[str, Any]) -> Any:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=35.0) as resp:
+        with urllib.request.urlopen(req, timeout=70.0) as resp:
             body = resp.read().decode("utf-8")
             data = json.loads(body)
             if data.get("error"):

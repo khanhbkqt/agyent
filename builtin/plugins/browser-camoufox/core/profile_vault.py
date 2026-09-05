@@ -7,6 +7,8 @@ or in workspace <workspace>/.plugins/camoufox/profiles/{profile_name}/.
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -125,15 +127,115 @@ class ProfileVault:
                         return True
         return False
 
+    def find_profile_processes(
+        self,
+        profile_name: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> List[int]:
+        """
+        Discovers PIDs of active or orphaned browser processes using this profile's data_dir.
+        Targets only processes matching the exact data_dir path to prevent cross-agent interference.
+        """
+        data_dir = self.get_user_data_dir(profile_name, agent_name=agent_name, workspace_dir=workspace_dir)
+        pids: List[int] = []
+
+        # 1. Check psutil if available
+        try:
+            import psutil
+            for proc in psutil.process_iter(["pid", "cmdline", "name"]):
+                try:
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    pname = (proc.info.get("name") or "").lower()
+                    if data_dir in cmdline or (("camoufox" in pname or "firefox" in pname) and data_dir in cmdline):
+                        pids.append(proc.info["pid"])
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if pids:
+                return list(set(pids))
+        except ImportError:
+            pass
+
+        # 2. Cross-platform fallback using OS tools
+        if sys.platform != "win32":
+            try:
+                res = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3)
+                for line in res.stdout.splitlines():
+                    if data_dir in line:
+                        parts = line.strip().split(None, 1)
+                        if parts and parts[0].isdigit():
+                            pid = int(parts[0])
+                            if pid != os.getpid():
+                                pids.append(pid)
+            except Exception:
+                pass
+        else:
+            try:
+                cmd = f'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like \'*{data_dir}*\' }} | Select-Object -ExpandProperty ProcessId"'
+                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+                for line in res.stdout.splitlines():
+                    s = line.strip()
+                    if s.isdigit():
+                        pid = int(s)
+                        if pid != os.getpid():
+                            pids.append(pid)
+            except Exception:
+                pass
+
+        return list(set(pids))
+
+    def kill_profile_processes(
+        self,
+        profile_name: str,
+        agent_name: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
+    ) -> int:
+        """
+        Forcefully terminates all browser processes tied to this profile's data_dir.
+        Uses targeted PID signaling (SIGTERM -> SIGKILL) to protect other agents from collateral damage.
+        """
+        pids = self.find_profile_processes(profile_name, agent_name=agent_name, workspace_dir=workspace_dir)
+        killed = 0
+        for pid in pids:
+            if pid == os.getpid():
+                continue
+            if sys.platform != "win32":
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    continue
+            else:
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=3)
+                    killed += 1
+                except Exception:
+                    pass
+
+        # Wait briefly then force SIGKILL on any remaining POSIX processes
+        if sys.platform != "win32" and pids:
+            time.sleep(0.2)
+            for pid in pids:
+                if pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    killed += 1
+                except (ProcessLookupError, OSError):
+                    pass
+
+        return killed
+
     def clean_stale_locks(
         self,
         profile_name: str,
         agent_name: Optional[str] = None,
         workspace_dir: Optional[str] = None,
+        force: bool = False,
     ) -> bool:
         """
-        Detects and removes orphan/stale Firefox lock files if no active process holds the file lock.
-        Returns True if any stale lock was cleaned.
+        Detects and removes orphan/stale Firefox lock files.
+        If force=True or if orphan processes are detected holding the lock,
+        terminates the orphan processes and removes the lock to allow profile reclamation.
         """
         data_dir = self.get_user_data_dir(profile_name, agent_name=agent_name, workspace_dir=workspace_dir)
         lock_files = [
@@ -141,6 +243,11 @@ class ProfileVault:
             os.path.join(data_dir, ".parentlock"),
             os.path.join(data_dir, "lock"),
         ]
+
+        if force:
+            self.kill_profile_processes(profile_name, agent_name=agent_name, workspace_dir=workspace_dir)
+            time.sleep(0.1)
+
         cleaned = False
         for lock_file in lock_files:
             if not os.path.exists(lock_file):
@@ -160,23 +267,35 @@ class ProfileVault:
                             except OSError:
                                 pass
                         except (IOError, BlockingIOError, PermissionError, OSError):
-                            # Actively locked by running process
-                            pass
+                            if force:
+                                try:
+                                    os.remove(lock_file)
+                                    cleaned = True
+                                except OSError:
+                                    pass
                 except Exception:
-                    pass
+                    if force:
+                        try:
+                            os.remove(lock_file)
+                            cleaned = True
+                        except OSError:
+                            pass
             else:
                 try:
-                    # On Windows, try opening in append mode
                     with open(lock_file, "a"):
                         pass
-                    # If open succeeds, file is not locked by another process
                     try:
                         os.remove(lock_file)
                         cleaned = True
                     except OSError:
                         pass
                 except (IOError, OSError, PermissionError):
-                    pass
+                    if force:
+                        try:
+                            os.remove(lock_file)
+                            cleaned = True
+                        except OSError:
+                            pass
         return cleaned
 
     def get_session_meta_path(

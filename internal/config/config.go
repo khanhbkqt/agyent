@@ -80,6 +80,14 @@ type StorageConfig struct {
 	HeartbeatIntervalSeconds float64 `yaml:"heartbeat_interval_seconds" json:"heartbeat_interval_seconds"`
 }
 
+// SchedulerConfig contains configuration for scheduled tasks and heartbeats.
+type SchedulerConfig struct {
+	Enabled                   bool `yaml:"enabled" json:"enabled"`
+	PollIntervalSeconds       int  `yaml:"poll_interval_seconds" json:"poll_interval_seconds"`
+	DefaultTaskTimeoutSeconds int  `yaml:"default_task_timeout_seconds" json:"default_task_timeout_seconds"`
+	HeartbeatTimeoutSeconds   int  `yaml:"heartbeat_timeout_seconds" json:"heartbeat_timeout_seconds"`
+}
+
 // LoggingConfig contains structured logging configuration.
 type LoggingConfig struct {
 	Level  string `yaml:"level" json:"level"`   // "debug" | "info" | "warn" | "error"
@@ -187,6 +195,7 @@ type Config struct {
 	Telegram  TelegramConfig                `yaml:"telegram" json:"telegram"`
 	AGY       AGYConfig                     `yaml:"agy" json:"agy"`
 	Storage   StorageConfig                 `yaml:"storage" json:"storage"`
+	Scheduler SchedulerConfig               `yaml:"scheduler" json:"scheduler"`
 	Logging   LoggingConfig                 `yaml:"logging" json:"logging"`
 	Evolution EvolutionConfig               `yaml:"evolution" json:"evolution"`
 	Subagent  SubagentConfig                `yaml:"subagent" json:"subagent"`
@@ -230,6 +239,12 @@ func DefaultConfig() *Config {
 			AgentsDir:                "~/.agyent",
 			DebounceSeconds:          2.0,
 			HeartbeatIntervalSeconds: 4.0,
+		},
+		Scheduler: SchedulerConfig{
+			Enabled:                   true,
+			PollIntervalSeconds:       1,
+			DefaultTaskTimeoutSeconds: 300,
+			HeartbeatTimeoutSeconds:   120,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

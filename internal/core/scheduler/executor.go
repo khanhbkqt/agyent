@@ -56,8 +56,15 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	}
 
 	timeout := 1800 * time.Second
-	if e.cfg != nil && e.cfg.AGY.DefaultTimeoutSeconds > 0 {
-		timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
+	if e.cfg != nil {
+		if e.cfg.Scheduler.DefaultTaskTimeoutSeconds > 0 {
+			timeout = time.Duration(e.cfg.Scheduler.DefaultTaskTimeoutSeconds) * time.Second
+		} else if e.cfg.AGY.DefaultTimeoutSeconds > 0 {
+			timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
+		}
+	}
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
 	}
 
 	promptText := formatBackgroundPrompt(task.Title, task.Prompt)
@@ -168,8 +175,15 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	}
 
 	timeout := 180 * time.Second
-	if e.cfg != nil && e.cfg.AGY.DefaultTimeoutSeconds > 0 {
-		timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
+	if e.cfg != nil {
+		if e.cfg.Scheduler.HeartbeatTimeoutSeconds > 0 {
+			timeout = time.Duration(e.cfg.Scheduler.HeartbeatTimeoutSeconds) * time.Second
+		} else if e.cfg.AGY.DefaultTimeoutSeconds > 0 {
+			timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
+		}
+	}
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
 	}
 
 	promptText := formatHeartbeatPrompt(hb.AgentName, promptDirectives)
