@@ -1,5 +1,9 @@
 # Milestone 2: Pure-Go SQLite Storage Engine & Concurrency Locks
 
+> **Document status:** Historical
+> **Code authority:** SQLite adapter/migrations, concurrency core and current storage reference
+> **Last verified:** 2026-09-05
+
 > **Technical Specification & Evidence Dashboard**  
 > **Milestone ID:** 2  
 > **Milestone Name:** Storage & Sessions  

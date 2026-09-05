@@ -1,5 +1,9 @@
 # Master Roadmap - agyent Project
 
+> **Document status:** Historical
+> **Code authority:** current code, tests, migrations and `docs/architecture.md`
+> **Last verified:** 2026-09-05
+
 Master roadmap and overall progress tracking dashboard for **agyent**, upgraded and adapted for **Real-Time Streaming Mode (`stream-json`)**.
 
 ---

@@ -1,5 +1,9 @@
 # Milestone 6: Orchestration Engine, Stream Toggle, Daemon Runner & Release Packaging
 
+> **Document status:** Historical
+> **Code authority:** engine, composition root, Makefile and current documentation
+> **Last verified:** 2026-09-05
+
 > **Status:** Done (100%)  
 > **Target Version:** `v1.0.0`  
 > **Review Status:** Approved by Principal Architect & Audited by QC Lead  

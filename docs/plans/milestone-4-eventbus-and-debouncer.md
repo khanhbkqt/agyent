@@ -1,5 +1,9 @@
 # Milestone 4: Central EventBus, Sliding Window Debouncer & Stream Routing
 
+> **Document status:** Historical
+> **Code authority:** EventBus/debouncer core and current architecture/reference documents
+> **Last verified:** 2026-09-05
+
 > **Production-Grade Technical Specification (Principal / TechLead Architect Specification & Audit Sign-Off Dashboard)**  
 > **Milestone ID:** 4  
 > **Milestone Name:** Central EventBus, Sliding Window Debouncer & Stream Routing  

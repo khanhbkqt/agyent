@@ -1,5 +1,9 @@
 # Milestone 1: Core Foundation & Microkernel Architecture
 
+> **Document status:** Historical
+> **Code authority:** current code, tests and Canonical/Reference documents
+> **Last verified:** 2026-09-05
+
 > **Technical Specification & Evidence Dashboard**  
 > **Milestone ID:** 1  
 > **Milestone Name:** Core Foundation  

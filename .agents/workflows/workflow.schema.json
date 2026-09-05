@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agyent://workflow.schema.json",
+  "title": "agyent engineering workflow graph",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "id",
+    "title",
+    "intent",
+    "instruction_priority",
+    "entrypoint",
+    "terminal_nodes",
+    "documentation_node",
+    "final_gate",
+    "required_reviewers",
+    "review_policy",
+    "nodes"
+  ],
+  "properties": {
+    "$schema": { "const": "./workflow.schema.json" },
+    "schema_version": { "const": 1 },
+    "id": { "enum": ["debug", "bugfix", "change", "new-feature"] },
+    "title": { "type": "string", "minLength": 1 },
+    "intent": { "type": "string", "minLength": 1 },
+    "instruction_priority": { "type": "string", "minLength": 1 },
+    "entrypoint": { "type": "string", "minLength": 1 },
+    "terminal_nodes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "documentation_node": { "type": "string", "minLength": 1 },
+    "final_gate": { "type": "string", "minLength": 1 },
+    "required_reviewers": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "review_policy": {
+      "type": "object",
+      "required": ["independence", "blocking_severities", "finding_schema"],
+      "properties": {
+        "independence": { "type": "string", "minLength": 1 },
+        "blocking_severities": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["P0", "P1", "P2", "P3"] }
+        },
+        "finding_schema": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/node" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": [
+        "kind",
+        "may_edit",
+        "system_prompt",
+        "guide",
+        "skills",
+        "tools",
+        "inputs",
+        "outputs",
+        "gate",
+        "transitions"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "intake",
+            "evidence",
+            "analysis",
+            "design",
+            "implementation",
+            "verification",
+            "documentation",
+            "review",
+            "convergence",
+            "final"
+          ]
+        },
+        "may_edit": { "type": "boolean" },
+        "system_prompt": { "type": "string", "minLength": 40 },
+        "guide": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "skills": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "join": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "gate": {
+          "type": "object",
+          "required": ["requires", "acceptance"],
+          "properties": {
+            "requires": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "acceptance": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        },
+        "transitions": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

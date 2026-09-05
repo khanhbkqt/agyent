@@ -1,4 +1,8 @@
-# OpenClaw Standard Message & Media Pipeline
+# agyent Message and Media Pipeline
+
+> **Document status:** Reference
+> **Code authority:** Telegram adapter, debouncer, core engine, AGY watcher/throttler
+> **Last verified:** 2026-09-05
 
 This document details the 6-stage message processing pipeline, sliding-window message debouncing, Telegram Topics handling, smart Markdown/HTML chunking (preserving code blocks), and bidirectional media synchronization.
 
@@ -61,8 +65,8 @@ When a user uploads code files, logs, or photos:
 1. **Ingestion & Staging:** Gateway downloads the file into the staging cache (`~/.agyent/staging/<safe_name>`) with Windows reserved name and path traversal sanitization.
 2. **Turn Workspace Relocation:** When the Core Engine resolves the active session's workspace (`agent.WorkspacePath` or `proj.ProjectPath`), `WorkspacePort` automatically relocates or copies the staged files into `<workspaceDir>/uploads/<timestamp>_<safe_name>`.
 3. **Git Isolation:** Automatically provisions `<workspaceDir>/uploads/.gitignore` containing `*\n!.gitignore\n` to prevent personal/temporary uploads from polluting git tracking in repository workspaces.
-4. **Frictionless AGY Execution & Guardrails:** Because the attachments reside directly within `<workspaceDir>`, AGY CLI (`--add-dir <workspaceDir>`) and Universal Security Gateway (`PathJail`) grant 100% direct access without triggering permission prompts or sandbox blocks.
-5. **Level 4 Prompt Injection:** Formats attachments strictly within Level 4 to preserve KV-cache prefix hit rates (85–95%):
+4. **Frictionless AGY Execution & Guardrails:** Because the attachments reside within `<workspaceDir>`, AGY CLI (`--add-dir <workspaceDir>`) can access them subject to the configured security policy and PathJail checks.
+5. **Level 4 Prompt Injection:** Formats attachments strictly within Level 4 so dynamic paths do not invalidate the stable Level 0–3 prefix:
    ```text
    [ATTACHED FILES RECEIVED]
    - File: /absolute/path/to/project/uploads/1724930123_error.log (Type: document, Size: 1024 bytes)
@@ -84,7 +88,7 @@ When `queue_mode: "append"` is configured (or toggled via `/mode append`), incom
 3. **Safe Checkpoint Boundary:** `agy` CLI finishes its active atomic sub-turn/tool (e.g. `write_to_file`, `git commit`), flushes its `transcript.jsonl` cleanly, emits `status: "INTERRUPTED"`, and exits.
 4. **GraceTimeout Fallback:** If a long-running tool (e.g. heavy compilation) does not exit within `grace_timeout_seconds` (default 3.0s), the engine automatically falls back to controlled OS process tree termination (`JobGuard` / `killProcessTree`).
 5. **UI Stream Finalization:** `DeliveryThrottler` appends a pause indicator (`⏸️ Đã tạm dừng lượt này để nhận chỉ dẫn mới...`), drains background workers, and cleanly finalizes the message.
-6. **Continuation Handover:** Turn 2 acquires the `SessionLockManager` lock without race conditions and seamlessly continues using the established `--conversation <id>`, preserving Level 0–3 KV-cache prefix invariance (85–95% cache hit rates).
+6. **Continuation Handover:** Turn 2 acquires the `SessionLockManager` lock and continues using the established `--conversation <id>`, preserving Level 0–3 prefix invariance. Provider cache behavior is measured separately.
 
 ---
 

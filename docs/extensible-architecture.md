@@ -1,5 +1,14 @@
 # Modular Extensible Architecture (Microkernel & Ports/Adapters)
 
+> **Document status:** Proposed
+> **Code authority:** current extension seams in `internal/core/ports` and `internal/adapters/channels/composite`
+> **Last verified:** 2026-09-05
+
+This document illustrates extension directions. Telegram is the only production
+channel adapter, and several interface snippets below are conceptual rather than
+current Go signatures. Use `docs/architecture.md` and the port source for current
+implementation work.
+
 This document describes the software design of **agyent** following the **Microkernel pattern combined with Ports & Adapters in Go**, detailing synchronous hook execution (`SyncEmit`) and asynchronous event dispatching (`AsyncEmit`).
 
 ---

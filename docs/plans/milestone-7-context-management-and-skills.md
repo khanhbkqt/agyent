@@ -1,5 +1,9 @@
 # Milestone 7: Context Management, Skills Subsystem & Extensible Plugins
 
+> **Document status:** Historical
+> **Code authority:** context/plugin/MCP adapters and current plugin/context references
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification and implementation design for **Milestone 7: Context Management, Progressive Skills, Dynamic MCP Syncing & Extensible Plugins** of the **`agyent`** system.
 
 ---

@@ -1,5 +1,9 @@
 # Multi-Project Management & Context Scope
 
+> **Document status:** Reference
+> **Code authority:** project/session domain and repositories, engine resolver/commands
+> **Last verified:** 2026-09-05
+
 This document details the separation between **Global Chat Mode** and **In-Project Codebase Mode**, along with group-aware context sharing capabilities.
 
 ---

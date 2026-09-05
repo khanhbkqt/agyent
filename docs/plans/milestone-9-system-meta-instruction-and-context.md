@@ -1,5 +1,9 @@
 # Milestone 9: System Meta-Instruction & Context Architecture
 
+> **Document status:** Historical
+> **Code authority:** prompt bootstrap/context resolver and current prompt/context references
+> **Last verified:** 2026-09-05
+
 Technical specification and execution plan for Milestone 9, reviewed and refined by the **Principal AI Systems Architect**, focusing on anchoring the System Meta-Instruction and implementing a production-grade two-tier memory read pipeline.
 
 ---

@@ -1,5 +1,9 @@
 # AGY CLI Harness Technical Specification (Go Subprocess Controller)
 
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/harness/agy`, runner port, execution service
+> **Last verified:** 2026-09-05
+
 This document provides a detailed technical specification of how the Gateway written in **Go** orchestrates, supervises, and captures results from the `agy` CLI binary, including defense-in-depth architectural mechanisms.
 
 ---
@@ -114,7 +118,7 @@ flowchart TD
 
 1. **Context Watchdog & Process Group Killing:**
    - When execution exceeds timeout (default 1800s) or receives Context cancellation:
-     - **On Linux/macOS:** Group processes via `SysProcAttr: &syscall.SysProcAttr{Setpgid: true}` and dispatch `syscall.SIGKILL` to the negative PID (`-cmd.Process.Pid`), guaranteeing no orphan child processes survive.
+     - **On Linux/macOS:** Group processes via `SysProcAttr: &syscall.SysProcAttr{Setpgid: true}` and dispatch `syscall.SIGKILL` to the negative PID (`-cmd.Process.Pid`). OS-specific tests must verify that descendants terminate.
      - **On Windows:** Attach to **Windows Job Objects** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) or fallback to tree termination via `exec.Command("taskkill", "/F", "/T", "/PID", pid).Run()` to eliminate all spawned child processes (node, python, git, etc.).
 2. **Emergency Unlock Command (`/force_unlock`):**
    - If a background process hangs or locks unexpectedly, Admins can issue `/force_unlock` on Telegram to immediately release the `SessionLockManager`.
@@ -176,4 +180,3 @@ When running in streaming mode with `queue_mode: "append"`, `Harness` implements
    - If the process fails to exit within `graceTimeout` (default 3.0s), the context cancellation handler invokes `killProcessTree` via Windows Kernel Job Objects or Unix PGID.
 3. **Lossless Conversation Handover:**
    - Because `agy.exe` checkpoints its state before exit, subsequent turns continue seamlessly with `--conversation <id>`, preserving Level 0–3 Gemini KV-cache hit rates.
-

@@ -1,5 +1,9 @@
 # Milestone 14: Universal AI Security Gateway & Guardrails (Synchronous Lifecycle Interception & Defense-in-Depth)
 
+> **Document status:** Historical
+> **Code authority:** auth/execution core, security adapters/IPC and current reference document
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification and step-by-step implementation plan for **Milestone 14: Universal AI Security Gateway, Antigravity PreToolUse Hook Bridge, Non-Blocking Synchronous HITL, Sliding-Window DLP, Filesystem Jailing, and Sub-Agent Governance** of the **`agyent`** system.
 
 ---

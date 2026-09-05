@@ -1,5 +1,13 @@
 ﻿# Multi-Account Profile Virtualization & Pool Architecture
 
+> **Document status:** Proposed
+> **Code authority:** none; account-pool packages and migrations described here are not implemented
+> **Last verified:** 2026-09-05
+
+This is an unshipped design. Do not create or use the referenced account domain,
+port, adapter, migration, or CLI commands unless the user explicitly requests the
+feature and accepts a current design review.
+
 This document provides the comprehensive technical specification and architectural blueprint for implementing **Multi-Account Profile Virtualization**, **Account Pool Management**, and **Auto-Cooldown Failover** for the `agy` CLI Harness within `agyent`.
 
 ---
@@ -65,7 +73,9 @@ All virtualized account profiles reside under the `agyent` data directory with s
 ## 3. Account Pool & Rotation Strategies
 
 ### 3.1. Strategy A: Sticky Session + Auto-Cooldown Failover (Default & Recommended)
-To maximize **Prefix KV-Cache Hit Rates (85–95%)** on Gemini models, turns within the same conversation must remain pinned to the same account:
+To preserve provider-side prefix-cache eligibility, turns within the same
+conversation should remain pinned to the same account. Actual cache behavior
+must be measured for the selected provider and model:
 
 ```mermaid
 sequenceDiagram
@@ -303,7 +313,10 @@ sequenceDiagram
 
 > [!TIP]
 > **Why Sticky Session is Superior:**
-> Google Gemini's prefix caching is scoped to the individual Google account. Rotating accounts per-turn invalidates prompt prefix reuse (Levels 0–3: Foundation, Identity, Directives, Skills), quadrupling token costs. Sticky session maintains maximal cache efficiency while still guaranteeing 100% uptime through auto-failover.
+> This proposed design assumes cache reuse is account-scoped. Validate that
+> assumption against the selected provider before implementation. Sticky
+> sessions are intended to reduce avoidable prefix invalidation; auto-failover
+> improves availability but cannot guarantee uptime.
 
 ---
 

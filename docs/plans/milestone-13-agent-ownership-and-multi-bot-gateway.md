@@ -1,5 +1,9 @@
 # Milestone 13: Multi-Bot Lifecycle Management & Agent Ownership (Granular RBAC)
 
+> **Document status:** Historical
+> **Code authority:** auth policy, agent repository, Telegram adapter and current reference document
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification and implementation plan for **Milestone 13: Multi-Bot Lifecycle Pools, Dedicated Agent Binding, Per-Agent Ownership, Granular RBAC, and Namespaced Session Keys** of the **`agyent`** system.
 
 ---

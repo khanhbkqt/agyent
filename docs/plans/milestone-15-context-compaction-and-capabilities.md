@@ -1,5 +1,9 @@
 # Milestone 15: Model Context Capabilities & Autonomous Context Compaction Engine
 
+> **Document status:** Historical
+> **Code authority:** compactor, model capabilities, prompt bootstrap and current references
+> **Last verified:** 2026-09-05
+
 This milestone delivers **Explicit Model Context Window Capabilities**, the **Autonomous Context Compactor Engine**, the **`/compact` Slash Command**, and the **Post-Turn Auto-Compact Watchdog** in `agyent`.
 
 ---

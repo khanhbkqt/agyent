@@ -1,5 +1,9 @@
 # Milestone 5: Telegram Adapter, Streaming Delivery & Live Chat Actions
 
+> **Document status:** Historical
+> **Code authority:** Telegram adapter tests/code and current message/stream references
+> **Last verified:** 2026-09-05
+
 > **Production-Grade Technical Specification (Principal / TechLead Architect Specification & Audit Sign-Off Dashboard)**  
 > **Milestone ID:** 5  
 > **Milestone Name:** Telegram Adapter, Streaming Delivery & Live Chat Actions  

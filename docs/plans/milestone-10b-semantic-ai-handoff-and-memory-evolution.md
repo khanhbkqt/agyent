@@ -1,5 +1,9 @@
 # Milestone 10B: Semantic AI Handoff & Single-Pass Unified Memory Evolution
 
+> **Document status:** Historical
+> **Code authority:** evolution adapter, engine integration and current reference document
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification, empirical benchmark findings, architectural review feedback, and implementation plan for **Semantic AI Handoff, Single-Pass Memory Evolution, Configurable Quota Shields, and `/learn` Slash Commands** in `agyent`.
 
 ---

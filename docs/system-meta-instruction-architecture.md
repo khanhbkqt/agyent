@@ -1,5 +1,9 @@
 # System Meta-Instruction & Runtime Foundation Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/core/engine/bootstrap.go`, context resolver and bootstrap tests
+> **Last verified:** 2026-09-05
+
 This document specifies the **System Meta-Instruction Layer** within the `agyent` ecosystem. This design establishes an ontological and runtime anchor for the LLM, ensuring the agent remains conscious of its identity, execution environment, toolset, and operational protocols on every turn.
 
 ---
@@ -64,8 +68,8 @@ LLMs assign the highest attention weights to the beginning of the token sequence
 
 ### 3.2. KV-Cache Prefix Preservation
 - Advanced LLM models (Gemini 1.5/2.0, Claude 3.5, GPT-4o) support **Prefix Caching**.
-- By anchoring a **100% static** `[SYSTEM RUNTIME FOUNDATION]` block at Index 0, the prefix cache hit rate approaches **100%** for this block across all user turns and sessions.
-- **Outcome:** Substantially reduces **Time To First Token (TTFT)** and saves token costs (0.25x Cache Read pricing).
+- Keeping `[SYSTEM RUNTIME FOUNDATION]` static at Index 0 makes the shared prefix eligible for provider-side cache reuse.
+- **Outcome:** Cache behavior, TTFT, and pricing remain provider- and model-dependent; measure them instead of encoding a guaranteed hit rate or discount.
 
 ### 3.3. Accurate Progressive Skills Triggering
 The meta-instruction explicitly instructs: *The skills index contains lightweight headers; when a user task matches a specialized skill, the agent must proactively view the corresponding `SKILL.md` before executing.* This eliminates guesswork during tool calling.

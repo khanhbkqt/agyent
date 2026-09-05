@@ -1,5 +1,9 @@
 # Agent Lifecycle & Genesis Bootstrap Protocol
 
+> **Document status:** Reference
+> **Code authority:** engine bootstrap/commands, workspace adapter, configuration wizard
+> **Last verified:** 2026-09-05
+
 This document describes the lifecycle of an agent from birth (`uninitialized`) to operational readiness (`initialized`), along with the creation mechanism for the 4 core knowledge pillars.
 
 ---

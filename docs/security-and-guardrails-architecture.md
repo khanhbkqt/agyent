@@ -1,5 +1,9 @@
 # Universal AI Security Gateway & Guardrails Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/core/auth`, `internal/core/execution`, `internal/adapters/security`, hook bridge CLI
+> **Last verified:** 2026-09-05
+
 This document provides the comprehensive technical specification for the **Universal AI Security Gateway & Guardrails Subsystem** in **agyent**. It details the multi-layer defense-in-depth model, Antigravity Native Hook Bridge (`PreToolUse`), non-blocking Human-In-The-Loop (HITL) state machine, filesystem jailing, sub-agent governance, sliding-window DLP, indirect prompt injection filtering, frictionless UX, and configuration schema.
 
 ---
@@ -30,7 +34,7 @@ flowchart TB
     subgraph Channels ["1. MESSAGING SURFACE (Inbound RBAC)"]
         TG_Admin["Telegram (Admin ID)"]
         TG_Group["Telegram Group / Forum Topic"]
-        Discord["Discord / Slack"]
+        FutureChannels["Future channel adapters"]
     end
 
     subgraph GatewayCore ["2. AGYENT GATEWAY DAEMON (Go Core Control Plane)"]
@@ -51,7 +55,7 @@ flowchart TB
     subgraph AGYSubstrate ["3. ISOLATED EXECUTION SUBSTRATE (Antigravity CLI)"]
         AGY_CLI["AGY Process (--output-format stream-json)"]
         WorkspaceHookConfig["Workspace Hook Config (<workspaceDir>/.agents/hooks.json)"]
-        HookBridge["agyent-hook Binary (PreToolUse Handler)"]
+        HookBridge["agyent hook-bridge (PreToolUse Handler)"]
         
         subgraph ToolExecutionGate ["Checkpoint 3 & 4: Synchronous Pre-Execution Gate"]
             PathJail["Virtual Filesystem Jail & Canonical Resolver"]
@@ -94,7 +98,7 @@ flowchart TB
 - **Absolute Forbidden Blacklist:** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `<workspaceDir>/.agents/hooks.json` (prevents self-tampering), `C:\Windows`, and `/etc`.
 
 ### Checkpoint 3: Synchronous Pre-Execution Tool Interceptor (Native Hook)
-- **Lifecycle Hook Integration:** Connects directly into Antigravity's `PreToolUse` hook via `agyent-hook` binary.
+- **Lifecycle Hook Integration:** Connects Antigravity `PreToolUse` and `PostToolUse` hooks through the `agyent hook-bridge` CLI command.
 - **Evaluates Tool Calls Synchronously:**
   - **`run_command`:** Evaluates CommandLine against the Shell Execution Profile.
   - **`write_to_file` / `replace_file_content` / `view_file`:** Evaluates TargetFile against Filesystem Jail.
@@ -139,9 +143,9 @@ flowchart TB
 
 | Architectural Challenge | Risk / Bottleneck | Gateway Engineering Solution |
 | :--- | :--- | :--- |
-| **Tool Interception Latency** | Hook execution overhead slows down agent responsiveness. | **Sub-5ms IPC Protocol:** `agyent-hook` connects to Gateway Daemon via local IPC (Unix Domain Socket / Windows Named Pipe) with zero cold-start process overhead. |
+| **Tool Interception Latency** | Hook execution overhead slows down agent responsiveness. | **Local IPC path:** `agyent hook-bridge` connects to the gateway over a Unix domain socket or Windows transport; measure latency in the target environment rather than treating a fixed number as guaranteed. |
 | **Session State Deadlocks** | Holding session FIFO mutex while waiting for Telegram HITL blocks administrative queries. | **Non-Blocking Turn Suspend:** Session enters `WAITING_HITL` state; user can issue `/status` or `/cancel`; new conversational turns are safely queued until current turn is resolved or aborted. |
-| **Prefix KV-Cache Preservation** | Dynamic security context injected at Levels 0–3 busts Gemini KV-cache hit rate (85–95%). | **Level 4 Injection Invariant:** Dynamic security notices (e.g., granted permissions) are appended strictly at Level 4. |
+| **Prefix KV-Cache Preservation** | Dynamic security context injected at Levels 0–3 invalidates the otherwise stable prefix. | **Level 4 Injection Invariant:** Dynamic security notices (e.g., granted permissions) are appended strictly at Level 4. Measure cache behavior for the configured provider. |
 | **Blast Radius & Host Isolation** | Global hook pollution breaking host IDE or external developer CLI sessions. | **Workspace-Scoped Hook Mounting:** Hook configuration is isolated strictly to `<workspaceDir>/.agents/hooks.json` and protected from write access via PathJail, leaving `~/.gemini/config/` pristine. |
 | **Subprocess Zombie Leaks** | Subagent processes surviving unexpected Gateway crashes or timeouts. | **Kernel Job Object Watchdog:** Enforce OS Job Objects on Windows (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and POSIX process groups (`syscall.SIGKILL` to negative PID). |
 
@@ -155,7 +159,7 @@ sequenceDiagram
     participant User as 👤 Admin User (Telegram)
     participant Engine as ⚙️ Gateway Engine
     participant AGY as 🤖 AGY CLI Subprocess
-    participant Hook as 🛡️ agyent-hook (PreToolUse)
+    participant Hook as 🛡️ agyent hook-bridge (PreToolUse)
     participant IPC as 🔌 IPC Server (Gateway)
 
     Engine->>AGY: Execute Turn (stream-json)
@@ -229,7 +233,7 @@ When a sensitive tool execution is intercepted, the Gateway sends a formatted ca
 | 🔒 strict         | Hardened. Whitelist-only execution; all other actions   | Production Servers,  |
 |                   | denied; zero network egress to private IPs.             | Multi-tenant Hosts   |
 +-------------------+---------------------------------------------------------+----------------------+
-| 📖 read_only      | Immutable. 100% blocks all file writes and shell       | Code Auditing,       |
+| 📖 read_only      | Blocks the configured file-write and shell paths;       | Code Auditing,       |
 |                   | commands. Read-only codebase exploration only.          | Research Sub-agents  |
 +-------------------+---------------------------------------------------------+----------------------+
 ```
@@ -399,7 +403,7 @@ type SecurityManagerPort interface {
 }
 ```
 
-// HookIPCPort defines the IPC server interface communicating with agyent-hook binary.
+// HookIPCPort defines the IPC server interface used by the hook-bridge command.
 type HookIPCPort interface {
     Start(ctx context.Context) error
     Stop() error
@@ -411,7 +415,7 @@ type HITLApprovalPort interface {
     // RequestApproval sends an interactive card and suspends execution until user action or timeout.
     RequestApproval(ctx context.Context, req domain.ApprovalRequest) (bool, error)
     
-    // HandleCallback processes inline keyboard clicks from Telegram/Discord with strict RBAC verification.
+    // HandleCallback processes channel approval callbacks with strict RBAC verification.
     HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error
 }
 

@@ -1,5 +1,9 @@
 ﻿# Milestone 13: Smart Abort & Real-Time Steering (Append Mode)
 
+> **Document status:** Historical
+> **Code authority:** engine append-mode handling, runner interruption and current references
+> **Last verified:** 2026-09-05
+
 ## 1. Executive Summary
 
 Milestone 13 introduces **Real-Time Steering and Smart Abort (Append Mode)** to `agyent`. In previous releases, incoming messages while a turn was actively executing were placed in a sequential FIFO lock queue. Milestone 13 introduces an intelligent interruption mechanism where incoming steering messages safely interrupt in-flight turns at safe sub-turn/tool boundaries, emit `status: "INTERRUPTED"`, update the chat UI with a pause indicator, and immediately launch the next turn without race conditions or workspace corruption.

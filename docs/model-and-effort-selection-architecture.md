@@ -1,5 +1,9 @@
 # Dynamic Model & Reasoning Effort Selection Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/core/domain/model.go`, engine resolver/commands, AGY model parser
+> **Last verified:** 2026-09-05
+
 This document specifies the standardized architecture for **Model Selection** and **Reasoning Effort** support in the `agyent` ecosystem.
 
 ---

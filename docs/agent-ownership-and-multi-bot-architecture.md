@@ -1,5 +1,9 @@
 # Multi-Bot Gateway & Agent Ownership (RBAC) Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/core/auth`, `internal/core/engine/authorization.go`, agent repository, Telegram adapter
+> **Last verified:** 2026-09-05
+
 This document provides a comprehensive technical architecture and engineering specification for **Multi-Bot Gateway Management**, **Per-Agent Ownership**, **Granular Role-Based Access Control (RBAC)**, **Session Key Namespacing**, and **Fault-Tolerant Bot Lifecycle Pools** in **`agyent`**.
 
 ---
@@ -14,12 +18,12 @@ This document provides a comprehensive technical architecture and engineering sp
 
 ### 1.2. Core Architectural Objectives
 - **1-to-1 Dedicated Bot-Agent Binding:** Every bot instance is permanently and exclusively bound to a specific agent persona (`bind_agent`), eliminating persona conflicts, context bleed, and confusing persona switching commands (`/use`).
-- **Multi-Channel Scalability (Composite Mux):** 1 Agent persona and persistent memory (`MEMORY.md`, `SOUL.md`) can be seamlessly bound across multiple channels (Telegram, Zalo, Slack, Discord) via `CompositeChannelMux` and `domain.TargetContext`.
+- **Multi-Channel Extension Seam (Composite Mux):** An agent persona and persistent memory can be routed through `CompositeChannelMux` and `domain.TargetContext`. Telegram is implemented; Zalo, Slack, and Discord remain future adapters.
 - **Granular Agent Ownership (RBAC):** Every agent has a verified `OwnerID` (the creator's User ID). Access is governed by strict roles: `Owner/Admin`, `Operator`, `Viewer`, or `Public`.
 - **Fault-Isolated Multi-Bot Pool:** Each bot instance runs within an isolated Go goroutine with automatic panic recovery and error isolation.
-- **Session Key Namespacing (`channel:bot_id:chat_id[:thread_id]`):** Fully disambiguates concurrent sessions across different bots while maintaining 100% backward compatibility for legacy session keys.
+- **Session Key Namespacing (`channel:bot_id:chat_id[:thread_id]`):** Disambiguates concurrent sessions across bots. Compatibility with legacy keys must remain covered by parsing and migration tests.
 - **Hexagonal Core Security Gate:** All authorization logic is centralized in the Core Engine (`internal/core/engine/`), leaving channel adapters strictly responsible for message normalization.
-- **Zero-CGO & Prefix KV-Cache Preservation:** Pure-Go SQLite WAL persistence with strict Level 0–4 prompt hierarchy preservation, maintaining 85–95% cache hit rates on Gemini.
+- **Zero-CGO & Prefix KV-Cache Preservation:** Pure-Go SQLite WAL persistence with strict Level 0–4 prompt hierarchy preservation. Cache-hit behavior is provider-dependent and must be measured.
 
 ---
 
@@ -66,7 +70,7 @@ flowchart TB
     Bot1 --> Worker1
     Bot2 --> Worker2
     Bot3 --> Worker3
-    DiscordPort --> Normalizer
+    FutureChannelPort --> Normalizer
     Worker1 --> Normalizer
     Worker2 --> Normalizer
     Worker3 --> Normalizer
@@ -228,7 +232,7 @@ flowchart TD
 
 ## 5. Multi-Bot Lifecycle & Fault Isolation Pool
 
-In [`internal/adapters/channels/telegram/adapter.go`](file:///c:/Users/stevan.nguyen/Desktop/projects/agyent/internal/adapters/channels/telegram/adapter.go), the Telegram adapter manages an active pool of `gotgbot.Bot` clients:
+In [`internal/adapters/channels/telegram/adapter.go`](../internal/adapters/channels/telegram/adapter.go), the Telegram adapter manages an active pool of `gotgbot.Bot` clients:
 
 ```go
 type Adapter struct {
