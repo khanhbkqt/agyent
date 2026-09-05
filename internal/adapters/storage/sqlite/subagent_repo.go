@@ -261,6 +261,9 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 	if task.UpdatedAt.IsZero() {
 		task.UpdatedAt = now
 	}
+	if task.Status == "" {
+		task.Status = domain.TaskStatusPending
+	}
 
 	query := `
 		INSERT INTO subagent_tasks (
@@ -320,7 +323,7 @@ func (s *SQLiteStore) UpdateSubagentTaskProgress(ctx context.Context, id string,
 		    current_tool = ?,
 		    progress_message = ?,
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND status IN ('PENDING', 'RUNNING')
 	`
 	_, err := s.writer().ExecContext(ctx, query, step, tool, progressMsg, nowMs, id)
 	if err != nil {
@@ -338,7 +341,7 @@ func (s *SQLiteStore) UpdateSubagentTaskWaitingInput(ctx context.Context, id str
 		    pending_question = ?,
 		    sub_conversation_id = CASE WHEN ? != '' THEN ? ELSE sub_conversation_id END,
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND status = 'RUNNING'
 	`
 	_, err := s.writer().ExecContext(ctx, query, question, subConvID, subConvID, nowMs, id)
 	if err != nil {
@@ -348,6 +351,7 @@ func (s *SQLiteStore) UpdateSubagentTaskWaitingInput(ctx context.Context, id str
 }
 
 // UpdateSubagentTaskCompleted marks a task as COMPLETED with distilled summary and token metrics.
+// Only updates tasks in RUNNING status to prevent overwriting CANCELLING/CANCELLED tasks.
 func (s *SQLiteStore) UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary string, artifacts []domain.Attachment, usage domain.TokenUsage, durationSec float64) error {
 	nowMs := timeToMilli(time.Now())
 	totalTokens := usage.TotalTokens
@@ -365,7 +369,7 @@ func (s *SQLiteStore) UpdateSubagentTaskCompleted(ctx context.Context, id string
 		    duration_seconds = ?,
 		    pending_question = '',
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND status IN ('RUNNING', 'WAITING_FOR_INPUT')
 	`
 	_, err := s.writer().ExecContext(ctx, query, resultSummary, artifactsJSON, totalTokens, durationSec, nowMs, id)
 	if err != nil {
@@ -375,6 +379,7 @@ func (s *SQLiteStore) UpdateSubagentTaskCompleted(ctx context.Context, id string
 }
 
 // UpdateSubagentTaskFailed marks a task as FAILED with error message.
+// Only updates active tasks in RUNNING or WAITING_FOR_INPUT to prevent overwriting CANCELLING/CANCELLED tasks.
 func (s *SQLiteStore) UpdateSubagentTaskFailed(ctx context.Context, id string, errMsg string, durationSec float64) error {
 	nowMs := timeToMilli(time.Now())
 	query := `
@@ -383,7 +388,7 @@ func (s *SQLiteStore) UpdateSubagentTaskFailed(ctx context.Context, id string, e
 		    error_message = ?,
 		    duration_seconds = ?,
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND status IN ('RUNNING', 'WAITING_FOR_INPUT')
 	`
 	_, err := s.writer().ExecContext(ctx, query, errMsg, durationSec, nowMs, id)
 	if err != nil {
@@ -394,18 +399,82 @@ func (s *SQLiteStore) UpdateSubagentTaskFailed(ctx context.Context, id string, e
 
 // UpdateSubagentTaskCancelled marks a task as CANCELLED.
 func (s *SQLiteStore) UpdateSubagentTaskCancelled(ctx context.Context, id string) error {
+	return s.TransitionTaskToCancelled(ctx, id)
+}
+
+// TransitionTaskToCancelling atomically transitions a task from (PENDING, RUNNING, WAITING_FOR_INPUT) to CANCELLING.
+// Returns (true, nil) if transition occurred, (false, nil) if already terminal/cancelling (idempotent), or error.
+func (s *SQLiteStore) TransitionTaskToCancelling(ctx context.Context, id string) (bool, error) {
+	nowMs := timeToMilli(time.Now())
+	query := `
+		UPDATE subagent_tasks
+		SET status = 'CANCELLING',
+		    updated_at = ?
+		WHERE id = ? AND status IN ('PENDING', 'RUNNING', 'WAITING_FOR_INPUT')
+	`
+	res, err := s.writer().ExecContext(ctx, query, nowMs, id)
+	if err != nil {
+		return false, fmt.Errorf("failed to transition task %s to CANCELLING: %w", id, err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows > 0 {
+		return true, nil
+	}
+
+	// Check if task exists and its current state
+	var currentStatus string
+	err = s.reader().QueryRowContext(ctx, "SELECT status FROM subagent_tasks WHERE id = ?", id).Scan(&currentStatus)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("%w: subagent task %s", ports.ErrNotFound, id)
+		}
+		return false, err
+	}
+
+	// Task already cancelling, cancelled, or finished; idempotent no-op
+	return false, nil
+}
+
+// TransitionTaskToCancelled atomically transitions a task to CANCELLED.
+func (s *SQLiteStore) TransitionTaskToCancelled(ctx context.Context, id string) error {
 	nowMs := timeToMilli(time.Now())
 	query := `
 		UPDATE subagent_tasks
 		SET status = 'CANCELLED',
 		    updated_at = ?
-		WHERE id = ?
+		WHERE id = ? AND status IN ('CANCELLING', 'PENDING', 'RUNNING', 'WAITING_FOR_INPUT')
 	`
 	_, err := s.writer().ExecContext(ctx, query, nowMs, id)
 	if err != nil {
 		return fmt.Errorf("failed to cancel subagent task %s: %w", id, err)
 	}
 	return nil
+}
+
+// ReconcileStaleCancellingTasks recovers tasks stuck in CANCELLING after daemon crash or unexpected shutdown.
+func (s *SQLiteStore) ReconcileStaleCancellingTasks(ctx context.Context) (int64, error) {
+	nowMs := timeToMilli(time.Now())
+	query := `
+		UPDATE subagent_tasks
+		SET status = 'CANCELLED',
+		    error_message = 'Task cancelled prior to daemon shutdown/restart',
+		    updated_at = ?
+		WHERE status = 'CANCELLING'
+	`
+	res, err := s.writer().ExecContext(ctx, query, nowMs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reconcile stale cancelling tasks: %w", err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
 }
 
 // PurgeSubagentTasks deletes completed/failed/cancelled tasks older than specified days.

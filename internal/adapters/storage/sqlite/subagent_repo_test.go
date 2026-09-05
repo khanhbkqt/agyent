@@ -179,3 +179,139 @@ func TestSQLiteStore_SubagentRepository(t *testing.T) {
 		t.Errorf("expected 1 purged task, got %d", purged)
 	}
 }
+
+func TestSQLiteStore_SubagentStateMachineAndRace(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test_sm_race.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	agent := &domain.Agent{Name: "worker_agent"}
+	_ = store.SaveAgent(ctx, agent)
+	sessionKey := "telegram:sm_test"
+	_, _ = store.GetOrCreateSession(ctx, sessionKey, agent.Name)
+
+	t.Run("Valid CAS State Machine Transitions", func(t *testing.T) {
+		taskID := "task-sm-01"
+		task := &domain.SubagentTask{
+			ID:               taskID,
+			ParentSessionKey: sessionKey,
+			AgentName:        agent.Name,
+			Status:           domain.TaskStatusRunning,
+		}
+		if err := store.SaveSubagentTask(ctx, task); err != nil {
+			t.Fatalf("failed to save task: %v", err)
+		}
+
+		// Transition to CANCELLING
+		ok, err := store.TransitionTaskToCancelling(ctx, taskID)
+		if err != nil || !ok {
+			t.Fatalf("expected transition to CANCELLING, got ok=%v, err=%v", ok, err)
+		}
+
+		// Check status is CANCELLING
+		retrieved, _ := store.GetSubagentTask(ctx, taskID)
+		if retrieved.Status != domain.TaskStatusCancelling {
+			t.Fatalf("expected CANCELLING, got %s", retrieved.Status)
+		}
+
+		// Late worker completion attempt must NOT overwrite CANCELLING
+		_ = store.UpdateSubagentTaskCompleted(ctx, taskID, "Late result", nil, domain.TokenUsage{TotalTokens: 100}, 2.5)
+		retrieved, _ = store.GetSubagentTask(ctx, taskID)
+		if retrieved.Status != domain.TaskStatusCancelling {
+			t.Fatalf("late worker completion overwrote CANCELLING: %s", retrieved.Status)
+		}
+
+		// Transition to CANCELLED
+		if err := store.TransitionTaskToCancelled(ctx, taskID); err != nil {
+			t.Fatalf("failed to transition to CANCELLED: %v", err)
+		}
+		retrieved, _ = store.GetSubagentTask(ctx, taskID)
+		if retrieved.Status != domain.TaskStatusCancelled {
+			t.Fatalf("expected CANCELLED, got %s", retrieved.Status)
+		}
+
+		// Late worker completion attempt must NOT overwrite CANCELLED
+		_ = store.UpdateSubagentTaskCompleted(ctx, taskID, "Late result 2", nil, domain.TokenUsage{TotalTokens: 100}, 2.5)
+		retrieved, _ = store.GetSubagentTask(ctx, taskID)
+		if retrieved.Status != domain.TaskStatusCancelled {
+			t.Fatalf("late worker completion overwrote CANCELLED: %s", retrieved.Status)
+		}
+	})
+
+	t.Run("Startup Reconciler Cleans Up Orphaned Cancelling Tasks", func(t *testing.T) {
+		orphanID := "task-orphan-cancelling"
+		orphanTask := &domain.SubagentTask{
+			ID:               orphanID,
+			ParentSessionKey: sessionKey,
+			AgentName:        agent.Name,
+			Status:           domain.TaskStatusCancelling,
+		}
+		_ = store.SaveSubagentTask(ctx, orphanTask)
+
+		reconciled, err := store.ReconcileStaleCancellingTasks(ctx)
+		if err != nil {
+			t.Fatalf("reconciliation failed: %v", err)
+		}
+		if reconciled < 1 {
+			t.Fatalf("expected at least 1 reconciled task, got %d", reconciled)
+		}
+
+		retrieved, _ := store.GetSubagentTask(ctx, orphanID)
+		if retrieved.Status != domain.TaskStatusCancelled {
+			t.Fatalf("expected reconciled status CANCELLED, got %s", retrieved.Status)
+		}
+	})
+
+	t.Run("High Concurrency Race Test (Cancel vs Complete)", func(t *testing.T) {
+		const rounds = 200 // 200 independent racing tasks
+		for i := 0; i < rounds; i++ {
+			raceID := filepath.Join(t.Name(), string(rune(i)))
+			raceID = "task-race-" + string(rune('a'+(i%26))) + "-" + string(rune('0'+(i%10))) + "-" + string(rune('A'+(i%26)))
+			raceTask := &domain.SubagentTask{
+				ID:               raceID,
+				ParentSessionKey: sessionKey,
+				AgentName:        agent.Name,
+				Status:           domain.TaskStatusRunning,
+			}
+			_ = store.SaveSubagentTask(ctx, raceTask)
+
+			start := make(chan struct{})
+			done := make(chan struct{}, 2)
+
+			// Worker 1: Attempts Cancel
+			go func(tid string) {
+				<-start
+				ok, _ := store.TransitionTaskToCancelling(ctx, tid)
+				if ok {
+					_ = store.TransitionTaskToCancelled(ctx, tid)
+				}
+				done <- struct{}{}
+			}(raceID)
+
+			// Worker 2: Attempts Complete
+			go func(tid string) {
+				<-start
+				_ = store.UpdateSubagentTaskCompleted(ctx, tid, "Finished successfully", nil, domain.TokenUsage{TotalTokens: 50}, 1.0)
+				done <- struct{}{}
+			}(raceID)
+
+			close(start)
+			<-done
+			<-done
+
+			// Inspect final state: Must be strictly CANCELLED or COMPLETED, never corrupted or in an invalid state
+			task, err := store.GetSubagentTask(ctx, raceID)
+			if err != nil {
+				t.Fatalf("round %d: failed to get task %s: %v", i, raceID, err)
+			}
+			if task.Status != domain.TaskStatusCancelled && task.Status != domain.TaskStatusCompleted {
+				t.Fatalf("round %d: illegal task status reached: %s", i, task.Status)
+			}
+		}
+	})
+}
+

@@ -25,6 +25,7 @@ type Server struct {
 	addr      string
 	manager   ports.SecurityManagerPort
 	scheduler ports.SchedulerPort
+	subagents ports.SubagentDispatcherPort
 	listener  net.Listener
 	logger    *slog.Logger
 	mu        sync.RWMutex
@@ -53,6 +54,13 @@ func (s *Server) SetScheduler(sched ports.SchedulerPort) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scheduler = sched
+}
+
+// SetSubagents sets the subagent dispatcher port for handling background subagent IPC actions.
+func (s *Server) SetSubagents(sub ports.SubagentDispatcherPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subagents = sub
 }
 
 // Start opens the IPC listener and handles incoming hook requests in the background.
@@ -195,6 +203,14 @@ func (s *Server) handleAction(ctx context.Context, conn net.Conn, action string,
 	)
 
 	switch action {
+	case "dispatch_subagent":
+		res, err = s.handleDispatchSubagent(ctx, params)
+	case "check_subagent_progress", "get_subagent_task":
+		res, err = s.handleGetSubagentTask(ctx, params)
+	case "cancel_subagent_task":
+		res, err = s.handleCancelSubagentTask(ctx, params)
+	case "list_subagents":
+		res, err = s.handleListSubagents(ctx, params)
 	case "schedule_task", "create_schedule":
 		res, err = s.handleScheduleTask(ctx, params)
 	case "list_schedules":
@@ -538,3 +554,135 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 		}, nil
 	}
 }
+
+func (s *Server) handleDispatchSubagent(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sub := s.subagents
+	s.mu.RUnlock()
+	if sub == nil {
+		return nil, fmt.Errorf("subagent dispatcher is not initialized")
+	}
+
+	title, _ := p["title"].(string)
+	prompt, _ := p["prompt"].(string)
+	if strings.TrimSpace(title) == "" || strings.TrimSpace(prompt) == "" {
+		return nil, fmt.Errorf("title and prompt are required")
+	}
+
+	agentName, _ := p["agent_name"].(string)
+	if strings.TrimSpace(agentName) == "" {
+		agentName = "agyent"
+	}
+	model, _ := p["model"].(string)
+	if strings.TrimSpace(model) == "" {
+		model = "flash"
+	}
+	effort, _ := p["effort"].(string)
+	if strings.TrimSpace(effort) == "" {
+		effort = "low"
+	}
+	wsMode, _ := p["workspace_mode"].(string)
+	if strings.TrimSpace(wsMode) == "" {
+		wsMode = "share"
+	}
+	cbModeStr, _ := p["callback_mode"].(string)
+	if strings.TrimSpace(cbModeStr) == "" {
+		cbModeStr = "notify_user"
+	}
+	parentSessionKey, _ := p["parent_session_key"].(string)
+
+	task := domain.SubagentTask{
+		Title:            title,
+		Prompt:           prompt,
+		AgentName:        agentName,
+		Model:            model,
+		Effort:           effort,
+		WorkspaceMode:    wsMode,
+		CallbackMode:     domain.SubagentCallbackMode(cbModeStr),
+		ParentSessionKey: parentSessionKey,
+	}
+
+	taskID, err := sub.DispatchTask(ctx, task)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dispatch subagent task: %w", err)
+	}
+
+	return map[string]interface{}{
+		"task_id":    taskID,
+		"status":     "PENDING",
+		"agent_name": agentName,
+		"title":      title,
+		"model":      model,
+		"message":    fmt.Sprintf("🚀 Successfully dispatched background sub-agent task: %s (%s). The background worker pool has enqueued it. Inform the user and conclude your turn immediately without waiting.", taskID, title),
+	}, nil
+}
+
+func (s *Server) handleGetSubagentTask(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sub := s.subagents
+	s.mu.RUnlock()
+	if sub == nil {
+		return nil, fmt.Errorf("subagent dispatcher is not initialized")
+	}
+
+	taskID, _ := p["task_id"].(string)
+	if strings.TrimSpace(taskID) == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+
+	task, err := sub.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (s *Server) handleCancelSubagentTask(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sub := s.subagents
+	s.mu.RUnlock()
+	if sub == nil {
+		return nil, fmt.Errorf("subagent dispatcher is not initialized")
+	}
+
+	taskID, _ := p["task_id"].(string)
+	if strings.TrimSpace(taskID) == "" {
+		return nil, fmt.Errorf("task_id is required")
+	}
+
+	if err := sub.CancelTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"task_id": taskID,
+		"status":  "CANCELLED",
+		"message": fmt.Sprintf("🛑 Task %s has been marked as cancelled.", taskID),
+	}, nil
+}
+
+func (s *Server) handleListSubagents(ctx context.Context, p map[string]interface{}) (any, error) {
+	s.mu.RLock()
+	sub := s.subagents
+	s.mu.RUnlock()
+	if sub == nil {
+		return nil, fmt.Errorf("subagent dispatcher is not initialized")
+	}
+
+	sessionKey, _ := p["session_key"].(string)
+	limit := 10
+	if l, ok := p["limit"].(float64); ok && int(l) > 0 {
+		limit = int(l)
+	}
+
+	tasks, total, err := sub.ListTasks(ctx, sessionKey, limit, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"tasks": tasks,
+		"count": total,
+	}, nil
+}
+

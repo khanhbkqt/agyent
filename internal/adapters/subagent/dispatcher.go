@@ -74,6 +74,12 @@ func (d *SubagentDispatcher) Start(ctx context.Context) error {
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.started = true
 
+	if d.storage != nil {
+		if recCount, err := d.storage.ReconcileStaleCancellingTasks(ctx); err == nil && recCount > 0 {
+			slog.Info("reconciled stale subagent tasks on startup", "count", recCount)
+		}
+	}
+
 	for i := 0; i < d.config.MaxConcurrentWorkers; i++ {
 		d.wg.Add(1)
 		go d.workerLoop(i + 1)
@@ -129,7 +135,8 @@ func (d *SubagentDispatcher) enqueuePendingTasks() {
 			select {
 			case d.taskQueue <- task:
 			default:
-				// Queue is full, will retry next tick
+				// Queue is full, rollback registration so next tick can re-evaluate
+				d.registry.Delete(task.ID)
 			}
 		}
 	}
@@ -239,8 +246,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 			"agent", task.AgentName,
 		)
 	default:
-		slog.Warn("subagent task queue full, spawning immediate worker goroutine", "task_id", task.ID)
-		go d.runTask(task)
+		// Queue full: rollback reservation, task remains PENDING in SQLite for poller pickup
+		d.registry.Delete(task.ID)
+		slog.Warn("subagent task queue full, task retained as PENDING in database for poller", "task_id", task.ID)
 	}
 
 	return task.ID, nil
@@ -285,8 +293,19 @@ func (d *SubagentDispatcher) SendTaskInput(ctx context.Context, taskID string, i
 	return nil
 }
 
-// CancelTask forcefully halts a running task and tears down the associated process tree.
+// CancelTask forcefully halts a running task and tears down the associated process tree using CAS state transition.
 func (d *SubagentDispatcher) CancelTask(ctx context.Context, taskID string) error {
+	// 1. CAS transition in SQLite to CANCELLING
+	transitioned, err := d.storage.TransitionTaskToCancelling(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !transitioned {
+		// Task is already terminal or cancelled; idempotent success
+		return nil
+	}
+
+	// 2. Interrupt in-memory task context and kill running process tree
 	if tCtx, ok := d.registry.Get(taskID); ok {
 		tCtx.mu.Lock()
 		if tCtx.cancel != nil {
@@ -296,7 +315,8 @@ func (d *SubagentDispatcher) CancelTask(ctx context.Context, taskID string) erro
 		tCtx.setCancelled()
 	}
 
-	if err := d.storage.UpdateSubagentTaskCancelled(ctx, taskID); err != nil {
+	// 3. Atomically transition in SQLite from CANCELLING to CANCELLED
+	if err := d.storage.TransitionTaskToCancelled(ctx, taskID); err != nil {
 		return err
 	}
 

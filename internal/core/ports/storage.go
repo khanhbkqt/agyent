@@ -86,13 +86,18 @@ type AuditRepository interface {
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.
 type ConversationRepository interface {
 	GetConversation(ctx context.Context, id string) (*domain.Conversation, error)
+	GetConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) (*domain.Conversation, error)
 	GetConversationByAlias(ctx context.Context, sessionKey, agentName, projectName string, aliasIndex int) (*domain.Conversation, error)
 	ListRecentConversations(ctx context.Context, sessionKey, agentName, projectName string, limit int, offset int) ([]domain.Conversation, int, error)
 	SaveConversation(ctx context.Context, conv *domain.Conversation) error
 	TouchConversation(ctx context.Context, sessionKey, agentName, projectName, convID, promptSnippet string) error
 	SetConversationPinned(ctx context.Context, id string, isPinned bool) error
+	SetConversationPinnedScoped(ctx context.Context, scope domain.ConversationScope, id string, isPinned bool) error
 	SetConversationArchived(ctx context.Context, id string, isArchived bool) error
+	SetConversationArchivedScoped(ctx context.Context, scope domain.ConversationScope, id string, isArchived bool) error
 	SetConversationTitle(ctx context.Context, id string, title string) error
+	SetConversationTitleScoped(ctx context.Context, scope domain.ConversationScope, id string, title string) error
+	DeleteConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) error
 	GetExpiredArchivedConversationIDs(ctx context.Context, olderThanDays int) ([]string, error)
 	PurgeConversations(ctx context.Context, ids []string) error
 	UpdateConversationReflectedStep(ctx context.Context, id string, step int) error

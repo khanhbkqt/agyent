@@ -29,3 +29,30 @@ type ConversationSummary struct {
 	IsActive   bool      `json:"is_active"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
+
+// ConversationScope defines the 3D boundary (SessionKey, AgentName, ProjectName) for conversation isolation.
+type ConversationScope struct {
+	SessionKey  string `json:"session_key"`
+	AgentName   string `json:"agent_name"`
+	ProjectName string `json:"project_name"`
+}
+
+// Scope extracts the ConversationScope from a Conversation.
+func (c *Conversation) Scope() ConversationScope {
+	if c == nil {
+		return ConversationScope{}
+	}
+	return ConversationScope{
+		SessionKey:  c.SessionKey,
+		AgentName:   c.AgentName,
+		ProjectName: c.ProjectName,
+	}
+}
+
+// Matches checks if the scope matches the given conversation.
+func (s ConversationScope) Matches(c *Conversation) bool {
+	if c == nil {
+		return false
+	}
+	return s.SessionKey == c.SessionKey && s.AgentName == c.AgentName && s.ProjectName == c.ProjectName
+}

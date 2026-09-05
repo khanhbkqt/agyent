@@ -82,13 +82,18 @@ func (e *Engine) CompactSessionContext(
 	}
 
 	// 3. Archive Old Conversation and Update Title
-	_ = e.storage.SetConversationArchived(ctx, activeConvID, true)
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+	_ = e.storage.SetConversationArchivedScoped(ctx, scope, activeConvID, true)
 
-	oldConv, err := e.storage.GetConversation(ctx, activeConvID)
+	oldConv, err := e.storage.GetConversationScoped(ctx, scope, activeConvID)
 	if err == nil && oldConv != nil {
 		oldTitle := oldConv.Title
 		if !strings.HasPrefix(oldTitle, "[Compacted]") {
-			_ = e.storage.SetConversationTitle(ctx, activeConvID, "[Compacted] "+oldTitle)
+			_ = e.storage.SetConversationTitleScoped(ctx, scope, activeConvID, "[Compacted] "+oldTitle)
 		}
 	}
 

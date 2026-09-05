@@ -1466,16 +1466,22 @@ func (e *Engine) handleSwitchConversationCommand(ctx context.Context, session *d
 	target := strings.TrimSpace(args[0])
 	var targetConv *domain.Conversation
 
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-		conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+		conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 		}
 		targetConv = conv
 	} else {
-		conv, err := e.storage.GetConversation(ctx, target)
+		conv, err := e.storage.GetConversationScoped(ctx, scope, target)
 		if err != nil {
-			return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+			return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
 		}
 		targetConv = conv
 	}
@@ -1515,19 +1521,25 @@ func (e *Engine) handlePinCommand(ctx context.Context, session *domain.Session, 
 	var targetID string
 	var title string
 
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	if len(args) > 0 {
 		target := strings.TrimSpace(args[0])
 		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-			conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+			conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx)
 			if err != nil {
-				return fmt.Sprintf("⚠️ Conversation #%d not found.", idx)
+				return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 			}
 			targetID = conv.ID
 			title = conv.Title
 		} else {
-			conv, err := e.storage.GetConversation(ctx, target)
+			conv, err := e.storage.GetConversationScoped(ctx, scope, target)
 			if err != nil {
-				return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+				return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
 			}
 			targetID = conv.ID
 			title = conv.Title
@@ -1537,12 +1549,12 @@ func (e *Engine) handlePinCommand(ctx context.Context, session *domain.Session, 
 		if targetID == "" {
 			return "⚠️ No active conversation to pin/unpin. Send a message first."
 		}
-		if conv, err := e.storage.GetConversation(ctx, targetID); err == nil {
+		if conv, err := e.storage.GetConversationScoped(ctx, scope, targetID); err == nil {
 			title = conv.Title
 		}
 	}
 
-	if err := e.storage.SetConversationPinned(ctx, targetID, isPinned); err != nil {
+	if err := e.storage.SetConversationPinnedScoped(ctx, scope, targetID, isPinned); err != nil {
 		return fmt.Sprintf("⚠️ Failed to update pin status: %v", err)
 	}
 
@@ -1569,7 +1581,13 @@ func (e *Engine) handleRenameConversationCommand(ctx context.Context, session *d
 		return "⚠️ No active conversation to rename."
 	}
 
-	if err := e.storage.SetConversationTitle(ctx, targetID, newTitle); err != nil {
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
+	if err := e.storage.SetConversationTitleScoped(ctx, scope, targetID, newTitle); err != nil {
 		return fmt.Sprintf("⚠️ Failed to rename conversation: %v", err)
 	}
 
@@ -1577,15 +1595,27 @@ func (e *Engine) handleRenameConversationCommand(ctx context.Context, session *d
 }
 
 func (e *Engine) handleArchiveConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	targetID := session.GetActiveConversationID()
 	if len(args) > 0 {
 		target := strings.TrimSpace(args[0])
 		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-			if conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx); err == nil {
+			if conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx); err == nil {
 				targetID = conv.ID
+			} else {
+				return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 			}
 		} else {
-			targetID = target
+			if conv, err := e.storage.GetConversationScoped(ctx, scope, target); err == nil {
+				targetID = conv.ID
+			} else {
+				return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
+			}
 		}
 	}
 
@@ -1593,7 +1623,7 @@ func (e *Engine) handleArchiveConversationCommand(ctx context.Context, session *
 		return "⚠️ No active conversation to archive."
 	}
 
-	if err := e.storage.SetConversationArchived(ctx, targetID, true); err != nil {
+	if err := e.storage.SetConversationArchivedScoped(ctx, scope, targetID, true); err != nil {
 		return fmt.Sprintf("⚠️ Failed to archive conversation: %v", err)
 	}
 

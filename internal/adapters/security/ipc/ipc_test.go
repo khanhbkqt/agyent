@@ -249,3 +249,121 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	assert.True(t, trigResp.Success)
 	assert.Contains(t, string(trigResp.Data), "TRIGGERED")
 }
+
+type mockSubagentDispatcher struct {
+	dispatchTaskFn func(ctx context.Context, task domain.SubagentTask) (string, error)
+	getTaskFn      func(ctx context.Context, taskID string) (*domain.SubagentTask, error)
+	listTasksFn    func(ctx context.Context, sessionKey string, limit, offset int) ([]domain.SubagentTask, int, error)
+	cancelTaskFn   func(ctx context.Context, taskID string) error
+}
+
+func (m *mockSubagentDispatcher) DispatchTask(ctx context.Context, task domain.SubagentTask) (string, error) {
+	if m.dispatchTaskFn != nil {
+		return m.dispatchTaskFn(ctx, task)
+	}
+	return "task-mock-123", nil
+}
+
+func (m *mockSubagentDispatcher) GetTask(ctx context.Context, taskID string) (*domain.SubagentTask, error) {
+	if m.getTaskFn != nil {
+		return m.getTaskFn(ctx, taskID)
+	}
+	return &domain.SubagentTask{ID: taskID, Status: domain.TaskStatusRunning, Title: "Mock Running Task"}, nil
+}
+
+func (m *mockSubagentDispatcher) ListActiveTasks(ctx context.Context, sessionKey string) ([]domain.SubagentTask, error) {
+	return nil, nil
+}
+
+func (m *mockSubagentDispatcher) ListTasks(ctx context.Context, sessionKey string, limit, offset int) ([]domain.SubagentTask, int, error) {
+	if m.listTasksFn != nil {
+		return m.listTasksFn(ctx, sessionKey, limit, offset)
+	}
+	return []domain.SubagentTask{{ID: "task-1", Title: "Task 1"}}, 1, nil
+}
+
+func (m *mockSubagentDispatcher) SendTaskInput(ctx context.Context, taskID string, input string) error {
+	return nil
+}
+
+func (m *mockSubagentDispatcher) CancelTask(ctx context.Context, taskID string) error {
+	if m.cancelTaskFn != nil {
+		return m.cancelTaskFn(ctx, taskID)
+	}
+	return nil
+}
+
+func (m *mockSubagentDispatcher) Start(ctx context.Context) error { return nil }
+func (m *mockSubagentDispatcher) Stop(ctx context.Context) error  { return nil }
+
+func TestIPCServerAndClient_SubagentActions(t *testing.T) {
+	addr := "127.0.0.1:49977"
+	mockMgr := &mockSecurityManager{}
+	mockSub := &mockSubagentDispatcher{
+		dispatchTaskFn: func(ctx context.Context, task domain.SubagentTask) (string, error) {
+			assert.Equal(t, "Deep Research", task.Title)
+			return "task-sub-test-99", nil
+		},
+		getTaskFn: func(ctx context.Context, taskID string) (*domain.SubagentTask, error) {
+			return &domain.SubagentTask{
+				ID:     taskID,
+				Status: domain.TaskStatusRunning,
+				Title:  "Deep Research",
+			}, nil
+		},
+		cancelTaskFn: func(ctx context.Context, taskID string) error {
+			assert.Equal(t, "task-sub-test-99", taskID)
+			return nil
+		},
+	}
+
+	server := NewServer(mockMgr, addr, nil)
+	server.SetSubagents(mockSub)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+	client := NewClient(addr)
+
+	// 1. Test dispatch_subagent
+	dispResp, err := client.SendAction("dispatch_subagent", map[string]interface{}{
+		"title":              "Deep Research",
+		"prompt":             "Research Go concurrency models",
+		"agent_name":         "researcher",
+		"parent_session_key": "telegram:12345",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, dispResp.Success)
+	assert.Contains(t, string(dispResp.Data), "task-sub-test-99")
+
+	// 2. Test check_subagent_progress
+	progResp, err := client.SendAction("check_subagent_progress", map[string]interface{}{
+		"task_id": "task-sub-test-99",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, progResp.Success)
+	assert.Contains(t, string(progResp.Data), "Deep Research")
+
+	// 3. Test cancel_subagent_task
+	cancResp, err := client.SendAction("cancel_subagent_task", map[string]interface{}{
+		"task_id": "task-sub-test-99",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, cancResp.Success)
+	assert.Contains(t, string(cancResp.Data), "CANCELLED")
+
+	// 4. Test list_subagents
+	listResp, err := client.SendAction("list_subagents", map[string]interface{}{
+		"session_key": "telegram:12345",
+		"limit":       5,
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, listResp.Success)
+	assert.Contains(t, string(listResp.Data), "task-1")
+}
+

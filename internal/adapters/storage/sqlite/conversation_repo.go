@@ -55,6 +55,48 @@ func (s *SQLiteStore) GetConversation(ctx context.Context, id string) (*domain.C
 	return &conv, nil
 }
 
+// GetConversationScoped retrieves a conversation by its UUID within a verified scope.
+func (s *SQLiteStore) GetConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) (*domain.Conversation, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, errors.New("conversation id cannot be empty")
+	}
+
+	query := `
+		SELECT id, session_key, agent_name, project_name, title, alias_index, turn_count,
+		       is_pinned, is_archived, last_reflected_step, created_at, updated_at
+		FROM conversations
+		WHERE id = ? AND session_key = ? AND agent_name = ? AND project_name = ?
+	`
+
+	var (
+		conv          domain.Conversation
+		isPinnedInt   int
+		isArchivedInt int
+		createdAt     FlexTime
+		updatedAt     FlexTime
+	)
+
+	err := s.reader().QueryRowContext(ctx, query, id, scope.SessionKey, scope.AgentName, scope.ProjectName).Scan(
+		&conv.ID, &conv.SessionKey, &conv.AgentName, &conv.ProjectName,
+		&conv.Title, &conv.AliasIndex, &conv.TurnCount,
+		&isPinnedInt, &isArchivedInt, &conv.LastReflectedStep,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: conversation %s in scope", ports.ErrNotFound, id)
+		}
+		return nil, fmt.Errorf("failed to query conversation %s: %w", id, err)
+	}
+
+	conv.IsPinned = (isPinnedInt == 1)
+	conv.IsArchived = (isArchivedInt == 1)
+	conv.CreatedAt = createdAt.Time
+	conv.UpdatedAt = updatedAt.Time
+
+	return &conv, nil
+}
+
 // GetConversationByAlias retrieves the N-th active conversation (1-indexed) ordered by [is_pinned DESC, updated_at DESC].
 func (s *SQLiteStore) GetConversationByAlias(ctx context.Context, sessionKey, agentName, projectName string, aliasIndex int) (*domain.Conversation, error) {
 	if aliasIndex <= 0 {
@@ -376,6 +418,84 @@ func (s *SQLiteStore) SetConversationTitle(ctx context.Context, id string, title
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("%w: conversation %s", ports.ErrNotFound, id)
+	}
+
+	return nil
+}
+
+// SetConversationPinnedScoped toggles the pinned status of a conversation within a verified scope.
+func (s *SQLiteStore) SetConversationPinnedScoped(ctx context.Context, scope domain.ConversationScope, id string, isPinned bool) error {
+	pinnedInt := 0
+	if isPinned {
+		pinnedInt = 1
+	}
+
+	nowMs := timeToMilli(time.Now())
+	res, err := s.writer().ExecContext(ctx, "UPDATE conversations SET is_pinned = ?, updated_at = ? WHERE id = ? AND session_key = ? AND agent_name = ? AND project_name = ?", pinnedInt, nowMs, id, scope.SessionKey, scope.AgentName, scope.ProjectName)
+	if err != nil {
+		return fmt.Errorf("failed to update pinned status for %s: %w", id, err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%w: conversation %s in scope", ports.ErrNotFound, id)
+	}
+
+	return nil
+}
+
+// SetConversationArchivedScoped toggles the archived status of a conversation within a verified scope.
+func (s *SQLiteStore) SetConversationArchivedScoped(ctx context.Context, scope domain.ConversationScope, id string, isArchived bool) error {
+	archivedInt := 0
+	if isArchived {
+		archivedInt = 1
+	}
+
+	nowMs := timeToMilli(time.Now())
+	res, err := s.writer().ExecContext(ctx, "UPDATE conversations SET is_archived = ?, updated_at = ? WHERE id = ? AND session_key = ? AND agent_name = ? AND project_name = ?", archivedInt, nowMs, id, scope.SessionKey, scope.AgentName, scope.ProjectName)
+	if err != nil {
+		return fmt.Errorf("failed to update archived status for %s: %w", id, err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%w: conversation %s in scope", ports.ErrNotFound, id)
+	}
+
+	return nil
+}
+
+// SetConversationTitleScoped updates the human-readable title of a conversation within a verified scope.
+func (s *SQLiteStore) SetConversationTitleScoped(ctx context.Context, scope domain.ConversationScope, id string, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return errors.New("conversation title cannot be empty")
+	}
+
+	nowMs := timeToMilli(time.Now())
+	res, err := s.writer().ExecContext(ctx, "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND session_key = ? AND agent_name = ? AND project_name = ?", title, nowMs, id, scope.SessionKey, scope.AgentName, scope.ProjectName)
+	if err != nil {
+		return fmt.Errorf("failed to update title for %s: %w", id, err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%w: conversation %s in scope", ports.ErrNotFound, id)
+	}
+
+	return nil
+}
+
+// DeleteConversationScoped permanently deletes a conversation within a verified scope.
+func (s *SQLiteStore) DeleteConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) error {
+	res, err := s.writer().ExecContext(ctx, "DELETE FROM conversations WHERE id = ? AND session_key = ? AND agent_name = ? AND project_name = ?", id, scope.SessionKey, scope.AgentName, scope.ProjectName)
+	if err != nil {
+		return fmt.Errorf("failed to delete conversation %s: %w", id, err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("%w: conversation %s in scope", ports.ErrNotFound, id)
 	}
 
 	return nil

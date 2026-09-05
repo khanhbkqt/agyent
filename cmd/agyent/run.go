@@ -169,6 +169,7 @@ var runCmd = &cobra.Command{
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
 		eng.SetSubagentDispatcher(subDispatcher)
+		ipcServer.SetSubagents(subDispatcher)
 
 		if cfg.Evolution.Enabled {
 			evoOrch := evolutionAdapter.NewEvolutionOrchestrator(cfg, store, runner)

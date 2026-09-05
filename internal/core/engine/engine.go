@@ -779,7 +779,12 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
 			if !isEphemeral && session.GetActiveConversationID() != "" {
-				_ = e.storage.SetConversationArchived(turnCtx, session.GetActiveConversationID(), true)
+				scope := domain.ConversationScope{
+					SessionKey:  session.SessionKey,
+					AgentName:   session.ActiveAgent,
+					ProjectName: session.ActiveProject,
+				}
+				_ = e.storage.SetConversationArchivedScoped(turnCtx, scope, session.GetActiveConversationID(), true)
 			}
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)
@@ -849,7 +854,12 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
 			if !isEphemeral && session.GetActiveConversationID() != "" {
-				_ = e.storage.SetConversationArchived(turnCtx, session.GetActiveConversationID(), true)
+				scope := domain.ConversationScope{
+					SessionKey:  session.SessionKey,
+					AgentName:   session.ActiveAgent,
+					ProjectName: session.ActiveProject,
+				}
+				_ = e.storage.SetConversationArchivedScoped(turnCtx, scope, session.GetActiveConversationID(), true)
 			}
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)

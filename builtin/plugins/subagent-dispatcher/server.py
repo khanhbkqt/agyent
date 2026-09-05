@@ -1,21 +1,38 @@
 import sys
 import json
-import sqlite3
 import os
-import secrets
-import time
+import socket
 
-def get_db_path():
-    home = os.path.expanduser("~")
-    return os.path.join(home, ".agyent", "agyent.db")
+DEFAULT_IPC_ADDR = "127.0.0.1:49215"
 
-def get_db_connection():
-    db_path = get_db_path()
-    if not os.path.exists(db_path):
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(f"file:{db_path}?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+def send_ipc_action(action, params):
+    """Sends an authenticated/scoped action to the agyent core IPC daemon via local socket."""
+    ipc_addr_str = os.environ.get("AGYENT_IPC_ADDRESS", DEFAULT_IPC_ADDR).strip()
+    try:
+        host, port_str = ipc_addr_str.split(":")
+        port = int(port_str)
+    except Exception:
+        host, port = "127.0.0.1", 49215
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(10.0)
+    try:
+        s.connect((host, port))
+        payload = json.dumps({"action": action, "params": params}) + "\n"
+        s.sendall(payload.encode("utf-8"))
+
+        f = s.makefile("r", encoding="utf-8")
+        line = f.readline()
+        if not line:
+            return {"error": "Empty response from agyent IPC daemon"}
+        resp = json.loads(line)
+        if not resp.get("success", False):
+            return {"error": resp.get("error", "Unknown IPC error")}
+        return resp.get("data")
+    except Exception as e:
+        return {"error": f"Failed to communicate with agyent IPC ({ipc_addr_str}): {str(e)}"}
+    finally:
+        s.close()
 
 def dispatch_task(title, prompt, agent_name="", model="flash", effort="low", workspace_mode="share", callback_mode="notify_user", parent_session_key=""):
     if not title or not prompt:
@@ -30,135 +47,33 @@ def dispatch_task(title, prompt, agent_name="", model="flash", effort="low", wor
             agent_name = env_agent
         elif not agent_name:
             agent_name = "agyent"
-    
-    task_id = f"task-{secrets.token_hex(4)}"
-    now_ms = int(time.time() * 1000)
 
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        parent_conv_id = ""
-        project_name = ""
-
-        if parent_session_key:
-            cursor.execute("SELECT session_key, global_conversation_id, active_project FROM sessions WHERE session_key = ?", (parent_session_key,))
-            session_row = cursor.fetchone()
-            if session_row:
-                parent_conv_id = session_row["global_conversation_id"] if session_row["global_conversation_id"] else ""
-                project_name = session_row["active_project"] if session_row["active_project"] else ""
-        else:
-            cursor.execute("""
-                SELECT session_key, global_conversation_id, active_project 
-                FROM sessions 
-                WHERE session_key NOT LIKE 'telegram:proof_%' AND session_key NOT LIKE 'telegram:test_%'
-                ORDER BY updated_at DESC LIMIT 1
-            """)
-            session_row = cursor.fetchone()
-            if not session_row:
-                cursor.execute("SELECT session_key, global_conversation_id, active_project FROM sessions ORDER BY updated_at DESC LIMIT 1")
-                session_row = cursor.fetchone()
-            parent_session_key = session_row["session_key"] if session_row else "telegram:default"
-            parent_conv_id = session_row["global_conversation_id"] if session_row and session_row["global_conversation_id"] else ""
-            project_name = session_row["active_project"] if session_row and session_row["active_project"] else ""
-
-        insert_sql = """
-            INSERT INTO subagent_tasks (
-                id, parent_session_key, parent_conversation_id, sub_conversation_id,
-                agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
-                status, current_step, current_tool, progress_message, pending_question,
-                result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, '', '', '', '', '[]', '', 0, 0, ?, ?)
-        """
-        cursor.execute(insert_sql, (
-            task_id, parent_session_key, parent_conv_id,
-            agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
-            now_ms, now_ms
-        ))
-        conn.commit()
-
-        return {
-            "task_id": task_id,
-            "status": "PENDING",
-            "agent_name": agent_name,
-            "title": title,
-            "model": model,
-            "message": f"🚀 Successfully dispatched background sub-agent task: {task_id} ({title}). The background worker pool has enqueued it. Inform the user and conclude your turn immediately without waiting."
-        }
-    except Exception as e:
-        return {"error": f"Failed to dispatch task: {str(e)}"}
-    finally:
-        if conn:
-            conn.close()
+    params = {
+        "title": title,
+        "prompt": prompt,
+        "agent_name": agent_name,
+        "model": model,
+        "effort": effort,
+        "workspace_mode": workspace_mode,
+        "callback_mode": callback_mode,
+        "parent_session_key": parent_session_key,
+    }
+    return send_ipc_action("dispatch_subagent", params)
 
 def check_progress(task_id):
     if not task_id:
         return {"error": "task_id is required"}
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, agent_name, title, status, current_step, current_tool,
-                   progress_message, pending_question, duration_seconds, total_tokens,
-                   result_summary, error_message, updated_at
-            FROM subagent_tasks WHERE id = ?
-        """, (task_id,))
-        row = cursor.fetchone()
-        if not row:
-            return {"error": f"Task {task_id} not found"}
-        return dict(row)
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if conn:
-            conn.close()
+    return send_ipc_action("check_subagent_progress", {"task_id": task_id})
 
 def cancel_task(task_id):
     if not task_id:
         return {"error": "task_id is required"}
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        now_ms = int(time.time() * 1000)
-        cursor.execute("UPDATE subagent_tasks SET status = 'CANCELLED', updated_at = ? WHERE id = ?", (now_ms, task_id))
-        conn.commit()
-        return {"task_id": task_id, "status": "CANCELLED", "message": f"🛑 Task {task_id} has been marked as cancelled."}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if conn:
-            conn.close()
+    return send_ipc_action("cancel_subagent_task", {"task_id": task_id})
 
 def list_tasks(limit=10, session_key=""):
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        if not session_key:
-            session_key = os.environ.get("AGYENT_SESSION_KEY", "").strip()
-        if session_key:
-            cursor.execute("""
-                SELECT id, agent_name, title, status, duration_seconds, total_tokens, created_at
-                FROM subagent_tasks 
-                WHERE parent_session_key = ?
-                ORDER BY created_at DESC LIMIT ?
-            """, (session_key, limit))
-        else:
-            cursor.execute("""
-                SELECT id, agent_name, title, status, duration_seconds, total_tokens, created_at
-                FROM subagent_tasks ORDER BY created_at DESC LIMIT ?
-            """, (limit,))
-        rows = [dict(r) for r in cursor.fetchall()]
-        return {"tasks": rows, "count": len(rows)}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if conn:
-            conn.close()
+    if not session_key:
+        session_key = os.environ.get("AGYENT_SESSION_KEY", "").strip()
+    return send_ipc_action("list_subagents", {"limit": limit, "session_key": session_key})
 
 def handle_message(msg):
     req_id = msg.get("id")

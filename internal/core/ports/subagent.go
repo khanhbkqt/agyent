@@ -18,6 +18,9 @@ type SubagentRepository interface {
 	UpdateSubagentTaskCompleted(ctx context.Context, id string, resultSummary string, artifacts []domain.Attachment, usage domain.TokenUsage, durationSec float64) error
 	UpdateSubagentTaskFailed(ctx context.Context, id string, errMsg string, durationSec float64) error
 	UpdateSubagentTaskCancelled(ctx context.Context, id string) error
+	TransitionTaskToCancelling(ctx context.Context, id string) (bool, error)
+	TransitionTaskToCancelled(ctx context.Context, id string) error
+	ReconcileStaleCancellingTasks(ctx context.Context) (int64, error)
 	PurgeSubagentTasks(ctx context.Context, olderThanDays int) (int64, error)
 }
 

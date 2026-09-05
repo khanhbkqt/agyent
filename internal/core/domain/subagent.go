@@ -11,6 +11,7 @@ const (
 	TaskStatusPending      SubagentTaskStatus = "PENDING"
 	TaskStatusRunning      SubagentTaskStatus = "RUNNING"
 	TaskStatusWaitingInput SubagentTaskStatus = "WAITING_FOR_INPUT"
+	TaskStatusCancelling   SubagentTaskStatus = "CANCELLING"
 	TaskStatusCompleted    SubagentTaskStatus = "COMPLETED"
 	TaskStatusFailed       SubagentTaskStatus = "FAILED"
 	TaskStatusCancelled    SubagentTaskStatus = "CANCELLED"
@@ -58,7 +59,12 @@ func (t *SubagentTask) IsTerminal() bool {
 	return t.Status == TaskStatusCompleted || t.Status == TaskStatusFailed || t.Status == TaskStatusCancelled
 }
 
-// IsActive returns true if the task is queued, running, or waiting for input.
+// IsActive returns true if the task is queued, running, waiting for input, or cancelling.
 func (t *SubagentTask) IsActive() bool {
-	return t.Status == TaskStatusPending || t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput
+	return t.Status == TaskStatusPending || t.Status == TaskStatusRunning || t.Status == TaskStatusWaitingInput || t.Status == TaskStatusCancelling
+}
+
+// IsCancelling returns true if the task is actively being cancelled.
+func (t *SubagentTask) IsCancelling() bool {
+	return t.Status == TaskStatusCancelling
 }
