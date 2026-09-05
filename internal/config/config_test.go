@@ -21,7 +21,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 1800, cfg.AGY.DefaultTimeoutSeconds)
 	assert.Equal(t, "high", cfg.AGY.DefaultEffort)
 	assert.Equal(t, "accept-edits", cfg.AGY.DefaultMode)
-	assert.True(t, cfg.AGY.DangerouslySkipPermissions)
+	assert.False(t, cfg.AGY.DangerouslySkipPermissions)
 	assert.Equal(t, 2.0, cfg.Storage.DebounceSeconds)
 	assert.Equal(t, 4.0, cfg.Storage.HeartbeatIntervalSeconds)
 	assert.Equal(t, "info", cfg.Logging.Level)
@@ -441,17 +441,30 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 }
 
 func TestConfig_IsAdmin(t *testing.T) {
-	t.Run("nil config returns true (open local-dev mode)", func(t *testing.T) {
+	t.Run("nil config returns false (fail-closed)", func(t *testing.T) {
 		var cfg *config.Config
-		assert.True(t, cfg.IsAdmin("12345"))
+		assert.False(t, cfg.IsAdmin("12345"))
 	})
 
-	t.Run("empty admin lists return true (open local-dev mode)", func(t *testing.T) {
+	t.Run("empty admin lists fail closed by default", func(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.Security.AdminUserIDs = []int64{}
 		cfg.Telegram.AdminUserIDs = []int64{}
+		cfg.Security.AllowUnauthenticatedLocalDev = false
+		assert.False(t, cfg.IsAdmin("12345"))
+		assert.False(t, cfg.IsAdmin("any_user"))
+	})
+
+	t.Run("empty admin lists allow local dev when AllowUnauthenticatedLocalDev enabled", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{}
+		cfg.Telegram.AdminUserIDs = []int64{}
+		cfg.Security.AllowUnauthenticatedLocalDev = true
 		assert.True(t, cfg.IsAdmin("12345"))
 		assert.True(t, cfg.IsAdmin("any_user"))
+		// But remote provider like telegram STILL fails closed!
+		assert.False(t, cfg.IsAdminForProvider("12345", "telegram"))
+		assert.False(t, cfg.IsAdminForProvider("12345", "discord"))
 	})
 
 	t.Run("empty sender ID returns false when admins configured", func(t *testing.T) {
@@ -483,3 +496,4 @@ func TestConfig_IsAdmin(t *testing.T) {
 		assert.False(t, cfg.IsAdmin("invalid_id_9999"))
 	})
 }
+

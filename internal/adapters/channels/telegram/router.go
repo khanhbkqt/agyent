@@ -104,13 +104,10 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 
 	cleanText := ExtractCleanText(botUsername, rawText)
 
-	// 3. Extract media attachments
-	var attachments []domain.Attachment
+	// 3. Extract lazy media references (zero disk download before admission)
+	var attachmentRefs []domain.InboundAttachmentRef
 	if r.mediaMgr != nil {
-		atts, err := r.mediaMgr.DownloadInboundMedia(ctx, msg, b)
-		if err == nil && len(atts) > 0 {
-			attachments = atts
-		}
+		attachmentRefs = r.mediaMgr.ExtractAttachmentRefs(msg, botID)
 	}
 
 	// 4. Construct CanonicalMessage
@@ -153,7 +150,7 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		},
 		Text:             cleanText,
 		RawText:          rawText,
-		Attachments:      attachments,
+		AttachmentRefs:   attachmentRefs,
 		IsMentioned:      isMentioned,
 		IsReplyToBot:     isReplyToBot,
 		ReplyToMessageID: replyToMsgID,

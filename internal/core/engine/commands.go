@@ -89,7 +89,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handleBootstrapCommand(ctx, msg.Sender, session, args)
 
 	case "/projects", "/project", "/p":
-		responseText = e.handleProjectsCommand(ctx, session, args)
+		responseText = e.handleProjectsCommand(ctx, msg.Sender, session, args)
 
 	case "/security", "/sec":
 		responseText, inlineKeyboard = e.handleSecurityCommand(msg.Sender, sessionKey, args)
@@ -533,20 +533,20 @@ func (e *Engine) handleCompactCommand(ctx context.Context, sender domain.SenderU
 		return "⚠️ No active conversation to compact in current scope. Start a conversation with a message first."
 	}
 
+	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+	if err != nil {
+		agent = &domain.Agent{Name: session.ActiveAgent}
+	}
+
 	// RBAC Authorization check
 	if session.ActiveAgent != "" && sender.ID != "" {
-		allowed, role, err := e.storage.CheckAgentAccess(ctx, session.ActiveAgent, sender.ID)
-		if err == nil && !allowed {
+		allowed, role, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed {
 			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to operate agent **%s**.", session.ActiveAgent)
 		}
 		if role == "viewer" {
 			return fmt.Sprintf("⛔ **Permission Denied:** Users with **viewer** role cannot archive or compact context for agent **%s**.", session.ActiveAgent)
 		}
-	}
-
-	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
-	if err != nil {
-		agent = &domain.Agent{Name: session.ActiveAgent}
 	}
 
 	customNote := strings.Join(args, " ")
@@ -898,6 +898,23 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 
 		return fmt.Sprintf("🎉 **Agent `%s` created** (Owner: `%s`) and set as active!\nWorkspace: `%s`\nGenesis bootstrap protocol will activate on your first message.", name, sender.ID, agentPath)
 
+	case "claim":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/a claim <agent_name>`\nExample: `/a claim agyent`"
+		}
+		agentName := strings.TrimSpace(args[1])
+		if !e.IsSuperAdmin(sender.ID) {
+			return "⛔ Access Denied: Only SuperAdmin can claim unowned agents."
+		}
+		claimed, err := e.storage.ClaimAgent(ctx, agentName, sender.ID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to claim agent: %v", err)
+		}
+		if !claimed {
+			return fmt.Sprintf("⚠️ Agent `%s` cannot be claimed (it may already have an owner or does not exist).", agentName)
+		}
+		return fmt.Sprintf("✅ Successfully claimed agent `@%s`! You are now the official owner (User ID: `%s`).", agentName, sender.ID)
+
 	case "share":
 		if len(args) < 3 {
 			return "⚠️ Usage: `/a share <agent_name> <user_id> [role]`\nExample: `/a share dev_architect 123456789 operator`\nAllowed roles: `admin`, `operator`, `viewer`"
@@ -1042,7 +1059,7 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.Sende
 	return fmt.Sprintf("🔄 **Agent `%s` reset for Genesis Bootstrap.**\nWorkspace: `%s`\nYour next message will initiate the bootstrap protocol and generate identity files (`AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`).", agent.Name, agent.WorkspacePath)
 }
 
-func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Session, args []string) string {
+func (e *Engine) handleProjectsCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
 	if len(args) == 0 || args[0] == "list" {
 		projects, err := e.storage.ListProjects(ctx, session.ActiveAgent)
 		if err != nil {
@@ -1112,23 +1129,45 @@ func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Sess
 		if len(args) < 2 {
 			return "⚠️ Usage: `/p new <project_name> [path]`\nExample: `/p new ecommerce /home/ubuntu/projects/ecommerce`"
 		}
+
+		// RBAC: Verify sender has edit permissions on the active agent
+		agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Active agent `%s` not found: %v", session.ActiveAgent, err)
+		}
+		allowed, role, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed || (role == "viewer" || role == "public") {
+			return fmt.Sprintf("⛔ Access Denied: You do not have permission to create projects for agent `@%s`.", session.ActiveAgent)
+		}
+
 		projName := strings.TrimSpace(args[1])
 		if projName == "" || strings.Contains(projName, "..") || strings.Contains(projName, "/") || strings.Contains(projName, "\\") {
 			return "⚠️ Invalid project name. Project name cannot contain path separators ('/', '\\') or '..'."
 		}
-		projPath := ""
+
+		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+		if agent.WorkspacePath != "" {
+			agentPath = agent.WorkspacePath
+		}
+		defaultProjectsDir := filepath.Join(agentPath, "projects")
+
+		var projPath string
 		if len(args) > 2 {
-			projPath = strings.TrimSpace(args[2])
-		} else {
-			agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
-			if agent, err := e.storage.GetAgent(ctx, session.ActiveAgent); err == nil && agent != nil && agent.WorkspacePath != "" {
-				agentPath = agent.WorkspacePath
+			rawPath := strings.TrimSpace(args[2])
+			var allowedRoots []string
+			if e.cfg != nil {
+				allowedRoots = e.cfg.Security.AllowedProjectRoots
 			}
-			projPath = filepath.Join(agentPath, "projects", projName)
+			validatedPath, valErr := validateProjectPath(rawPath, defaultProjectsDir, allowedRoots)
+			if valErr != nil {
+				return fmt.Sprintf("⛔ Access Denied: Path `%s` is outside allowed project directories.\nReason: %v\nTo allow external directories, add the path to `security.allowed_project_roots` in config.yaml.", rawPath, valErr)
+			}
+			projPath = validatedPath
+		} else {
+			projPath = filepath.Join(defaultProjectsDir, projName)
 		}
 
-		projPath, _ = filepath.Abs(projPath)
-		if err := os.MkdirAll(projPath, 0755); err != nil {
+		if err := os.MkdirAll(projPath, 0700); err != nil {
 			return fmt.Sprintf("⚠️ Failed to create project directory: %v", err)
 		}
 
@@ -1188,6 +1227,52 @@ func (e *Engine) switchProject(ctx context.Context, session *domain.Session, pro
 	}
 
 	return fmt.Sprintf("📁 Switched into project **%s**\nPath: `%s`\nCodebase context loaded.", proj.ProjectName, proj.ProjectPath)
+}
+
+func evalSymlinksSafe(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+		return realPath
+	}
+	parent := filepath.Dir(abs)
+	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(realParent, filepath.Base(abs))
+	}
+	return abs
+}
+
+func validateProjectPath(requestedPath, defaultProjectsDir string, allowedRoots []string) (string, error) {
+	cleanPath := filepath.Clean(requestedPath)
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	targetPath := evalSymlinksSafe(absPath)
+
+	// Check if within agent projects directory
+	cleanAgentProjectsDir := evalSymlinksSafe(defaultProjectsDir)
+	relToAgent, err := filepath.Rel(cleanAgentProjectsDir, targetPath)
+	if err == nil && !strings.HasPrefix(relToAgent, "..") && !strings.HasPrefix(relToAgent, "/") && relToAgent != "." {
+		return targetPath, nil
+	}
+
+	// Check against allowed project roots
+	for _, root := range allowedRoots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		cleanRoot := evalSymlinksSafe(root)
+		rel, err := filepath.Rel(cleanRoot, targetPath)
+		if err == nil && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, "/") {
+			return targetPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("path '%s' is not within agent projects directory or allowed_project_roots", requestedPath)
 }
 
 func (e *Engine) handleConversationsDispatcher(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {

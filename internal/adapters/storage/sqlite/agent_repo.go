@@ -356,8 +356,8 @@ func (s *SQLiteStore) CheckAgentAccess(ctx context.Context, agentName, userID st
 		return false, "", err
 	}
 
-	// 1. Check if public or unclaimed system agent
-	if agent.IsPublic || agent.OwnerID == "" {
+	// 1. Check if public
+	if agent.IsPublic {
 		return true, "public", nil
 	}
 
@@ -379,3 +379,26 @@ func (s *SQLiteStore) CheckAgentAccess(ctx context.Context, agentName, userID st
 
 	return true, role, nil
 }
+
+// ClaimAgent atomically claims an unowned agent profile for a new owner.
+// Returns true if successfully claimed, false if the agent does not exist or already has an owner.
+func (s *SQLiteStore) ClaimAgent(ctx context.Context, name string, newOwnerID string) (bool, error) {
+	if name == "" || newOwnerID == "" {
+		return false, errors.New("agent name and owner ID cannot be empty")
+	}
+	query := `
+		UPDATE agents
+		SET owner_id = ?, updated_at = ?
+		WHERE name = ? AND (owner_id IS NULL OR owner_id = '');
+	`
+	res, err := s.writer().ExecContext(ctx, query, newOwnerID, time.Now().UnixMilli(), name)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim agent %s: %w", name, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+

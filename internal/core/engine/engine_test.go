@@ -167,6 +167,9 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 			Mode:         "polling",
 			AdminUserIDs: []int64{123456},
 		},
+		Security: config.SecurityConfig{
+			AllowedProjectRoots: []string{"/tmp", os.TempDir()},
+		},
 		AGY: config.AGYConfig{
 			BinaryPath:                 "agy",
 			DefaultTimeoutSeconds:      10,
@@ -219,6 +222,7 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 	}, debouncerHandler)
 
 	cfg.Security = config.GetEffectiveSecurityPreset("balanced")
+	cfg.Security.AllowedProjectRoots = []string{"/tmp", os.TempDir()}
 	secMgr := securityAdapter.NewManager(cfg.Security, nil, nil)
 
 	eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
@@ -944,7 +948,7 @@ func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, eng.Start(ctx))
 
-	sender := domain.SenderUser{ID: "user-123", Username: "stevan"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 
 	// Case 1: Initialized Agent sends /new (proactive greeting without topic)
@@ -1175,7 +1179,7 @@ func TestEngine_InboundAttachmentRelocation(t *testing.T) {
 		ID:        "msg-att-1",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
-		Sender:    domain.SenderUser{ID: "111", Username: "stevan", FullName: "Stevan"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin", FullName: "Admin"},
 		Chat:      domain.ChatContext{ID: "chat-att-1", Type: "private"},
 		Text:      "Please read this uploaded spec",
 		Attachments: []domain.Attachment{
@@ -1460,7 +1464,7 @@ func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {
 	eng.SetStreamingEnabled(true)
 
 	ctx := context.Background()
-	sender := domain.SenderUser{ID: "user-123", Username: "steve"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 	sessionKey := "telegram:chat-123"
 

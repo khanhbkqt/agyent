@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type Engine struct {
 	securityManager    ports.SecurityManagerPort
 	workspaceManager   ports.WorkspacePort
 	scheduler          ports.SchedulerPort
+	attachmentFetcher  ports.AttachmentFetcherPort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -160,6 +162,16 @@ func (e *Engine) SetScheduler(s ports.SchedulerPort) {
 // GetScheduler returns the active scheduler instance.
 func (e *Engine) GetScheduler() ports.SchedulerPort {
 	return e.scheduler
+}
+
+// SetAttachmentFetcher injects the lazy inbound attachment fetcher.
+func (e *Engine) SetAttachmentFetcher(fetcher ports.AttachmentFetcherPort) {
+	e.attachmentFetcher = fetcher
+}
+
+// GetAttachmentFetcher returns the active attachment fetcher instance.
+func (e *Engine) GetAttachmentFetcher() ports.AttachmentFetcherPort {
+	return e.attachmentFetcher
 }
 
 // SetPendingCompactionDigest records a continuity digest for a session to be injected on the next turn.
@@ -392,7 +404,7 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 // IsSuperAdmin checks if a user ID is listed in the administrator whitelist.
 func (e *Engine) IsSuperAdmin(senderID string) bool {
 	if e.cfg == nil {
-		return true
+		return false
 	}
 	return e.cfg.IsAdmin(senderID)
 }
@@ -403,8 +415,8 @@ func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID 
 		return false, "", nil
 	}
 
-	// 1. Check if public agent (or default 'agyent' with empty owner)
-	if agent.IsPublic || (agent.Name == "agyent" && agent.OwnerID == "") {
+	// 1. Check if public agent
+	if agent.IsPublic {
 		return true, "public", nil
 	}
 
@@ -503,9 +515,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	if err != nil {
 		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
 		_ = os.MkdirAll(agentPath, 0755)
-		isPublic := (session.ActiveAgent == "agyent")
+		isPublic := false
 		ownerID := ""
-		if !isPublic {
+		if session.ActiveAgent != "agyent" {
 			ownerID = msg.Sender.ID
 		}
 		defaultPreset := domain.SecurityPreset(e.cfg.ResolveAgentPreset(session.ActiveAgent))
@@ -590,8 +602,21 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		_ = e.securityManager.EnsureWorkspaceHooks(workspaceDir)
 	}
 
-	// 5.1. Relocate Inbound Attachments to Active Workspace uploads/
-	if len(msg.Attachments) > 0 && e.workspaceManager != nil {
+	// 5.1. Lazily Materialize Inbound AttachmentRefs to Active Workspace uploads/
+	if len(msg.AttachmentRefs) > 0 && e.attachmentFetcher != nil {
+		uploadsDir := filepath.Join(workspaceDir, "uploads")
+		for _, ref := range msg.AttachmentRefs {
+			att, fetchErr := e.attachmentFetcher.FetchAttachment(turnCtx, ref, uploadsDir)
+			if fetchErr != nil {
+				slog.WarnContext(turnCtx, "Failed to lazily materialize attachment",
+					slog.String("file_name", ref.FileName),
+					slog.String("error", fetchErr.Error()),
+				)
+				continue
+			}
+			msg.Attachments = append(msg.Attachments, att)
+		}
+	} else if len(msg.Attachments) > 0 && e.workspaceManager != nil {
 		preparedAtts, prepErr := e.workspaceManager.PrepareInboundAttachments(turnCtx, workspaceDir, msg.Attachments)
 		if prepErr == nil && len(preparedAtts) > 0 {
 			msg.Attachments = preparedAtts

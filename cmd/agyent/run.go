@@ -157,6 +157,7 @@ var runCmd = &cobra.Command{
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
 		eng.SetSecurityManager(secMgr)
+		eng.SetAttachmentFetcher(channel.MediaManager())
 		wsMgr := workspaceAdapter.NewManager(mainLogger)
 		eng.SetWorkspaceManager(wsMgr)
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -81,13 +82,19 @@ func BuildDSN(dbPath string) string {
 }
 
 // Open initializes the SQLite database with Dual-Pool Single-Writer architecture,
+// Open initializes the SQLite database with Dual-Pool Single-Writer architecture,
+// creates a WAL-safe snapshot backup if running migrations on a legacy database,
 // and automatically executes any pending embedded schema migrations.
 func Open(dbPath string) (*SQLiteStore, error) {
-	// Create directory if not an in-memory database
-	if dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file::memory:") && dbPath != "" {
+	isMemory := dbPath == ":memory:" || strings.HasPrefix(dbPath, "file::memory:") || dbPath == ""
+	legacyFileExists := false
+	if !isMemory {
+		if fi, err := os.Stat(dbPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			legacyFileExists = true
+		}
 		dir := filepath.Dir(dbPath)
 		if dir != "." && dir != "/" && dir != "" {
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0700); err != nil {
 				return nil, fmt.Errorf("failed to create database directory %s: %w", dir, err)
 			}
 		}
@@ -106,17 +113,31 @@ func Open(dbPath string) (*SQLiteStore, error) {
 	writeDB.SetConnMaxIdleTime(0)
 
 	// Verify write connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := writeDB.PingContext(ctx); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
+	if err := writeDB.PingContext(pingCtx); err != nil {
 		_ = writeDB.Close()
 		return nil, fmt.Errorf("failed to ping sqlite write pool: %w", err)
 	}
 
-	// 2. Initialize Concurrent Read DB Pool (MaxOpenConns = 20)
+	// 2. Snapshot backup before migration if legacy DB version < 11
+	migrationCtx, migrationCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer migrationCancel()
+
+	if err := backupSnapshotIfNeeded(migrationCtx, writeDB, dbPath, legacyFileExists); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("database pre-migration backup failed: %w", err)
+	}
+
+	// 3. Execute migrations on write pool
+	if err := runMigrations(migrationCtx, writeDB); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("failed to execute migrations: %w", err)
+	}
+
+	// 4. Initialize Concurrent Read DB Pool (MaxOpenConns = 20) ONLY AFTER MIGRATIONS SUCCEED
 	var readDB *sql.DB
-	if dbPath == ":memory:" || strings.HasPrefix(dbPath, "file::memory:") || dbPath == "" {
-		// In-memory databases must share the exact same pool to access in-memory tables
+	if isMemory {
 		readDB = writeDB
 	} else {
 		readDB, err = sql.Open("sqlite", dsn)
@@ -129,20 +150,11 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		readDB.SetConnMaxLifetime(0)
 		readDB.SetConnMaxIdleTime(0)
 
-		if err := readDB.PingContext(ctx); err != nil {
+		if err := readDB.PingContext(pingCtx); err != nil {
 			_ = writeDB.Close()
 			_ = readDB.Close()
 			return nil, fmt.Errorf("failed to ping sqlite read pool: %w", err)
 		}
-	}
-
-	// Execute migrations on write pool
-	if err := runMigrations(ctx, writeDB); err != nil {
-		_ = writeDB.Close()
-		if readDB != writeDB {
-			_ = readDB.Close()
-		}
-		return nil, fmt.Errorf("failed to execute migrations: %w", err)
 	}
 
 	return &SQLiteStore{
@@ -151,6 +163,61 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		readDB:  readDB,
 		lockMgr: NewSessionLockManager(),
 	}, nil
+}
+
+func backupSnapshotIfNeeded(ctx context.Context, db *sql.DB, dbPath string, legacyFileExists bool) error {
+	if !legacyFileExists || dbPath == ":memory:" || strings.HasPrefix(dbPath, "file::memory:") || dbPath == "" {
+		return nil
+	}
+
+	// Check if schema_migrations table exists
+	var tableExists bool
+	_ = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')`).Scan(&tableExists)
+	if !tableExists {
+		return nil // Fresh DB before initial schema migration
+	}
+
+	var maxVersion int
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&maxVersion)
+	if maxVersion == 0 || maxVersion >= 11 {
+		return nil // Fresh DB or already migrated to v11+
+	}
+
+	// Legacy DB detected needing migration 000011 -> Create snapshot via atomic VACUUM INTO
+	backupDir := filepath.Join(filepath.Dir(dbPath), "backups")
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	backupName := fmt.Sprintf("agyent.pre_000011.%d.%d.bak", time.Now().Unix(), time.Now().UnixNano())
+	backupPath := filepath.Join(backupDir, backupName)
+
+	escapedBackupPath := strings.ReplaceAll(backupPath, "'", "''")
+	vacuumQuery := fmt.Sprintf("VACUUM INTO '%s'", escapedBackupPath)
+	if _, err := db.ExecContext(ctx, vacuumQuery); err != nil {
+		return fmt.Errorf("failed to create pre-migration snapshot via VACUUM INTO: %w", err)
+	}
+
+	_ = os.Chmod(backupPath, 0600)
+
+	// Verify integrity of the backup snapshot
+	verifyDB, err := sql.Open("sqlite", BuildDSN(backupPath))
+	if err != nil {
+		return fmt.Errorf("failed to open backup snapshot for verification: %w", err)
+	}
+	defer verifyDB.Close()
+
+	var integrity string
+	if err := verifyDB.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+		return fmt.Errorf("backup snapshot integrity check failed (result: %s, err: %v)", integrity, err)
+	}
+
+	slog.Info("Verified WAL-consistent snapshot created before migration 000011",
+		slog.String("backup_path", backupPath),
+		slog.Int("previous_version", maxVersion),
+	)
+
+	return nil
 }
 
 // DB returns the underlying write *sql.DB instance (useful for advanced/raw queries if needed).
