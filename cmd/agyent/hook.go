@@ -32,6 +32,9 @@ var hookBridgeCmd = &cobra.Command{
 		}
 
 		req.HookType = hookType
+		if req.TurnID == "" {
+			req.TurnID = os.Getenv("AGYENT_TURN_ID")
+		}
 
 		ipcAddr := os.Getenv("AGYENT_SECURITY_IPC_ADDR")
 		if ipcAddr == "" {

@@ -199,10 +199,23 @@ Scope: %s | Agent: %s%s`, session.ActiveAgent, session.ActiveProject, session.Ac
 		Model:                      resolvedModel,
 		Mode:                       "plan",
 		Effort:                     "low",
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: false,
 	}
 
-	execRes, err := e.runner.Execute(synthCtx, req)
+	var (
+		execRes *domain.ExecutionResult
+		err     error
+	)
+	if e.executionService != nil {
+		principal := domain.Principal{
+			Kind:      domain.PrincipalSystem,
+			Provider:  "internal",
+			SubjectID: "system:compactor",
+		}
+		execRes, err = e.executionService.ExecuteTurn(synthCtx, principal, req, session.SessionKey, false)
+	} else {
+		execRes, err = e.runner.Execute(synthCtx, req)
+	}
 	if err != nil || execRes == nil || !execRes.Success || strings.TrimSpace(execRes.ResponseText) == "" {
 		slog.DebugContext(ctx, "Semantic synthesis timed out or failed, using heuristic digest",
 			slog.Any("error", err),

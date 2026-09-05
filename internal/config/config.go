@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"agyent/internal/core/domain"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -637,6 +639,14 @@ func (c *Config) IsAdminForProvider(senderID string, provider string) bool {
 		}
 	}
 	return false
+}
+
+// IsSuperAdmin evaluates whether a security principal has global daemon administrative privileges.
+func (c *Config) IsSuperAdmin(principal domain.Principal) bool {
+	if c == nil {
+		return false
+	}
+	return c.IsAdminForProvider(principal.SubjectID, principal.Provider)
 }
 
 // Validate checks required fields and configuration constraints.

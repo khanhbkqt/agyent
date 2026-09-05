@@ -21,11 +21,13 @@ import (
 	"agyent/internal/adapters/subagent"
 	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
+	"agyent/internal/core/execution"
 	"agyent/internal/core/scheduler"
 	"agyent/internal/logger"
 
@@ -161,18 +163,31 @@ var runCmd = &cobra.Command{
 		wsMgr := workspaceAdapter.NewManager(mainLogger)
 		eng.SetWorkspaceManager(wsMgr)
 
+		// Centralized Authorization Policy & Execution Chokepoint
+		policyEngine := auth.NewEngine(store, cfg)
+		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, cfg.Telegram.SecretToken, mainLogger)
+		eng.SetPolicyEngine(policyEngine)
+		eng.SetExecutionService(execSvc)
+
+		if cfg.Telegram.SecretToken != "" {
+			ipcServer.SetSecretToken(cfg.Telegram.SecretToken)
+		}
+
 		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
 		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
 		sched.SetLocation(contextAdapter.DetectUserLocation(starterWS))
+		sched.SetExecutionService(execSvc)
 		eng.SetScheduler(sched)
 		ipcServer.SetScheduler(sched)
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
+		subDispatcher.SetSecurityManager(secMgr)
 		eng.SetSubagentDispatcher(subDispatcher)
 		ipcServer.SetSubagents(subDispatcher)
 
 		if cfg.Evolution.Enabled {
 			evoOrch := evolutionAdapter.NewEvolutionOrchestrator(cfg, store, runner)
+			evoOrch.SetExecutionService(execSvc)
 			eng.SetEvolutionOrchestrator(evoOrch)
 		}
 

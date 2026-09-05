@@ -57,6 +57,10 @@ func (m *mockSecurityManager) ResolveSessionKey(convID string, workspaceDir stri
 func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool) {
 	return domain.TurnSecurityContext{}, false
 }
+func (m *mockSecurityManager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	return domain.TurnSecurityContext{}, false
+}
+func (m *mockSecurityManager) UnregisterTurnByID(turnID string)          {}
 func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string) {}
 
 func TestIPCServerAndClient_PreToolUse(t *testing.T) {
@@ -365,5 +369,44 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, listResp.Success)
 	assert.Contains(t, string(listResp.Data), "task-1")
+}
+
+func TestIPC_ActionSecretTokenAuthAndHookValidation(t *testing.T) {
+	addr := "127.0.0.1:49976"
+	mockMgr := &mockSecurityManager{}
+	server := NewServer(mockMgr, addr, nil)
+	server.SetSecretToken("super-secret-token")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+	client := NewClient(addr)
+
+	// 1. Action without token or turn ID should be rejected
+	unauthResp, err := client.SendAction("list_subagents", map[string]interface{}{}, 2*time.Second)
+	require.NoError(t, err)
+	assert.False(t, unauthResp.Success)
+	assert.Contains(t, unauthResp.Error, "unauthorized")
+
+	// 2. Action with valid secret token should succeed (even if subagents not configured, reaches handler)
+	authResp, err := client.SendAction("list_subagents", map[string]interface{}{
+		"token": "super-secret-token",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.False(t, authResp.Success) // fails at subagent nil check, not auth!
+	assert.Contains(t, authResp.Error, "subagent dispatcher is not initialized")
+
+	// 3. Unknown hook type should be rejected
+	hookResp, err := client.SendHookRequest(HookRequest{
+		HookType: "invalid_hook_type",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, string(domain.DecisionDeny), hookResp.Decision)
+	assert.Contains(t, hookResp.Reason, "Unsupported or unauthorized hook type")
 }
 

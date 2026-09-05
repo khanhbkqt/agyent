@@ -13,6 +13,7 @@ import (
 
 	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
 
 // TurnResult represents the output of a single subprocess execution turn.
@@ -30,8 +31,9 @@ type TurnResult struct {
 
 // taskExecutor coordinates spawning and NDJSON stream scanning for a subagent OS subprocess.
 type taskExecutor struct {
-	binaryPath     string
-	defaultTimeout time.Duration
+	binaryPath      string
+	defaultTimeout  time.Duration
+	securityManager ports.SecurityManagerPort
 }
 
 func newTaskExecutor(binaryPath string, defaultTimeout time.Duration) *taskExecutor {
@@ -63,7 +65,6 @@ func (e *taskExecutor) executeTurn(
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--project", "outside-of-project",
-		"--dangerously-skip-permissions",
 		"--mode", "accept-edits",
 	}
 
@@ -116,11 +117,30 @@ func (e *taskExecutor) executeTurn(
 		return nil, fmt.Errorf("failed to marshal inbound stream message: %w", err)
 	}
 
+	turnID := fmt.Sprintf("turn-sub-%s-%d", task.ID, time.Now().UnixNano())
+	if e.securityManager != nil {
+		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         turnID,
+			ConversationID: convID,
+			SessionKey:     task.ParentSessionKey,
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalSystem,
+				Provider:  "internal",
+				SubjectID: "system:subagent",
+			},
+			Action:       domain.ActionTaskDispatch,
+			WorkspaceDir: workspaceDir,
+			AgentName:    task.AgentName,
+			CreatedAt:    time.Now(),
+		})
+		defer e.securityManager.UnregisterTurnByID(turnID)
+	}
+
 	cmd := exec.CommandContext(execCtx, e.binaryPath, args...)
 	if workspaceDir != "" {
 		cmd.Dir = workspaceDir
 	}
-	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb", "AGYENT_TURN_ID="+turnID)
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
 
 	stdoutPipe, err := cmd.StdoutPipe()

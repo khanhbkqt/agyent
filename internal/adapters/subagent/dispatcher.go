@@ -62,6 +62,15 @@ func NewDispatcher(
 	}
 }
 
+// SetSecurityManager injects the security manager port for subagent turn registration.
+func (d *SubagentDispatcher) SetSecurityManager(sec ports.SecurityManagerPort) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.executor != nil {
+		d.executor.securityManager = sec
+	}
+}
+
 // Start launches the background worker pool consumers.
 func (d *SubagentDispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()

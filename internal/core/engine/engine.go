@@ -39,6 +39,8 @@ type Engine struct {
 	workspaceManager   ports.WorkspacePort
 	scheduler          ports.SchedulerPort
 	attachmentFetcher  ports.AttachmentFetcherPort
+	policyEngine       ports.PolicyEngine
+	executionService   ports.ExecutionServicePort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -142,6 +144,16 @@ func (e *Engine) SetSecurityManager(sec ports.SecurityManagerPort) {
 // GetSecurityManager returns the active security manager instance.
 func (e *Engine) GetSecurityManager() ports.SecurityManagerPort {
 	return e.securityManager
+}
+
+// SetPolicyEngine injects the centralized authorization policy engine.
+func (e *Engine) SetPolicyEngine(p ports.PolicyEngine) {
+	e.policyEngine = p
+}
+
+// SetExecutionService injects the execution service chokepoint.
+func (e *Engine) SetExecutionService(s ports.ExecutionServicePort) {
+	e.executionService = s
 }
 
 // SetWorkspaceManager injects the workspace manager for handling directory trees and inbound attachments.
@@ -344,7 +356,9 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 			slog.String("session_key", sessionKey),
 			slog.String("sender", msg.Sender.Username),
 		)
-		if e.runner != nil {
+		if e.executionService != nil {
+			_ = e.executionService.InterruptTurn(ctx, sessionKey)
+		} else if e.runner != nil {
 			_ = e.runner.InterruptStream(ctx, sessionKey)
 		}
 		// Wait briefly for previous turn to release lock, enabling clean turn handover
@@ -751,7 +765,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	var execResult *domain.ExecutionResult
 	var execErr error
 
-	if e.securityManager != nil {
+	principal := domain.Principal{
+		Kind:      domain.PrincipalUser,
+		Provider:  msg.Channel,
+		SubjectID: msg.Sender.ID,
+	}
+
+	if e.executionService == nil && e.securityManager != nil {
 		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
 			ConversationID: activeConvID,
 			SessionKey:     sessionKey,
@@ -764,17 +784,21 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if isStream {
-		execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
-
-		// Edge Case: If agy fails due to unsupported effort flag, retry once with effort stripped
-		if isEffortError(execErr, execResult) && req.Effort != "" {
-			slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI, retrying without --effort",
-				slog.String("model", req.Model),
-				slog.String("effort", req.Effort),
-			)
-			req.Effort = ""
-			resolvedEffort = ""
+		if e.executionService != nil {
+			execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, true)
+		} else {
 			execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+
+			// Edge Case: If agy fails due to unsupported effort flag, retry once with effort stripped
+			if isEffortError(execErr, execResult) && req.Effort != "" {
+				slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI, retrying without --effort",
+					slog.String("model", req.Model),
+					slog.String("effort", req.Effort),
+				)
+				req.Effort = ""
+				resolvedEffort = ""
+				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			}
 		}
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
@@ -789,7 +813,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)
 			req.ConversationID = ""
-			execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, true)
+			} else {
+				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			}
 		}
 	} else {
 		heartbeatStop := make(chan struct{})
@@ -819,7 +847,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		// Execute Runner with Transient Error Retry & Exponential Backoff (1s, 2s, 4s)
 		for attempt := 0; attempt < 3; attempt++ {
-			execResult, execErr = e.runner.Execute(turnCtx, req)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, false)
+			} else {
+				execResult, execErr = e.runner.Execute(turnCtx, req)
+			}
 			if execErr == nil && execResult != nil && execResult.Success {
 				break
 			}
@@ -864,7 +896,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)
 			req.ConversationID = ""
-			execResult, execErr = e.runner.Execute(turnCtx, req)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, false)
+			} else {
+				execResult, execErr = e.runner.Execute(turnCtx, req)
+			}
 		}
 
 		if execErr == nil && execResult != nil && execResult.Success {

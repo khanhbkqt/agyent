@@ -590,6 +590,9 @@ func (m *Manager) RegisterActiveTurn(turn domain.TurnSecurityContext) {
 	if turn.CreatedAt.IsZero() {
 		turn.CreatedAt = time.Now()
 	}
+	if turn.TurnID != "" {
+		m.activeTurns[turn.TurnID] = turn
+	}
 	if turn.ConversationID != "" {
 		m.activeTurns[turn.ConversationID] = turn
 	}
@@ -609,6 +612,29 @@ func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 	if workspaceDir != "" {
 		delete(m.activeWorkspaces, canonicalizeWorkspacePath(workspaceDir))
 	}
+}
+
+// UnregisterTurnByID removes the active turn association by its unique TurnID.
+func (m *Manager) UnregisterTurnByID(turnID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if turnID != "" {
+		delete(m.activeTurns, turnID)
+	}
+}
+
+// ResolveTurnByID retrieves the active TurnSecurityContext directly by TurnID.
+func (m *Manager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if turnID != "" {
+		if t, ok := m.activeTurns[turnID]; ok {
+			return t, true
+		}
+	}
+	return domain.TurnSecurityContext{}, false
 }
 
 // ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.

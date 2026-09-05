@@ -22,16 +22,17 @@ const DefaultIPCAddress = "127.0.0.1:49215"
 // Server coordinates IPC communication to receive and evaluate Antigravity hook requests
 // and process management IPC actions from local plugins.
 type Server struct {
-	addr      string
-	manager   ports.SecurityManagerPort
-	scheduler ports.SchedulerPort
-	subagents ports.SubagentDispatcherPort
-	listener  net.Listener
-	logger    *slog.Logger
-	mu        sync.RWMutex
-	running   bool
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	addr        string
+	manager     ports.SecurityManagerPort
+	scheduler   ports.SchedulerPort
+	subagents   ports.SubagentDispatcherPort
+	secretToken string
+	listener    net.Listener
+	logger      *slog.Logger
+	mu          sync.RWMutex
+	running     bool
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewServer constructs a new IPC server instance.
@@ -47,6 +48,13 @@ func NewServer(manager ports.SecurityManagerPort, addr string, logger *slog.Logg
 		manager: manager,
 		logger:  logger,
 	}
+}
+
+// SetSecretToken configures the shared secret token required for administrative action requests.
+func (s *Server) SetSecretToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.secretToken = token
 }
 
 // SetScheduler sets the scheduler port for handling schedule/heartbeat IPC actions.
@@ -145,6 +153,11 @@ func (s *Server) acceptLoop(ctx context.Context) {
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
+	if err := verifyPeerCredentials(conn); err != nil {
+		s.logger.Warn("Rejected unauthorized IPC connection", "error", err)
+		return
+	}
+
 	_ = conn.SetDeadline(time.Now().Add(65 * time.Second)) // Support 60s HITL timeout + buffer
 
 	scanner := bufio.NewScanner(conn)
@@ -170,6 +183,43 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// 1. Check if this is a custom IPC action request (e.g. from scheduler plugin)
 	if action, ok := raw["action"].(string); ok && action != "" {
+		s.mu.RLock()
+		secToken := s.secretToken
+		s.mu.RUnlock()
+
+		if secToken != "" {
+			reqToken, _ := raw["token"].(string)
+			if reqToken == "" {
+				if p, ok := raw["params"].(map[string]interface{}); ok {
+					reqToken, _ = p["token"].(string)
+				}
+			}
+			turnID, _ := raw["turn_id"].(string)
+			if turnID == "" {
+				if p, ok := raw["params"].(map[string]interface{}); ok {
+					turnID, _ = p["turn_id"].(string)
+				}
+			}
+			authorized := false
+			if reqToken == secToken {
+				authorized = true
+			} else if turnID != "" && s.manager != nil {
+				if _, ok := s.manager.ResolveTurnByID(turnID); ok {
+					authorized = true
+				}
+			}
+			if !authorized {
+				s.logger.Warn("Unauthorized IPC action attempt", "action", action)
+				respMap := map[string]interface{}{
+					"success": false,
+					"error":   "unauthorized: missing or invalid secret token / turn ID",
+				}
+				respBytes, _ := json.Marshal(respMap)
+				_, _ = conn.Write(append(respBytes, '\n'))
+				return
+			}
+		}
+
 		s.handleAction(ctx, conn, action, raw)
 		return
 	}
@@ -510,7 +560,18 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 		if len(req.WorkspacePaths) > 0 {
 			ws = req.WorkspacePaths[0]
 		}
-		sessionKey := s.manager.ResolveSessionKey(req.ConversationID, ws)
+		var sessionKey string
+		if req.TurnID != "" {
+			if turnCtx, ok := s.manager.ResolveTurnByID(req.TurnID); ok {
+				sessionKey = turnCtx.SessionKey
+				if ws == "" {
+					ws = turnCtx.WorkspaceDir
+				}
+			}
+		}
+		if sessionKey == "" {
+			sessionKey = s.manager.ResolveSessionKey(req.ConversationID, ws)
+		}
 		evalReq := domain.ToolEvaluationRequest{
 			ToolName:       req.ToolCall.Name,
 			Args:           req.ToolCall.Args,
@@ -550,7 +611,8 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 
 	default:
 		return HookResponse{
-			Decision: string(domain.DecisionAllow),
+			Decision: string(domain.DecisionDeny),
+			Reason:   fmt.Sprintf("Unsupported or unauthorized hook type %q", req.HookType),
 		}, nil
 	}
 }
