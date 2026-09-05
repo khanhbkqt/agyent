@@ -81,7 +81,22 @@ type AuditRepository interface {
 	ListAuditLogs(ctx context.Context, sessionKey string, limit int) ([]domain.AuditLog, error)
 	GetTokenStats(ctx context.Context, sessionKey string, convID string) (*domain.TokenUsage, error)
 	GetTokenEfficiencyReport(ctx context.Context, sessionKey string, agentName string) (*domain.TokenEfficiencyReport, error)
+
+	// Security audit events (security_audit_events table)
+	LogSecurityEvent(ctx context.Context, evt *domain.AuditSecurityEvent) error
+	ListSecurityEvents(ctx context.Context, limit int) ([]domain.AuditSecurityEvent, error)
 }
+
+// ISP (Interface Segregation Principle) Store Aliases:
+type SessionStore = SessionRepository
+type AgentStore = AgentRepository
+type ProjectStore = ProjectRepository
+type UserStore = UserRepository
+type GroupStore = GroupRepository
+type AuditStore = AuditRepository
+type ConversationStore = ConversationRepository
+type SubagentStore = SubagentRepository
+type ScheduleStore = ScheduleRepository
 
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.
 type ConversationRepository interface {

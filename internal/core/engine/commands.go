@@ -913,6 +913,20 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		if !claimed {
 			return fmt.Sprintf("⚠️ Agent `%s` cannot be claimed (it may already have an owner or does not exist).", agentName)
 		}
+		var senderUID int64
+		_, _ = fmt.Sscanf(sender.ID, "%d", &senderUID)
+		_ = e.storage.LogSecurityEvent(ctx, &domain.AuditSecurityEvent{
+			EventID:        fmt.Sprintf("sec-claim-%d", time.Now().UnixNano()),
+			Timestamp:      time.Now(),
+			SessionKey:     session.SessionKey,
+			UserID:         senderUID,
+			AgentName:      agentName,
+			Checkpoint:     "RBACClaim",
+			ToolName:       "claim",
+			TargetResource: agentName,
+			Decision:       domain.DecisionAllow,
+			Reason:         fmt.Sprintf("SuperAdmin %s claimed ownership of agent %s", sender.ID, agentName),
+		})
 		return fmt.Sprintf("✅ Successfully claimed agent `@%s`! You are now the official owner (User ID: `%s`).", agentName, sender.ID)
 
 	case "share":
