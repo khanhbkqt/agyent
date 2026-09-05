@@ -18,7 +18,10 @@ import (
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
+
+var _ ports.AttachmentFetcherPort = (*MediaManager)(nil)
 
 var (
 	markdownMediaRegex = regexp.MustCompile(`(!)?\[([^\]]*)\]\(([^)]+)\)`)
@@ -154,6 +157,134 @@ func SanitizeFilename(name string) string {
 	return cleaned
 }
 
+// ExtractAttachmentRefs extracts metadata references to media attachments without downloading any file to disk.
+func (m *MediaManager) ExtractAttachmentRefs(msg *gotgbot.Message, botID int64) []domain.InboundAttachmentRef {
+	if msg == nil {
+		return nil
+	}
+	var refs []domain.InboundAttachmentRef
+
+	// 1. Photo (highest resolution)
+	if len(msg.Photo) > 0 {
+		bestPhoto := msg.Photo[len(msg.Photo)-1]
+		fileName := fmt.Sprintf("photo_%d_%s.jpg", time.Now().Unix(), bestPhoto.FileUniqueId)
+		refs = append(refs, domain.InboundAttachmentRef{
+			ID:       bestPhoto.FileUniqueId,
+			SourceID: bestPhoto.FileId,
+			FileName: fileName,
+			MIMEType: "image/jpeg",
+			Size:     bestPhoto.FileSize,
+			Type:     "image",
+			Caption:  msg.Caption,
+			BotID:    botID,
+		})
+	}
+
+	// 2. Document
+	if msg.Document != nil {
+		fileName := SanitizeFilename(msg.Document.FileName)
+		if fileName == "file" {
+			fileName = fmt.Sprintf("doc_%d_%s", time.Now().Unix(), msg.Document.FileUniqueId)
+		}
+		mimeType := msg.Document.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		refs = append(refs, domain.InboundAttachmentRef{
+			ID:       msg.Document.FileUniqueId,
+			SourceID: msg.Document.FileId,
+			FileName: fileName,
+			MIMEType: mimeType,
+			Size:     msg.Document.FileSize,
+			Type:     "document",
+			Caption:  msg.Caption,
+			BotID:    botID,
+		})
+	}
+
+	// 3. Audio / Voice
+	if msg.Voice != nil {
+		fileName := fmt.Sprintf("voice_%d_%s.ogg", time.Now().Unix(), msg.Voice.FileUniqueId)
+		refs = append(refs, domain.InboundAttachmentRef{
+			ID:       msg.Voice.FileUniqueId,
+			SourceID: msg.Voice.FileId,
+			FileName: fileName,
+			MIMEType: "audio/ogg",
+			Size:     msg.Voice.FileSize,
+			Type:     "voice",
+			Caption:  msg.Caption,
+			BotID:    botID,
+		})
+	}
+	if msg.Audio != nil {
+		fileName := SanitizeFilename(msg.Audio.FileName)
+		if fileName == "file" {
+			fileName = fmt.Sprintf("audio_%d_%s.mp3", time.Now().Unix(), msg.Audio.FileUniqueId)
+		}
+		mimeType := msg.Audio.MimeType
+		if mimeType == "" {
+			mimeType = "audio/mpeg"
+		}
+		refs = append(refs, domain.InboundAttachmentRef{
+			ID:       msg.Audio.FileUniqueId,
+			SourceID: msg.Audio.FileId,
+			FileName: fileName,
+			MIMEType: mimeType,
+			Size:     msg.Audio.FileSize,
+			Type:     "audio",
+			Caption:  msg.Caption,
+			BotID:    botID,
+		})
+	}
+
+	// 4. Video
+	if msg.Video != nil {
+		fileName := SanitizeFilename(msg.Video.FileName)
+		if fileName == "file" {
+			fileName = fmt.Sprintf("video_%d_%s.mp4", time.Now().Unix(), msg.Video.FileUniqueId)
+		}
+		mimeType := msg.Video.MimeType
+		if mimeType == "" {
+			mimeType = "video/mp4"
+		}
+		refs = append(refs, domain.InboundAttachmentRef{
+			ID:       msg.Video.FileUniqueId,
+			SourceID: msg.Video.FileId,
+			FileName: fileName,
+			MIMEType: mimeType,
+			Size:     msg.Video.FileSize,
+			Type:     "video",
+			Caption:  msg.Caption,
+			BotID:    botID,
+		})
+	}
+
+	return refs
+}
+
+// FetchAttachment implements ports.AttachmentFetcherPort by lazily downloading a file using its reference.
+func (m *MediaManager) FetchAttachment(ctx context.Context, ref domain.InboundAttachmentRef, targetDir string) (domain.Attachment, error) {
+	var bot *gotgbot.Bot
+	if ref.BotID > 0 && m.botGetter != nil {
+		bot = m.botGetter(ref.BotID)
+	}
+	if bot == nil {
+		bot = m.bot
+	}
+	if bot == nil {
+		return domain.Attachment{}, errors.New("telegram bot client not available to fetch attachment")
+	}
+
+	if targetDir == "" {
+		targetDir = filepath.Join(m.cfg.Storage.AgentsDir, "staging")
+	}
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		return domain.Attachment{}, fmt.Errorf("failed to create target attachment directory: %w", err)
+	}
+
+	return m.downloadFile(ctx, bot, ref.SourceID, ref.FileName, ref.MIMEType, ref.Type, targetDir)
+}
+
 // DownloadInboundMedia extracts and downloads media files from a Telegram message into staging directory.
 func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Message, botOpt ...*gotgbot.Bot) ([]domain.Attachment, error) {
 	bot := m.resolveBot(botOpt)
@@ -163,7 +294,7 @@ func (m *MediaManager) DownloadInboundMedia(ctx context.Context, msg *gotgbot.Me
 
 	var attachments []domain.Attachment
 	targetDir := filepath.Join(m.cfg.Storage.AgentsDir, "staging")
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create staging upload directory: %w", err)
 	}
 
@@ -259,17 +390,24 @@ func (m *MediaManager) downloadFile(ctx context.Context, bot *gotgbot.Bot, fileI
 	safeName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileName)
 	destPath := filepath.Join(targetDir, safeName)
 
-	out, err := os.Create(destPath)
+	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return domain.Attachment{}, fmt.Errorf("failed to create local file: %w", err)
 	}
-	defer out.Close()
 
 	// Enforce 50MB file size limit to prevent disk exhaustion DoS
-	limitedReader := io.LimitReader(resp.Body, 50<<20)
+	const maxFileSize = 50 << 20 // 50MB
+	limitedReader := io.LimitReader(resp.Body, maxFileSize+1)
 	size, err := io.Copy(out, limitedReader)
+	_ = out.Close()
 	if err != nil {
+		_ = os.Remove(destPath)
 		return domain.Attachment{}, fmt.Errorf("failed to write local file: %w", err)
+	}
+
+	if size > maxFileSize {
+		_ = os.Remove(destPath)
+		return domain.Attachment{}, fmt.Errorf("%w: downloaded bytes exceed 50MB limit", ports.ErrAttachmentTooLarge)
 	}
 
 	return domain.Attachment{

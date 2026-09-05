@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"agyent/internal/config"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
 
 // HandleCommand processes slash commands and returns an outbound response.
@@ -24,6 +26,46 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	if msg.BindAgent != "" {
 		defaultAgent = msg.BindAgent
 	}
+	// Inbound Authorization: Evaluate access to targetAgent BEFORE mutating session state
+	// Note: /a and /agents subcommands (new, list, claim, share, revoke) manage their own
+	// targeted permissions per-subcommand and per-agent.
+	if cmd != "/a" && cmd != "/agents" {
+		targetAgent := defaultAgent
+		existingSession, _ := e.storage.GetSession(ctx, sessionKey)
+		if existingSession != nil && existingSession.ActiveAgent != "" {
+			targetAgent = existingSession.ActiveAgent
+		}
+		if msg.BindAgent != "" {
+			targetAgent = msg.BindAgent
+		}
+
+		agent, getErr := e.storage.GetAgent(ctx, targetAgent)
+		if getErr == nil && agent != nil {
+			allowed, _, checkErr := e.CheckAccess(ctx, agent, msg.Sender.ID)
+			if checkErr != nil || !allowed {
+				return &domain.OutboundMessage{
+					Channel:          msg.Channel,
+					BotID:            msg.BotID,
+					ChatID:           msg.Chat.ID,
+					ThreadID:         msg.Chat.ThreadID,
+					Text:             fmt.Sprintf("⛔ **Access Denied (403):** You do not have permission to interact with agent `@%s`.", targetAgent),
+					ParseMode:        "Markdown",
+					ReplyToMessageID: msg.ID,
+				}, nil
+			}
+		} else if !e.IsSuperAdmin(msg.Sender.ID) {
+			return &domain.OutboundMessage{
+				Channel:          msg.Channel,
+				BotID:            msg.BotID,
+				ChatID:           msg.Chat.ID,
+				ThreadID:         msg.Chat.ThreadID,
+				Text:             "⛔ **Access Denied (403):** Unauthorized caller.",
+				ParseMode:        "Markdown",
+				ReplyToMessageID: msg.ID,
+			}, nil
+		}
+	}
+
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
 	if err != nil {
 		return &domain.OutboundMessage{
@@ -40,6 +82,20 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		session.ActiveAgent = msg.BindAgent
 		session.ActiveProject = ""
 		_ = e.storage.SaveSession(ctx, session)
+	}
+
+	// Commands that mutate session-scoped state are authorized before their
+	// handlers can inspect or change the target object. Handler-level checks
+	// remain for object ownership (for example a concrete schedule/task ID).
+	if action, kind, ok := commandAction(cmd, args); ok {
+		if err := e.authorizeAgentAction(ctx, msg.Sender, action, kind, "", session); err != nil {
+			return e.commandDeniedMessage(msg), nil
+		}
+		if action == domain.ActionProjectCreate && len(args) > 2 {
+			if err := e.authorizeAgentAction(ctx, msg.Sender, domain.ActionProjectCreatePath, domain.ResourceKindProject, "", session); err != nil {
+				return e.commandDeniedMessage(msg), nil
+			}
+		}
 	}
 
 	var responseText string
@@ -62,6 +118,19 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handleSkillsCommand(ctx, session, args)
 
 	case "/plugins", "/plugin":
+		if len(args) > 0 && strings.ToLower(args[0]) != "list" {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindPlugin, ID: args[0], AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionPluginManage, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify plugins."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify plugins."
+				break
+			}
+		}
 		responseText = e.handlePluginsCommand(ctx, session, args)
 
 	case "/browser":
@@ -71,9 +140,35 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 			"• To browse or scrape: Prompt your agent in natural language (e.g. _\"Mở website https://... và cào danh sách sản phẩm\"_), and the agent will automatically use native `camoufox_*` MCP tools."
 
 	case "/stream":
+		if len(args) > 0 {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindSystem, ID: "stream", AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionStreamModeChange, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify global stream settings."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify global stream settings."
+				break
+			}
+		}
 		responseText = e.handleStreamCommand(args)
 
 	case "/mode", "/queuemode":
+		if len(args) > 0 {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindSystem, ID: "mode", AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionModeChange, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify global queue mode."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify global queue mode."
+				break
+			}
+		}
 		responseText = e.handleModeCommand(args)
 
 	case "/model", "/m", "/models":
@@ -89,7 +184,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handleBootstrapCommand(ctx, msg.Sender, session, args)
 
 	case "/projects", "/project", "/p":
-		responseText = e.handleProjectsCommand(ctx, session, args)
+		responseText = e.handleProjectsCommand(ctx, msg.Sender, session, args)
 
 	case "/security", "/sec":
 		responseText, inlineKeyboard = e.handleSecurityCommand(msg.Sender, sessionKey, args)
@@ -125,6 +220,14 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handlePinCommand(ctx, session, args, false)
 
 	case "/reset":
+		if e.policyEngine != nil {
+			principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+			res := domain.Resource{Kind: domain.ResourceKindSession, ID: sessionKey, SessionKey: sessionKey, AgentName: session.ActiveAgent}
+			if err := e.policyEngine.Authorize(ctx, principal, domain.ActionSessionReset, res); err != nil {
+				responseText = "⛔ Permission denied: You are not authorized to reset this session context."
+				break
+			}
+		}
 		if e.HasActiveTurn(sessionKey) {
 			responseText = "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting."
 		} else {
@@ -148,6 +251,14 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		}
 
 	case "/force_unlock", "/unlock":
+		if e.policyEngine != nil {
+			principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+			res := domain.Resource{Kind: domain.ResourceKindSession, ID: sessionKey, SessionKey: sessionKey, AgentName: session.ActiveAgent}
+			if err := e.policyEngine.Authorize(ctx, principal, domain.ActionTurnForceUnlock, res); err != nil {
+				responseText = "⛔ Permission denied: You are not authorized to force unlock this session."
+				break
+			}
+		}
 		e.ForceUnlockSession(sessionKey)
 		responseText = "🔓 **Session mutex forcefully released.** Any hanging turn subprocess has been terminated."
 
@@ -165,6 +276,18 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		ReplyToMessageID: msg.ID,
 		InlineKeyboard:   inlineKeyboard,
 	}, nil
+}
+
+func (e *Engine) commandDeniedMessage(msg domain.CanonicalMessage) *domain.OutboundMessage {
+	return &domain.OutboundMessage{
+		Channel:          msg.Channel,
+		BotID:            msg.BotID,
+		ChatID:           msg.Chat.ID,
+		ThreadID:         msg.Chat.ThreadID,
+		Text:             "⛔ **Access Denied (403):** Your role does not permit this action for the active agent.",
+		ParseMode:        "Markdown",
+		ReplyToMessageID: msg.ID,
+	}
 }
 
 func (e *Engine) handleHelpCommand() string {
@@ -533,20 +656,20 @@ func (e *Engine) handleCompactCommand(ctx context.Context, sender domain.SenderU
 		return "⚠️ No active conversation to compact in current scope. Start a conversation with a message first."
 	}
 
+	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+	if err != nil {
+		agent = &domain.Agent{Name: session.ActiveAgent}
+	}
+
 	// RBAC Authorization check
 	if session.ActiveAgent != "" && sender.ID != "" {
-		allowed, role, err := e.storage.CheckAgentAccess(ctx, session.ActiveAgent, sender.ID)
-		if err == nil && !allowed {
+		allowed, role, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed {
 			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to operate agent **%s**.", session.ActiveAgent)
 		}
 		if role == "viewer" {
 			return fmt.Sprintf("⛔ **Permission Denied:** Users with **viewer** role cannot archive or compact context for agent **%s**.", session.ActiveAgent)
 		}
-	}
-
-	agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
-	if err != nil {
-		agent = &domain.Agent{Name: session.ActiveAgent}
 	}
 
 	customNote := strings.Join(args, " ")
@@ -863,6 +986,9 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		if len(args) < 2 {
 			return "⚠️ Usage: `/a new <agent_name> [description]`\nExample: `/a new dev_architect Cloud & Go Systems Architect`"
 		}
+		if err := e.authorizeAgentAction(ctx, sender, domain.ActionAgentCreate, domain.ResourceKindAgent, "", session); err != nil {
+			return "⛔ Access Denied: Only an agent owner, agent admin, or SuperAdmin can create a new agent."
+		}
 		name := strings.TrimSpace(args[1])
 		if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
 			return "⚠️ Invalid agent name. Agent name cannot contain path separators ('/', '\\') or '..'."
@@ -873,10 +999,6 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		}
 
 		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, name)
-		if err := os.MkdirAll(agentPath, 0755); err != nil {
-			return fmt.Sprintf("⚠️ Failed to create agent directory: %v", err)
-		}
-
 		agent := &domain.Agent{
 			Name:          name,
 			Description:   desc,
@@ -888,8 +1010,22 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			UpdatedAt:     time.Now(),
 		}
 
-		if err := e.storage.SaveAgent(ctx, agent); err != nil {
+		// Creating a profile must be insert-only. SaveAgent is intentionally an
+		// upsert and would let an attacker who guesses an existing name take over
+		// its owner/workspace fields.
+		if err := e.storage.CreateAgent(ctx, agent); err != nil {
+			if errors.Is(err, ports.ErrAlreadyExists) {
+				return fmt.Sprintf("⚠️ Agent `%s` already exists. Choose a different name.", name)
+			}
 			return fmt.Sprintf("⚠️ Failed to register agent: %v", err)
+		}
+		if err := os.MkdirAll(agentPath, 0755); err != nil {
+			// The profile has no usable workspace without this directory; roll back
+			// this newly-created row instead of leaving a half-created agent behind.
+			if rollbackErr := e.storage.DeleteAgent(ctx, name); rollbackErr != nil {
+				return fmt.Sprintf("⚠️ Failed to create agent directory: %v (rollback also failed: %v)", err, rollbackErr)
+			}
+			return fmt.Sprintf("⚠️ Failed to create agent directory: %v", err)
 		}
 
 		session.ActiveAgent = name
@@ -897,6 +1033,94 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		_ = e.storage.SaveSession(ctx, session)
 
 		return fmt.Sprintf("🎉 **Agent `%s` created** (Owner: `%s`) and set as active!\nWorkspace: `%s`\nGenesis bootstrap protocol will activate on your first message.", name, sender.ID, agentPath)
+
+	case "preset", "set-preset":
+		if len(args) < 3 {
+			return "⚠️ Usage: `/a preset <agent_name> <unrestricted|developer|balanced|strict|read_only>`\nExample: `/a preset content_weaver unrestricted`"
+		}
+		targetAgentName := strings.TrimSpace(args[1])
+		presetMode := domain.SecurityPreset(strings.ToLower(strings.TrimSpace(args[2])))
+		switch presetMode {
+		case domain.PresetUnrestricted, domain.PresetDeveloper, domain.PresetBalanced, domain.PresetStrict, domain.PresetReadOnly:
+			// valid preset name
+		default:
+			return fmt.Sprintf("⚠️ Invalid preset `%s`. Options: `unrestricted`, `developer`, `balanced`, `strict`, `read_only`", args[2])
+		}
+
+		targetAgent, err := e.storage.GetAgent(ctx, targetAgentName)
+		if err != nil || targetAgent == nil {
+			return fmt.Sprintf("⚠️ Agent `%s` not found.", targetAgentName)
+		}
+
+		isOwner := targetAgent.OwnerID != "" && targetAgent.OwnerID == sender.ID
+		if !isOwner && !e.IsSuperAdmin(sender.ID) {
+			return fmt.Sprintf("⛔ Access Denied: Only the owner of agent `@%s` or a SuperAdmin can modify its security preset.", targetAgentName)
+		}
+
+		oldPreset := targetAgent.SecurityPreset
+		if oldPreset == "" {
+			oldPreset = domain.PresetBalanced
+		}
+
+		// Enforce monotonic upgrade rule via chat: cannot downgrade security level in chat
+		if !domain.CanSwitchPreset(oldPreset, presetMode) {
+			allowedPresets := domain.GetAllowedPresets(oldPreset)
+			var allowedStrs []string
+			for _, p := range allowedPresets {
+				allowedStrs = append(allowedStrs, fmt.Sprintf("`%s`", p))
+			}
+			return fmt.Sprintf("⛔ **Cannot downgrade security preset via chat:** Agent `%s` current baseline security level is `%s`. You can only switch to equal or more secure presets (allowed: %s).\n💡 To downgrade presets, run `agyent agent preset %s %s` directly on host CLI.",
+				targetAgentName, oldPreset, strings.Join(allowedStrs, ", "), targetAgentName, presetMode)
+		}
+
+		targetAgent.SecurityPreset = presetMode
+		targetAgent.UpdatedAt = time.Now()
+		if err := e.storage.SaveAgent(ctx, targetAgent); err != nil {
+			return fmt.Sprintf("⚠️ Failed to update security preset: %v", err)
+		}
+		if e.securityManager != nil && session.ActiveAgent == targetAgentName {
+			e.securityManager.SetPreset(presetMode)
+		}
+		return fmt.Sprintf("🛡️ **Security preset for agent `%s` updated:** `%s` ➔ `%s` (Level %d)",
+			targetAgentName, oldPreset, presetMode, domain.PresetLevel(presetMode))
+
+	case "claim":
+		if len(args) < 2 {
+			return "⚠️ Usage: `/a claim <agent_name>`\nExample: `/a claim agyent`"
+		}
+		agentName := strings.TrimSpace(args[1])
+		if !e.IsSuperAdmin(sender.ID) {
+			return "⛔ Access Denied: Only SuperAdmin can claim unowned agents."
+		}
+		audit := domain.AuditLog{
+			SessionKey:   session.SessionKey,
+			AgentName:    agentName,
+			Status:       "SUCCESS",
+			ErrorMessage: fmt.Sprintf("SuperAdmin %s claimed ownership of agent %s", sender.ID, agentName),
+			CreatedAt:    time.Now(),
+		}
+		claimed, err := e.storage.ClaimAgentWithAudit(ctx, agentName, sender.ID, audit)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Failed to claim agent: %v", err)
+		}
+		if !claimed {
+			return fmt.Sprintf("⚠️ Agent `%s` cannot be claimed (it may already have an owner or does not exist).", agentName)
+		}
+		var senderUID int64
+		_, _ = fmt.Sscanf(sender.ID, "%d", &senderUID)
+		_ = e.storage.LogSecurityEvent(ctx, &domain.AuditSecurityEvent{
+			EventID:        fmt.Sprintf("sec-claim-%d", time.Now().UnixNano()),
+			Timestamp:      time.Now(),
+			SessionKey:     session.SessionKey,
+			UserID:         senderUID,
+			AgentName:      agentName,
+			Checkpoint:     "RBACClaim",
+			ToolName:       "claim",
+			TargetResource: agentName,
+			Decision:       domain.DecisionAllow,
+			Reason:         fmt.Sprintf("SuperAdmin %s claimed ownership of agent %s", sender.ID, agentName),
+		})
+		return fmt.Sprintf("✅ Successfully claimed agent `@%s`! You are now the official owner (User ID: `%s`).", agentName, sender.ID)
 
 	case "share":
 		if len(args) < 3 {
@@ -917,8 +1141,14 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 		}
 
-		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+		if agent.OwnerID == "" {
+			return fmt.Sprintf("⛔ **Access Denied:** Unowned agent `@%s` cannot be shared until officially claimed via `/a claim` by a SuperAdmin.", agentName)
+		}
+		if agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
 			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can share access.", agentName)
+		}
+		if role == "admin" && !e.IsSuperAdmin(sender.ID) && agent.OwnerID != sender.ID {
+			return "⛔ **Access Denied:** Only the owner or a SuperAdmin can grant the `admin` role."
 		}
 
 		perm := &domain.AgentPermission{
@@ -946,7 +1176,10 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 		}
 
-		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+		if agent.OwnerID == "" {
+			return fmt.Sprintf("⛔ **Access Denied:** Unowned agent `@%s` cannot be modified until officially claimed via `/a claim` by a SuperAdmin.", agentName)
+		}
+		if agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
 			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can revoke access.", agentName)
 		}
 
@@ -967,10 +1200,10 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 		}
 
-		allowed, role, _ := e.CheckAccess(ctx, agent, sender.ID)
-		if !allowed {
+		if err := e.authorizeTargetAgentAction(ctx, sender, domain.ActionAgentInspect, agentName); err != nil {
 			return fmt.Sprintf("⛔ **Access Denied:** You do not have permission to view info for agent `@%s`.", agentName)
 		}
+		_, role, _ := e.CheckAccess(ctx, agent, sender.ID)
 
 		perms, _ := e.storage.ListAgentPermissions(ctx, agentName)
 
@@ -1025,6 +1258,9 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.Sende
 		return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 	}
 
+	if agent.OwnerID == "" && !e.IsSuperAdmin(sender.ID) {
+		return "⛔ **Access Denied:** An unowned agent can only be bootstrapped by a SuperAdmin after it is claimed."
+	}
 	if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
 		return fmt.Sprintf("⛔ **Access Denied:** Only the agent owner (User ID: `%s`) or an administrator can re-trigger Genesis Bootstrap.", agent.OwnerID)
 	}
@@ -1042,7 +1278,7 @@ func (e *Engine) handleBootstrapCommand(ctx context.Context, sender domain.Sende
 	return fmt.Sprintf("🔄 **Agent `%s` reset for Genesis Bootstrap.**\nWorkspace: `%s`\nYour next message will initiate the bootstrap protocol and generate identity files (`AGENTS.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`).", agent.Name, agent.WorkspacePath)
 }
 
-func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Session, args []string) string {
+func (e *Engine) handleProjectsCommand(ctx context.Context, sender domain.SenderUser, session *domain.Session, args []string) string {
 	if len(args) == 0 || args[0] == "list" {
 		projects, err := e.storage.ListProjects(ctx, session.ActiveAgent)
 		if err != nil {
@@ -1112,23 +1348,45 @@ func (e *Engine) handleProjectsCommand(ctx context.Context, session *domain.Sess
 		if len(args) < 2 {
 			return "⚠️ Usage: `/p new <project_name> [path]`\nExample: `/p new ecommerce /home/ubuntu/projects/ecommerce`"
 		}
+
+		// RBAC: Verify sender has edit permissions on the active agent
+		agent, err := e.storage.GetAgent(ctx, session.ActiveAgent)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Active agent `%s` not found: %v", session.ActiveAgent, err)
+		}
+		allowed, role, err := e.CheckAccess(ctx, agent, sender.ID)
+		if err != nil || !allowed || (role == "viewer" || role == "public") {
+			return fmt.Sprintf("⛔ Access Denied: You do not have permission to create projects for agent `@%s`.", session.ActiveAgent)
+		}
+
 		projName := strings.TrimSpace(args[1])
 		if projName == "" || strings.Contains(projName, "..") || strings.Contains(projName, "/") || strings.Contains(projName, "\\") {
 			return "⚠️ Invalid project name. Project name cannot contain path separators ('/', '\\') or '..'."
 		}
-		projPath := ""
+
+		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
+		if agent.WorkspacePath != "" {
+			agentPath = agent.WorkspacePath
+		}
+		defaultProjectsDir := filepath.Join(agentPath, "projects")
+
+		var projPath string
 		if len(args) > 2 {
-			projPath = strings.TrimSpace(args[2])
-		} else {
-			agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
-			if agent, err := e.storage.GetAgent(ctx, session.ActiveAgent); err == nil && agent != nil && agent.WorkspacePath != "" {
-				agentPath = agent.WorkspacePath
+			rawPath := strings.TrimSpace(args[2])
+			var allowedRoots []string
+			if e.cfg != nil {
+				allowedRoots = e.cfg.Security.AllowedProjectRoots
 			}
-			projPath = filepath.Join(agentPath, "projects", projName)
+			validatedPath, valErr := validateProjectPath(rawPath, defaultProjectsDir, allowedRoots)
+			if valErr != nil {
+				return fmt.Sprintf("⛔ Access Denied: Path `%s` is outside allowed project directories.\nReason: %v\nTo allow external directories, add the path to `security.allowed_project_roots` in config.yaml.", rawPath, valErr)
+			}
+			projPath = validatedPath
+		} else {
+			projPath = filepath.Join(defaultProjectsDir, projName)
 		}
 
-		projPath, _ = filepath.Abs(projPath)
-		if err := os.MkdirAll(projPath, 0755); err != nil {
+		if err := os.MkdirAll(projPath, 0700); err != nil {
 			return fmt.Sprintf("⚠️ Failed to create project directory: %v", err)
 		}
 
@@ -1188,6 +1446,52 @@ func (e *Engine) switchProject(ctx context.Context, session *domain.Session, pro
 	}
 
 	return fmt.Sprintf("📁 Switched into project **%s**\nPath: `%s`\nCodebase context loaded.", proj.ProjectName, proj.ProjectPath)
+}
+
+func evalSymlinksSafe(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+		return realPath
+	}
+	parent := filepath.Dir(abs)
+	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+		return filepath.Join(realParent, filepath.Base(abs))
+	}
+	return abs
+}
+
+func validateProjectPath(requestedPath, defaultProjectsDir string, allowedRoots []string) (string, error) {
+	cleanPath := filepath.Clean(requestedPath)
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+
+	targetPath := evalSymlinksSafe(absPath)
+
+	// Check if within agent projects directory
+	cleanAgentProjectsDir := evalSymlinksSafe(defaultProjectsDir)
+	relToAgent, err := filepath.Rel(cleanAgentProjectsDir, targetPath)
+	if err == nil && !strings.HasPrefix(relToAgent, "..") && !strings.HasPrefix(relToAgent, "/") && relToAgent != "." {
+		return targetPath, nil
+	}
+
+	// Check against allowed project roots
+	for _, root := range allowedRoots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		cleanRoot := evalSymlinksSafe(root)
+		rel, err := filepath.Rel(cleanRoot, targetPath)
+		if err == nil && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, "/") {
+			return targetPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("path '%s' is not within agent projects directory or allowed_project_roots", requestedPath)
 }
 
 func (e *Engine) handleConversationsDispatcher(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
@@ -1381,16 +1685,22 @@ func (e *Engine) handleSwitchConversationCommand(ctx context.Context, session *d
 	target := strings.TrimSpace(args[0])
 	var targetConv *domain.Conversation
 
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-		conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+		conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 		}
 		targetConv = conv
 	} else {
-		conv, err := e.storage.GetConversation(ctx, target)
+		conv, err := e.storage.GetConversationScoped(ctx, scope, target)
 		if err != nil {
-			return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+			return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
 		}
 		targetConv = conv
 	}
@@ -1430,19 +1740,25 @@ func (e *Engine) handlePinCommand(ctx context.Context, session *domain.Session, 
 	var targetID string
 	var title string
 
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	if len(args) > 0 {
 		target := strings.TrimSpace(args[0])
 		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-			conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx)
+			conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx)
 			if err != nil {
-				return fmt.Sprintf("⚠️ Conversation #%d not found.", idx)
+				return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 			}
 			targetID = conv.ID
 			title = conv.Title
 		} else {
-			conv, err := e.storage.GetConversation(ctx, target)
+			conv, err := e.storage.GetConversationScoped(ctx, scope, target)
 			if err != nil {
-				return fmt.Sprintf("⚠️ Conversation `%s` not found.", target)
+				return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
 			}
 			targetID = conv.ID
 			title = conv.Title
@@ -1452,12 +1768,12 @@ func (e *Engine) handlePinCommand(ctx context.Context, session *domain.Session, 
 		if targetID == "" {
 			return "⚠️ No active conversation to pin/unpin. Send a message first."
 		}
-		if conv, err := e.storage.GetConversation(ctx, targetID); err == nil {
+		if conv, err := e.storage.GetConversationScoped(ctx, scope, targetID); err == nil {
 			title = conv.Title
 		}
 	}
 
-	if err := e.storage.SetConversationPinned(ctx, targetID, isPinned); err != nil {
+	if err := e.storage.SetConversationPinnedScoped(ctx, scope, targetID, isPinned); err != nil {
 		return fmt.Sprintf("⚠️ Failed to update pin status: %v", err)
 	}
 
@@ -1484,7 +1800,13 @@ func (e *Engine) handleRenameConversationCommand(ctx context.Context, session *d
 		return "⚠️ No active conversation to rename."
 	}
 
-	if err := e.storage.SetConversationTitle(ctx, targetID, newTitle); err != nil {
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
+	if err := e.storage.SetConversationTitleScoped(ctx, scope, targetID, newTitle); err != nil {
 		return fmt.Sprintf("⚠️ Failed to rename conversation: %v", err)
 	}
 
@@ -1492,15 +1814,27 @@ func (e *Engine) handleRenameConversationCommand(ctx context.Context, session *d
 }
 
 func (e *Engine) handleArchiveConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+
 	targetID := session.GetActiveConversationID()
 	if len(args) > 0 {
 		target := strings.TrimSpace(args[0])
 		if idx, err := strconv.Atoi(target); err == nil && idx > 0 {
-			if conv, err := e.storage.GetConversationByAlias(ctx, session.SessionKey, session.ActiveAgent, session.ActiveProject, idx); err == nil {
+			if conv, err := e.storage.GetConversationByAlias(ctx, scope.SessionKey, scope.AgentName, scope.ProjectName, idx); err == nil {
 				targetID = conv.ID
+			} else {
+				return fmt.Sprintf("⚠️ Conversation #%d not found in active scope.", idx)
 			}
 		} else {
-			targetID = target
+			if conv, err := e.storage.GetConversationScoped(ctx, scope, target); err == nil {
+				targetID = conv.ID
+			} else {
+				return fmt.Sprintf("⚠️ Conversation `%s` not found in active scope.", target)
+			}
 		}
 	}
 
@@ -1508,7 +1842,7 @@ func (e *Engine) handleArchiveConversationCommand(ctx context.Context, session *
 		return "⚠️ No active conversation to archive."
 	}
 
-	if err := e.storage.SetConversationArchived(ctx, targetID, true); err != nil {
+	if err := e.storage.SetConversationArchivedScoped(ctx, scope, targetID, true); err != nil {
 		return fmt.Sprintf("⚠️ Failed to archive conversation: %v", err)
 	}
 
@@ -1722,6 +2056,16 @@ func (e *Engine) handleTasksCommand(ctx context.Context, session *domain.Session
 	if err != nil {
 		return fmt.Sprintf("⚠️ Failed to list tasks: %v", err), nil
 	}
+	// A session can switch active agents. Do not disclose or offer controls for
+	// a task created while a different agent was active in that same session.
+	visibleTasks := tasks[:0]
+	for _, task := range tasks {
+		if task.AgentName == session.ActiveAgent {
+			visibleTasks = append(visibleTasks, task)
+		}
+	}
+	tasks = visibleTasks
+	total = len(tasks)
 	if total == 0 {
 		return "📋 **No background sub-agent tasks found for this session.**\n\nMain Agent automatically delegates long-running tasks via `dispatch_subagent`.", nil
 	}
@@ -1790,7 +2134,10 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 			return "⚠️ Usage: `/task cancel <task_id>`", nil
 		}
 		taskID := args[1]
-		if err := e.subagentDispatcher.CancelTask(ctx, taskID); err != nil {
+		if _, err := e.getTaskInActiveScope(ctx, session, taskID); err != nil {
+			return fmt.Sprintf("⚠️ Task `%s` is not available in this agent/session: %v", taskID, err), nil
+		}
+		if err := e.subagentDispatcher.CancelTaskScoped(ctx, session.SessionKey, taskID); err != nil {
 			return fmt.Sprintf("⚠️ Failed to cancel task `%s`: %v", taskID, err), nil
 		}
 		return fmt.Sprintf("🛑 **Task `%s` has been cancelled** and its process tree terminated.", taskID), nil
@@ -1801,7 +2148,10 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 		}
 		taskID := args[1]
 		replyText := strings.Join(args[2:], " ")
-		if err := e.subagentDispatcher.SendTaskInput(ctx, taskID, replyText); err != nil {
+		if _, err := e.getTaskInActiveScope(ctx, session, taskID); err != nil {
+			return fmt.Sprintf("⚠️ Task `%s` is not available in this agent/session: %v", taskID, err), nil
+		}
+		if err := e.subagentDispatcher.SendTaskInputScoped(ctx, session.SessionKey, taskID, replyText); err != nil {
 			return fmt.Sprintf("⚠️ Failed to send reply to task `%s`: %v", taskID, err), nil
 		}
 		return fmt.Sprintf("✅ **Reply injected into Task `%s`!** Sub-Agent has resumed background execution.", taskID), nil
@@ -1816,7 +2166,7 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 	default:
 		// Assume args[0] is task_id
 		taskID := args[0]
-		task, err := e.subagentDispatcher.GetTask(ctx, taskID)
+		task, err := e.getTaskInActiveScope(ctx, session, taskID)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Task `%s` not found: %v", taskID, err), nil
 		}
@@ -1860,6 +2210,20 @@ func (e *Engine) handleTaskSubcommand(ctx context.Context, session *domain.Sessi
 
 		return sb.String(), keyboard
 	}
+}
+
+func (e *Engine) getTaskInActiveScope(ctx context.Context, session *domain.Session, taskID string) (*domain.SubagentTask, error) {
+	if session == nil || session.SessionKey == "" || session.ActiveAgent == "" {
+		return nil, fmt.Errorf("%w: missing task scope", ports.ErrAccessDenied)
+	}
+	task, err := e.subagentDispatcher.GetTaskScoped(ctx, session.SessionKey, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if task.AgentName != session.ActiveAgent {
+		return nil, fmt.Errorf("%w: task belongs to another agent", ports.ErrAccessDenied)
+	}
+	return task, nil
 }
 
 func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey string, args []string) (string, domain.InlineKeyboard) {
@@ -2050,6 +2414,13 @@ func (e *Engine) handleScheduleCommand(ctx context.Context, sender domain.Sender
 			return "⚠️ Usage: `/schedule cancel <task_id>`", nil
 		}
 		taskID := strings.TrimSpace(args[1])
+		task, err := e.storage.GetSchedule(ctx, taskID)
+		if err != nil {
+			return fmt.Sprintf("⚠️ Schedule `%s` not found: %v", taskID, err), nil
+		}
+		if task.AgentName != session.ActiveAgent {
+			return "⛔ Access Denied: That schedule belongs to a different agent.", nil
+		}
 		if err := e.scheduler.CancelSchedule(ctx, taskID); err != nil {
 			return fmt.Sprintf("⚠️ Failed to cancel schedule `%s`: %v", taskID, err), nil
 		}

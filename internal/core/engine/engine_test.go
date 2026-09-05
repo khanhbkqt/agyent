@@ -167,6 +167,9 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 			Mode:         "polling",
 			AdminUserIDs: []int64{123456},
 		},
+		Security: config.SecurityConfig{
+			AllowedProjectRoots: []string{"/tmp", os.TempDir()},
+		},
 		AGY: config.AGYConfig{
 			BinaryPath:                 "agy",
 			DefaultTimeoutSeconds:      10,
@@ -219,6 +222,7 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 	}, debouncerHandler)
 
 	cfg.Security = config.GetEffectiveSecurityPreset("balanced")
+	cfg.Security.AllowedProjectRoots = []string{"/tmp", os.TempDir()}
 	secMgr := securityAdapter.NewManager(cfg.Security, nil, nil)
 
 	eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
@@ -657,6 +661,14 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	chat1 := domain.ChatContext{ID: "111", Type: "private"}
 	chat2 := domain.ChatContext{ID: "222", Type: "private"}
 
+	// Self-service agent creation is intentionally scoped to an owner/admin of
+	// the current agent. Give Alice ownership of the fixture's default agent
+	// before exercising that flow.
+	baseAgent, err := store.GetAgent(ctx, "agyent")
+	require.NoError(t, err)
+	baseAgent.OwnerID = user1.ID
+	require.NoError(t, store.SaveAgent(ctx, baseAgent))
+
 	// 1. User 1 creates private agent 'alice_sec'
 	createMsg := domain.CanonicalMessage{
 		ID:        "msg-create-1",
@@ -666,7 +678,7 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 		Chat:      chat1,
 		Text:      "/a new alice_sec Alice Private Security Agent",
 	}
-	err := eng.HandleDebouncedMessage(ctx, createMsg)
+	err = eng.HandleDebouncedMessage(ctx, createMsg)
 	require.NoError(t, err)
 
 	agent, err := store.GetAgent(ctx, "alice_sec")
@@ -944,7 +956,7 @@ func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, eng.Start(ctx))
 
-	sender := domain.SenderUser{ID: "user-123", Username: "stevan"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 
 	// Case 1: Initialized Agent sends /new (proactive greeting without topic)
@@ -1175,7 +1187,7 @@ func TestEngine_InboundAttachmentRelocation(t *testing.T) {
 		ID:        "msg-att-1",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
-		Sender:    domain.SenderUser{ID: "111", Username: "stevan", FullName: "Stevan"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin", FullName: "Admin"},
 		Chat:      domain.ChatContext{ID: "chat-att-1", Type: "private"},
 		Text:      "Please read this uploaded spec",
 		Attachments: []domain.Attachment{
@@ -1245,10 +1257,10 @@ func TestEngine_EvolutionExplicitSwitchHooks(t *testing.T) {
 	mockEvo := &mockEngineEvolutionOrchestrator{}
 	eng.SetEvolutionOrchestrator(mockEvo)
 
-	sender := domain.SenderUser{ID: "998877", Username: "tester"}
-	chat := domain.ChatContext{ID: "998877", Type: "private"}
+	sender := domain.SenderUser{ID: "123456", Username: "tester"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
 
-	sessionKey := "telegram:998877"
+	sessionKey := "telegram:123456"
 	sess, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
 	require.NoError(t, err)
 
@@ -1460,7 +1472,7 @@ func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {
 	eng.SetStreamingEnabled(true)
 
 	ctx := context.Background()
-	sender := domain.SenderUser{ID: "user-123", Username: "steve"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 	sessionKey := "telegram:chat-123"
 
@@ -1538,8 +1550,8 @@ func TestEngine_ModeSlashCommand(t *testing.T) {
 		Timestamp: time.Now(),
 		Channel:   "telegram",
 		Text:      "/mode",
-		Sender:    domain.SenderUser{ID: "123", Username: "user"},
-		Chat:      domain.ChatContext{ID: "123", Type: "private"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
 	}
 
 	// 1. Query current mode

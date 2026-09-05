@@ -449,6 +449,46 @@ func TestSQLiteStore_AuditRepository(t *testing.T) {
 		assert.Equal(t, 450, sessionStats.CacheReadTokens)
 		assert.Equal(t, 60.0, sessionStats.CacheHitRatio())
 	})
+
+	t.Run("TC-AUD-04: Log and List Security Events", func(t *testing.T) {
+		evt1 := &domain.AuditSecurityEvent{
+			EventID:        "sec-test-1",
+			Timestamp:      time.Now().Add(-10 * time.Second),
+			SessionKey:     "telegram:audit_sec",
+			UserID:         12345,
+			AgentName:      "sec_agent",
+			Checkpoint:     "PathJail",
+			ToolName:       "write_file",
+			TargetResource: "/etc/passwd",
+			Decision:       domain.DecisionDeny,
+			Reason:         "path jail violation",
+		}
+		require.NoError(t, store.LogSecurityEvent(ctx, evt1))
+
+		evt2 := &domain.AuditSecurityEvent{
+			EventID:        "sec-test-2",
+			Timestamp:      time.Now(),
+			SessionKey:     "telegram:audit_sec",
+			UserID:         12345,
+			AgentName:      "sec_agent",
+			Checkpoint:     "CommandGuardrail",
+			ToolName:       "bash",
+			TargetResource: "rm -rf /",
+			Decision:       domain.DecisionDeny,
+			Reason:         "destructive command blocked",
+		}
+		require.NoError(t, store.LogSecurityEvent(ctx, evt2))
+
+		events, err := store.ListSecurityEvents(ctx, 10)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(events), 2)
+
+		// Descending order: sec-test-2 first
+		assert.Equal(t, "sec-test-2", events[0].EventID)
+		assert.Equal(t, domain.DecisionDeny, events[0].Decision)
+		assert.Equal(t, "bash", events[0].ToolName)
+		assert.Equal(t, "sec-test-1", events[1].EventID)
+	})
 }
 
 // 6. Foreign Key Constraints (CASCADE & RESTRICT)

@@ -21,8 +21,22 @@ type Router struct {
 	inbound         chan<- domain.CanonicalMessage
 	mediaMgr        *MediaManager
 	hitlCoordinator *HITLCoordinator
+	authorizer      InboundAuthorizer
 	bindAgents      map[int64]string
 	mu              sync.RWMutex
+}
+
+// InboundAuthorizer evaluates whether an inbound message sender has permission to interact.
+type InboundAuthorizer interface {
+	AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error)
+}
+
+// InboundSessionAuthorizer is implemented by authorization engines that can
+// resolve a user's existing active-agent selection before ingress is admitted.
+// Keep the smaller interface above for adapters/tests that only support a
+// static agent binding.
+type InboundSessionAuthorizer interface {
+	AuthorizeInboundSession(ctx context.Context, senderID, bindAgent, chatType, sessionKey string) (bool, error)
 }
 
 // NewRouter creates a new update Router.
@@ -38,6 +52,13 @@ func NewRouter(cfg *config.Config, bot *gotgbot.Bot, inbound chan<- domain.Canon
 		r.hitlCoordinator = hitlCoord[0]
 	}
 	return r
+}
+
+// SetInboundAuthorizer injects the inbound authorization evaluator.
+func (r *Router) SetInboundAuthorizer(a InboundAuthorizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizer = a
 }
 
 // SetBotBindings updates the mapping of bot IDs to dedicated bound agent personas.
@@ -76,8 +97,21 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 	// 1. Authorization & Group Routing
 	var isMentioned, isReplyToBot bool
 	if msg.Chat.Type == "private" {
-		// In Hexagonal & Multi-Bot RBAC, 1-1 private interactions are forwarded
-		// to Core Engine for centralized access evaluation (CheckAccess).
+		r.mu.RLock()
+		auth := r.authorizer
+		var bindAgent string
+		if r.bindAgents != nil && botID > 0 {
+			bindAgent = r.bindAgents[botID]
+		}
+		r.mu.RUnlock()
+
+		if auth != nil {
+			allowed, err := authorizeInboundMessage(ctx, auth, strconv.FormatInt(msg.From.Id, 10), bindAgent, "private", domain.FormatSessionKey("telegram", strconv.FormatInt(msg.Chat.Id, 10), ExtractThreadID(msg), botID))
+			if err != nil || !allowed {
+				// Unauthorized private message: drop with zero side-effects
+				return nil
+			}
+		}
 	} else if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" {
 		if !IsGroupAllowed(r.cfg, msg.Chat.Id) {
 			// Unauthorized group: silently drop
@@ -91,6 +125,22 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		}
 		isMentioned = mentioned
 		isReplyToBot = replied
+
+		r.mu.RLock()
+		auth := r.authorizer
+		var bindAgent string
+		if r.bindAgents != nil && botID > 0 {
+			bindAgent = r.bindAgents[botID]
+		}
+		r.mu.RUnlock()
+		if auth != nil {
+			allowed, err := authorizeInboundMessage(ctx, auth, strconv.FormatInt(msg.From.Id, 10), bindAgent, msg.Chat.Type, domain.FormatSessionKey("telegram", strconv.FormatInt(msg.Chat.Id, 10), ExtractThreadID(msg), botID))
+			if err != nil || !allowed {
+				// The group itself is allowed, but the sender is not authorized for
+				// the target agent. Do not create a session or download attachments.
+				return nil
+			}
+		}
 	} else {
 		// Other chat types (e.g. channels): ignore
 		return nil
@@ -104,13 +154,10 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 
 	cleanText := ExtractCleanText(botUsername, rawText)
 
-	// 3. Extract media attachments
-	var attachments []domain.Attachment
+	// 3. Extract lazy media references (zero disk download before admission)
+	var attachmentRefs []domain.InboundAttachmentRef
 	if r.mediaMgr != nil {
-		atts, err := r.mediaMgr.DownloadInboundMedia(ctx, msg, b)
-		if err == nil && len(atts) > 0 {
-			attachments = atts
-		}
+		attachmentRefs = r.mediaMgr.ExtractAttachmentRefs(msg, botID)
 	}
 
 	// 4. Construct CanonicalMessage
@@ -153,7 +200,7 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		},
 		Text:             cleanText,
 		RawText:          rawText,
-		Attachments:      attachments,
+		AttachmentRefs:   attachmentRefs,
 		IsMentioned:      isMentioned,
 		IsReplyToBot:     isReplyToBot,
 		ReplyToMessageID: replyToMsgID,
@@ -182,6 +229,13 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 	}
 
 	return nil
+}
+
+func authorizeInboundMessage(ctx context.Context, auth InboundAuthorizer, senderID, bindAgent, chatType, sessionKey string) (bool, error) {
+	if sessionAuthorizer, ok := auth.(InboundSessionAuthorizer); ok {
+		return sessionAuthorizer.AuthorizeInboundSession(ctx, senderID, bindAgent, chatType, sessionKey)
+	}
+	return auth.AuthorizeInbound(ctx, senderID, bindAgent, chatType)
 }
 
 // HandleCallbackQuery handles inline button presses and translates them into synthesized canonical commands.

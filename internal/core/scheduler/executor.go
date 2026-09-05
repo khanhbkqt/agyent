@@ -14,11 +14,12 @@ import (
 
 // TaskExecutor handles asynchronous background execution of scheduled tasks and heartbeats.
 type TaskExecutor struct {
-	cfg       *config.Config
-	runner    ports.RunnerPort
-	workspace ports.WorkspacePort
-	eventBus  ports.EventBusPort
-	logger    *slog.Logger
+	cfg              *config.Config
+	runner           ports.RunnerPort
+	executionService ports.ExecutionServicePort
+	workspace        ports.WorkspacePort
+	eventBus         ports.EventBusPort
+	logger           *slog.Logger
 }
 
 // NewTaskExecutor creates a new background TaskExecutor.
@@ -39,6 +40,11 @@ func NewTaskExecutor(
 		eventBus:  eventBus,
 		logger:    logger,
 	}
+}
+
+// SetExecutionService injects the execution service chokepoint into the TaskExecutor.
+func (e *TaskExecutor) SetExecutionService(svc ports.ExecutionServicePort) {
+	e.executionService = svc
 }
 
 // ExecuteSchedule runs a single scheduled task in an isolated, non-blocking session turn.
@@ -66,7 +72,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		Model:                      model,
 		Effort:                     effort,
 		Mode:                       "accept-edits",
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: false,
 		AgentName:                  task.AgentName,
 		SessionKey:                 sessionKey,
 		UserID:                     task.CreatedBy,
@@ -84,7 +90,14 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	var result *domain.ExecutionResult
 	var execErr error
 
-	if e.runner != nil {
+	if e.executionService != nil {
+		principal := domain.Principal{
+			Kind:      domain.PrincipalSystem,
+			Provider:  "internal",
+			SubjectID: "system:scheduler",
+		}
+		result, execErr = e.executionService.ExecuteTurn(ctx, principal, req, sessionKey, false)
+	} else if e.runner != nil {
 		// Use Execute in background worker to execute task prompt
 		result, execErr = e.runner.Execute(ctx, req)
 		if domain.IsEffortError(execErr, result) && req.Effort != "" {
@@ -94,7 +107,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 			result, execErr = e.runner.Execute(ctx, req)
 		}
 	} else {
-		execErr = fmt.Errorf("runner port is not initialized")
+		execErr = fmt.Errorf("runner and execution service ports are not initialized")
 	}
 
 	// Publish completion or failure event to EventBus
@@ -171,7 +184,7 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		Model:                      model,
 		Effort:                     effort,
 		Mode:                       "accept-edits",
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: false,
 		AgentName:                  hb.AgentName,
 		SessionKey:                 sessionKey,
 		UserID:                     "",
@@ -188,7 +201,14 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	var result *domain.ExecutionResult
 	var execErr error
 
-	if e.runner != nil {
+	if e.executionService != nil {
+		principal := domain.Principal{
+			Kind:      domain.PrincipalSystem,
+			Provider:  "internal",
+			SubjectID: "system:heartbeat",
+		}
+		result, execErr = e.executionService.ExecuteTurn(ctx, principal, req, sessionKey, false)
+	} else if e.runner != nil {
 		result, execErr = e.runner.Execute(ctx, req)
 		if domain.IsEffortError(execErr, result) && req.Effort != "" {
 			e.logger.Warn("Model rejected reasoning effort in heartbeat task, retrying without --effort flag",
@@ -197,7 +217,7 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 			result, execErr = e.runner.Execute(ctx, req)
 		}
 	} else {
-		execErr = fmt.Errorf("runner port is not initialized")
+		execErr = fmt.Errorf("runner and execution service ports are not initialized")
 	}
 
 	// Publish heartbeat event to EventBus

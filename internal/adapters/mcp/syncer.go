@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,14 +25,16 @@ type mcpConfigFile struct {
 	MCPServers map[string]domain.MCPServerConfig `json:"mcpServers"`
 }
 
-// MCPSyncer safely synchronizes MCP server configurations to ~/.gemini/antigravity-cli/mcp_config.json,
-// ~/.gemini/antigravity/mcp_config.json, and ~/.gemini/config/mcp_config.json using in-process mutex,
-// cross-process OS file locks, atomic write-rename, reference counting, and crash recovery.
+// MCPSyncer safely synchronizes MCP server configurations to one explicitly
+// selected AGY config file using in-process mutexes, cross-process OS locks,
+// atomic write-rename, reference counting, and crash recovery. It never fans
+// a tenant's temporary configuration into several legacy global locations.
 type MCPSyncer struct {
 	mu             sync.Mutex
 	configPath     string
 	allConfigPaths []string
 	lockFilePath   string
+	turnLockPath   string
 	baseServers    map[string]domain.MCPServerConfig
 	activeMounts   map[string]int // serverKey -> activeRefCount
 }
@@ -43,11 +48,7 @@ func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
 			return nil, fmt.Errorf("failed to get user home: %w", err)
 		}
 		configPath = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
-		allPaths = []string{
-			filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"),
-			filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"),
-			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
-		}
+		allPaths = []string{configPath}
 	} else {
 		allPaths = []string{configPath}
 	}
@@ -56,6 +57,7 @@ func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
 		configPath:     configPath,
 		allConfigPaths: allPaths,
 		lockFilePath:   configPath + ".lock",
+		turnLockPath:   configPath + ".turn.lock",
 		activeMounts:   make(map[string]int),
 		baseServers:    make(map[string]domain.MCPServerConfig),
 	}
@@ -65,6 +67,18 @@ func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
 	}
 
 	return syncer, nil
+}
+
+// AcquireExclusiveTurn serializes complete MCP-enabled turns. AGY currently
+// discovers MCP configuration through a process-global file rather than a
+// per-invocation flag; holding a separate OS-backed lease prevents one tenant
+// from observing another tenant's temporary server entries.
+func (s *MCPSyncer) AcquireExclusiveTurn(ctx context.Context) (func(), error) {
+	unlock, err := oslock.AcquireOSFileLock(ctx, s.turnLockPath, 30*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire exclusive MCP turn lease: %w", err)
+	}
+	return unlock, nil
 }
 
 func (s *MCPSyncer) bootstrapClean() error {
@@ -131,7 +145,7 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 		if serverName == "" {
 			continue
 		}
-		key := formatEphemeralKey(serverName)
+		key := formatEphemeralKey(serverName, sessionKey)
 		s.activeMounts[key]++
 
 		// Ensure fallback environment variables for multi-tenant isolation
@@ -190,7 +204,7 @@ func (s *MCPSyncer) UnmountServers(ctx context.Context, sessionKey string, serve
 		if serverName == "" {
 			continue
 		}
-		key := formatEphemeralKey(serverName)
+		key := formatEphemeralKey(serverName, sessionKey)
 		if count, exists := s.activeMounts[key]; exists {
 			if count <= 1 {
 				delete(s.activeMounts, key)
@@ -221,13 +235,13 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 
 	for _, target := range targets {
 		dir := filepath.Dir(target)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			continue
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 
 		tmpFile := fmt.Sprintf("%s.tmp.%d.%d", target, os.Getpid(), time.Now().UnixNano())
-		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-			continue
+		if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+			return fmt.Errorf("failed to write tmp mcp config %s: %w", tmpFile, err)
 		}
 
 		if f, err := os.Open(tmpFile); err == nil {
@@ -237,6 +251,7 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 
 		if err := os.Rename(tmpFile, target); err != nil {
 			_ = os.Remove(tmpFile)
+			return fmt.Errorf("failed to atomically replace %s: %w", target, err)
 		}
 	}
 
@@ -258,10 +273,17 @@ func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 	return &cfg, nil
 }
 
-func formatEphemeralKey(name string) string {
+func formatEphemeralKey(name string, scope ...string) string {
+	if len(scope) > 0 && scope[0] != "" {
+		digest := sha256.Sum256([]byte(scope[0]))
+		// The full session string is never persisted in the global config; a
+		// 128-bit digest prefix avoids Telegram's shared `telegram` prefix and
+		// makes practical name collisions infeasible.
+		return fmt.Sprintf("__agyent_ephemeral_%s_%s", hex.EncodeToString(digest[:16]), name)
+	}
 	return "__agyent_ephemeral_" + name
 }
 
 func isEphemeralServer(name string) bool {
-	return len(name) > 19 && name[:19] == "__agyent_ephemeral_"
+	return strings.HasPrefix(name, "__agyent_ephemeral_")
 }

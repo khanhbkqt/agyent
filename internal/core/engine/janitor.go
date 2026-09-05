@@ -56,7 +56,7 @@ func (e *Engine) runJanitorPass(ctx context.Context) {
 				if strings.HasSuffix(ent.Name(), ".lock") {
 					fullPath := filepath.Join(pDir, ent.Name())
 					info, err := ent.Info()
-					if err == nil && (info.Size() == 0 || time.Since(info.ModTime()) > 1*time.Hour) {
+					if err == nil && time.Since(info.ModTime()) > 24*time.Hour {
 						if err := os.Remove(fullPath); err == nil {
 							purgedLocks++
 						}

@@ -4,9 +4,11 @@ GIT_COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE?=$(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
 LDFLAGS=-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)
 
-.PHONY: all build test test-short test-coverage lint-plugins cross-compile release clean
+.PHONY: all build build-all test test-short test-coverage lint-plugins cross-compile release clean
 
 all: build
+
+build-all: cross-compile
 
 build:
 	@echo "==> Building local binary..."
@@ -28,6 +30,10 @@ test-coverage:
 	@echo "==> Running tests with coverage..."
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+test-e2e: build
+	@echo "==> Running hermetic E2E tests with compiled binary..."
+	go test -v -tags e2e ./cmd/agyent/...
 
 cross-compile: clean
 	@echo "==> Cross-compiling zero-CGO static binaries for 6 target platforms..."

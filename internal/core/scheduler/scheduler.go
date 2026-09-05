@@ -75,6 +75,15 @@ func (s *Scheduler) SetLocation(loc *time.Location) {
 	}
 }
 
+// SetExecutionService injects the execution service chokepoint into the scheduler executor.
+func (s *Scheduler) SetExecutionService(svc ports.ExecutionServicePort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executor != nil {
+		s.executor.SetExecutionService(svc)
+	}
+}
+
 // Start launches the background scheduler poller loop.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()

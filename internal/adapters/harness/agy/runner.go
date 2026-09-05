@@ -104,7 +104,7 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions || h.dangerouslySkipPermissions {
+	if req.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
@@ -121,7 +121,9 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 
 	model := req.Model
 	effort := req.Effort
-	if effort == "" {
+	if req.DisableEffort || effort == domain.EffortNone {
+		effort = ""
+	} else if effort == "" {
 		effort = h.defaultEffort
 	}
 	if model != "" || effort != "" {
@@ -130,6 +132,9 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 			model = canonical
 		}
 		effort = normEffort
+	}
+	if req.DisableEffort || req.Effort == domain.EffortNone {
+		effort = ""
 	}
 
 	if effort != "" {
@@ -275,7 +280,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions || h.dangerouslySkipPermissions {
+	if req.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
@@ -292,7 +297,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 
 	model := req.Model
 	effort := req.Effort
-	if effort == "" {
+	if req.DisableEffort || effort == domain.EffortNone {
+		effort = ""
+	} else if effort == "" {
 		effort = h.defaultEffort
 	}
 	if model != "" || effort != "" {
@@ -301,6 +308,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			model = canonical
 		}
 		effort = normEffort
+	}
+	if req.DisableEffort || req.Effort == domain.EffortNone {
+		effort = ""
 	}
 
 	if effort != "" {

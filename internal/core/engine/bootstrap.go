@@ -269,6 +269,13 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 		sb.WriteString("\n\n")
 	}
 
+	// Level 4: Dynamic Daily Episodic Memory (TODAY_MEMORY / RECENT_ACTIVITY)
+	// Kept in Level 4 to preserve Levels 0-3 KV-cache prefix invariance across turns and days.
+	if resolved != nil && resolved.TodayMemory != "" {
+		sb.WriteString(resolved.TodayMemory)
+		sb.WriteString("\n\n")
+	}
+
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("User Prompt: ")
 		sb.WriteString(msg.Text)

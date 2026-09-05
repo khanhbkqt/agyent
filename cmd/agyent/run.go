@@ -21,11 +21,13 @@ import (
 	"agyent/internal/adapters/subagent"
 	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
+	"agyent/internal/core/execution"
 	"agyent/internal/core/scheduler"
 	"agyent/internal/logger"
 
@@ -115,15 +117,16 @@ var runCmd = &cobra.Command{
 		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)
 		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")
 		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(starterWS, "", mainLogger); err != nil {
-			mainLogger.Debug("Provisioned starter workspace hooks", "workspace", starterWS, "error", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision mandatory security hooks for starter workspace: %v\n", err)
+			os.Exit(1)
 		}
 
 		// 7. Initialize Context Resolver, MCP Syncer & Plugin Manager
 		contextResolver := contextAdapter.NewContextResolver()
 		mcpSyncer, err := mcp.NewMCPSyncer("")
 		if err != nil {
-			mainLogger.Warn("Failed to init MCP syncer", "error", err)
-			fmt.Fprintf(os.Stderr, "⚠️ Warning: Failed to init MCP syncer: %v\n", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to initialize the mandatory MCP isolation registry: %v\n", err)
+			os.Exit(1)
 		}
 		pluginMgr := pluginAdapter.NewPluginManager("builtin/plugins", &builtin.EmbeddedPluginsFS)
 		if syncResults, syncErr := pluginMgr.SyncPlugins(context.Background(), "", false); syncErr == nil {
@@ -157,20 +160,36 @@ var runCmd = &cobra.Command{
 		eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, contextResolver, mcpSyncer, pluginMgr)
 		eng.SetTemporalContext(contextAdapter.NewTemporalContext())
 		eng.SetSecurityManager(secMgr)
+		eng.SetAttachmentFetcher(channel.MediaManager())
 		wsMgr := workspaceAdapter.NewManager(mainLogger)
 		eng.SetWorkspaceManager(wsMgr)
+
+		// Centralized Authorization Policy & Execution Chokepoint
+		policyEngine := auth.NewEngine(store, cfg)
+		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, mainLogger)
+		eng.SetPolicyEngine(policyEngine)
+		eng.SetExecutionService(execSvc)
+		ipcServer.SetPolicyEngine(policyEngine)
+		ipcServer.SetScheduleStore(store)
+		channel.SetInboundAuthorizer(eng)
 
 		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
 		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
 		sched.SetLocation(contextAdapter.DetectUserLocation(starterWS))
+		sched.SetExecutionService(execSvc)
 		eng.SetScheduler(sched)
 		ipcServer.SetScheduler(sched)
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
+		subDispatcher.SetSecurityManager(secMgr)
+		subDispatcher.SetPolicyEngine(policyEngine)
+		subDispatcher.SetStoragePort(store)
 		eng.SetSubagentDispatcher(subDispatcher)
+		ipcServer.SetSubagents(subDispatcher)
 
 		if cfg.Evolution.Enabled {
 			evoOrch := evolutionAdapter.NewEvolutionOrchestrator(cfg, store, runner)
+			evoOrch.SetExecutionService(execSvc)
 			eng.SetEvolutionOrchestrator(evoOrch)
 		}
 
@@ -179,7 +198,8 @@ var runCmd = &cobra.Command{
 		defer cancelDaemon()
 
 		if err := ipcServer.Start(daemonCtx); err != nil {
-			mainLogger.Warn("Failed to start Security IPC server", "error", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to start mandatory security IPC server: %v\n", err)
+			os.Exit(1)
 		}
 		defer ipcServer.Stop()
 

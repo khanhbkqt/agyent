@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
@@ -37,6 +40,9 @@ type Engine struct {
 	securityManager    ports.SecurityManagerPort
 	workspaceManager   ports.WorkspacePort
 	scheduler          ports.SchedulerPort
+	attachmentFetcher  ports.AttachmentFetcherPort
+	policyEngine       ports.PolicyEngine
+	executionService   ports.ExecutionServicePort
 
 	streamingEnabled atomic.Bool
 	startTime        time.Time
@@ -92,6 +98,13 @@ func NewEngine(
 		cancel:                  cancel,
 		startTime:               time.Now(),
 	}
+	// A command/turn engine without a policy evaluator must never silently
+	// become permissive. The composition root may replace this instance with a
+	// decorated policy engine, but every normally constructed Engine has the
+	// default-deny policy available from its first request.
+	if storage != nil && cfg != nil {
+		e.policyEngine = auth.NewEngine(storage, cfg)
+	}
 
 	if cfg != nil {
 		e.streamingEnabled.Store(cfg.AGY.StreamingEnabled)
@@ -142,6 +155,16 @@ func (e *Engine) GetSecurityManager() ports.SecurityManagerPort {
 	return e.securityManager
 }
 
+// SetPolicyEngine injects the centralized authorization policy engine.
+func (e *Engine) SetPolicyEngine(p ports.PolicyEngine) {
+	e.policyEngine = p
+}
+
+// SetExecutionService injects the execution service chokepoint.
+func (e *Engine) SetExecutionService(s ports.ExecutionServicePort) {
+	e.executionService = s
+}
+
 // SetWorkspaceManager injects the workspace manager for handling directory trees and inbound attachments.
 func (e *Engine) SetWorkspaceManager(w ports.WorkspacePort) {
 	e.workspaceManager = w
@@ -160,6 +183,16 @@ func (e *Engine) SetScheduler(s ports.SchedulerPort) {
 // GetScheduler returns the active scheduler instance.
 func (e *Engine) GetScheduler() ports.SchedulerPort {
 	return e.scheduler
+}
+
+// SetAttachmentFetcher injects the lazy inbound attachment fetcher.
+func (e *Engine) SetAttachmentFetcher(fetcher ports.AttachmentFetcherPort) {
+	e.attachmentFetcher = fetcher
+}
+
+// GetAttachmentFetcher returns the active attachment fetcher instance.
+func (e *Engine) GetAttachmentFetcher() ports.AttachmentFetcherPort {
+	return e.attachmentFetcher
 }
 
 // SetPendingCompactionDigest records a continuity digest for a session to be injected on the next turn.
@@ -332,7 +365,9 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 			slog.String("session_key", sessionKey),
 			slog.String("sender", msg.Sender.Username),
 		)
-		if e.runner != nil {
+		if e.executionService != nil {
+			_ = e.executionService.InterruptTurn(ctx, sessionKey)
+		} else if e.runner != nil {
 			_ = e.runner.InterruptStream(ctx, sessionKey)
 		}
 		// Wait briefly for previous turn to release lock, enabling clean turn handover
@@ -369,16 +404,33 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 		defaultAgent = msg.BindAgent
 	}
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
-	if err == nil {
-		oldConvID := session.GetActiveConversationID()
-		if oldConvID != "" && e.evolution != nil {
-			bgCtx := context.WithoutCancel(ctx)
-			concurrency.SafeGo(func() {
-				_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
-			})
+	if err != nil {
+		return fmt.Errorf("load session for new conversation: %w", err)
+	}
+	authSession := *session
+	if msg.BindAgent != "" {
+		authSession.ActiveAgent = msg.BindAgent
+	}
+	if err := e.authorizeAgentAction(ctx, msg.Sender, domain.ActionConvoSwitch, domain.ResourceKindConversation, "", &authSession); err != nil {
+		if e.channel != nil {
+			_ = e.channel.Send(ctx, *e.commandDeniedMessage(msg))
 		}
-		session.ResetActiveConversationID()
-		_ = e.storage.SaveSession(ctx, session)
+		return nil
+	}
+	if msg.BindAgent != "" {
+		session.ActiveAgent = msg.BindAgent
+		session.ActiveProject = ""
+	}
+	oldConvID := session.GetActiveConversationID()
+	if oldConvID != "" && e.evolution != nil {
+		bgCtx := context.WithoutCancel(ctx)
+		concurrency.SafeGo(func() {
+			_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+		})
+	}
+	session.ResetActiveConversationID()
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Errorf("reset active conversation: %w", err)
 	}
 
 	// 2. Prepare proactive greeting prompt with optional topic
@@ -392,7 +444,7 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 // IsSuperAdmin checks if a user ID is listed in the administrator whitelist.
 func (e *Engine) IsSuperAdmin(senderID string) bool {
 	if e.cfg == nil {
-		return true
+		return false
 	}
 	return e.cfg.IsAdmin(senderID)
 }
@@ -403,8 +455,8 @@ func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID 
 		return false, "", nil
 	}
 
-	// 1. Check if public agent (or default 'agyent' with empty owner)
-	if agent.IsPublic || (agent.Name == "agyent" && agent.OwnerID == "") {
+	// 1. Check if public agent
+	if agent.IsPublic {
 		return true, "public", nil
 	}
 
@@ -420,6 +472,40 @@ func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID 
 
 	// 4. Check collaborator permissions table in storage
 	return e.storage.CheckAgentAccess(ctx, agent.Name, senderID)
+}
+
+// AuthorizeInbound evaluates whether an inbound message sender has permission to interact
+// with an agent persona before message processing or side effects occur.
+func (e *Engine) AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error) {
+	return e.AuthorizeInboundSession(ctx, senderID, bindAgent, chatType, "")
+}
+
+// AuthorizeInboundSession resolves an existing session's active agent before
+// ingress. This keeps a user who has selected a shared/dedicated agent from
+// being incorrectly evaluated against the unrelated default persona, while a
+// dedicated bot binding remains authoritative.
+func (e *Engine) AuthorizeInboundSession(ctx context.Context, senderID string, bindAgent string, chatType string, sessionKey string) (bool, error) {
+	_ = chatType // Group admission is checked by the channel adapter; RBAC is sender/agent scoped.
+	if e.IsSuperAdmin(senderID) {
+		return true, nil
+	}
+	if e.storage == nil {
+		return false, fmt.Errorf("inbound authorization unavailable: storage is not initialized")
+	}
+	targetAgent := "agyent"
+	if bindAgent != "" {
+		targetAgent = bindAgent
+	} else if sessionKey != "" {
+		if session, err := e.storage.GetSession(ctx, sessionKey); err == nil && session != nil && session.ActiveAgent != "" {
+			targetAgent = session.ActiveAgent
+		}
+	}
+	agent, err := e.storage.GetAgent(ctx, targetAgent)
+	if err != nil || agent == nil {
+		return false, nil
+	}
+	allowed, _, err := e.CheckAccess(ctx, agent, senderID)
+	return allowed, err
 }
 
 func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, isEphemeralOpt ...bool) error {
@@ -467,11 +553,58 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	// Refresh typing indicator while resolving session and context
 	_ = e.channel.SendTyping(turnCtx, msg.TargetContext())
 
-	// 3. Load Session from Storage
+	// 3. Inbound RBAC Checkpoint: Evaluate access BEFORE mutating session or agent state
 	defaultAgent := "agyent"
 	if msg.BindAgent != "" {
 		defaultAgent = msg.BindAgent
 	}
+	targetAgent := defaultAgent
+	existingSession, _ := e.storage.GetSession(turnCtx, sessionKey)
+	if existingSession != nil && existingSession.ActiveAgent != "" {
+		targetAgent = existingSession.ActiveAgent
+	}
+	if msg.BindAgent != "" {
+		targetAgent = msg.BindAgent
+	}
+
+	agent, getErr := e.storage.GetAgent(turnCtx, targetAgent)
+	if getErr == nil && agent != nil {
+		allowed, _, checkErr := e.CheckAccess(turnCtx, agent, msg.Sender.ID)
+		if checkErr != nil || !allowed {
+			slog.WarnContext(turnCtx, "RBAC Access Denied to agent",
+				slog.String("agent", agent.Name),
+				slog.String("sender_id", msg.Sender.ID),
+				slog.String("owner_id", agent.OwnerID),
+			)
+			ownerDesc := agent.OwnerID
+			if ownerDesc == "" {
+				ownerDesc = "admin"
+			}
+			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+				Channel:          msg.Channel,
+				BotID:            msg.BotID,
+				ChatID:           msg.Chat.ID,
+				ThreadID:         msg.Chat.ThreadID,
+				Text:             fmt.Sprintf("⛔ **Access Denied (403):** You do not have permission to access agent `@%s`.\nAsk the agent owner (User ID: `%s`) to grant you access via:\n`/a share %s %s [role]`", agent.Name, ownerDesc, agent.Name, msg.Sender.ID),
+				ParseMode:        "Markdown",
+				ReplyToMessageID: msg.ID,
+			})
+			return nil
+		}
+	} else if !e.IsSuperAdmin(msg.Sender.ID) {
+		_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+			Channel:          msg.Channel,
+			BotID:            msg.BotID,
+			ChatID:           msg.Chat.ID,
+			ThreadID:         msg.Chat.ThreadID,
+			Text:             fmt.Sprintf("⛔ **Access Denied (403):** Agent `@%s` does not exist. Only an administrator can bootstrap new agents.", targetAgent),
+			ParseMode:        "Markdown",
+			ReplyToMessageID: msg.ID,
+		})
+		return nil
+	}
+
+	// 4. Load Session from Storage (only after authorized)
 	session, err := e.storage.GetOrCreateSession(turnCtx, sessionKey, defaultAgent)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to load session state",
@@ -498,14 +631,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	session.UpdatedAt = time.Now()
 	_ = e.storage.SaveSession(turnCtx, session)
 
-	// 4. Resolve Active Agent & Evaluate RBAC Access
-	agent, err := e.storage.GetAgent(turnCtx, session.ActiveAgent)
-	if err != nil {
+	// 5. Resolve Active Agent Record
+	if agent == nil {
 		agentPath := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, session.ActiveAgent)
 		_ = os.MkdirAll(agentPath, 0755)
-		isPublic := (session.ActiveAgent == "agyent")
+		isPublic := false
 		ownerID := ""
-		if !isPublic {
+		if session.ActiveAgent != "agyent" && e.IsSuperAdmin(msg.Sender.ID) {
 			ownerID = msg.Sender.ID
 		}
 		defaultPreset := domain.SecurityPreset(e.cfg.ResolveAgentPreset(session.ActiveAgent))
@@ -534,35 +666,10 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			if agent.SecurityPreset == "" || agent.Status == domain.StatusUninitialized {
 				agent.SecurityPreset = domain.SecurityPreset(e.cfg.ResolveAgentPreset(agent.Name))
 			}
-			if agent.OwnerID == "" && agent.Name != "agyent" {
+			if agent.OwnerID == "" && agent.Name != "agyent" && e.IsSuperAdmin(msg.Sender.ID) {
 				agent.OwnerID = msg.Sender.ID
 			}
-			_ = e.storage.SaveAgent(turnCtx, agent)
 		}
-	}
-
-	// RBAC Checkpoint: Check if caller is authorized to interact with this agent
-	allowed, _, err := e.CheckAccess(turnCtx, agent, msg.Sender.ID)
-	if err != nil || !allowed {
-		slog.WarnContext(turnCtx, "RBAC Access Denied to agent",
-			slog.String("agent", agent.Name),
-			slog.String("sender_id", msg.Sender.ID),
-			slog.String("owner_id", agent.OwnerID),
-		)
-		ownerDesc := agent.OwnerID
-		if ownerDesc == "" {
-			ownerDesc = "admin"
-		}
-		_ = e.channel.Send(turnCtx, domain.OutboundMessage{
-			Channel:          msg.Channel,
-			BotID:            msg.BotID,
-			ChatID:           msg.Chat.ID,
-			ThreadID:         msg.Chat.ThreadID,
-			Text:             fmt.Sprintf("⛔ **Access Denied (403):** You do not have permission to access agent `@%s`.\nAsk the agent owner (User ID: `%s`) to grant you access via:\n`/a share %s %s [role]`", agent.Name, ownerDesc, agent.Name, msg.Sender.ID),
-			ParseMode:        "Markdown",
-			ReplyToMessageID: msg.ID,
-		})
-		return nil
 	}
 
 	isBootstrap := !agent.IsInitialized()
@@ -585,13 +692,46 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			contextTag = fmt.Sprintf("📁 [%s • %s]", agent.Name, proj.ProjectName)
 		}
 	}
-	_ = os.MkdirAll(workspaceDir, 0755)
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		slog.ErrorContext(turnCtx, "Failed to prepare turn workspace", "workspace", workspaceDir, "error", err)
+		if e.channel != nil {
+			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+				Channel: msg.Channel, BotID: msg.BotID, ChatID: msg.Chat.ID, ThreadID: msg.Chat.ThreadID,
+				Text:             fmt.Sprintf("⛔ Security setup failed: unable to prepare the isolated workspace (%v). The turn was not executed.", err),
+				ReplyToMessageID: msg.ID,
+			})
+		}
+		return fmt.Errorf("prepare workspace: %w", err)
+	}
 	if e.securityManager != nil {
-		_ = e.securityManager.EnsureWorkspaceHooks(workspaceDir)
+		if err := e.securityManager.EnsureWorkspaceHooks(workspaceDir); err != nil {
+			slog.ErrorContext(turnCtx, "Security hook provisioning failed; refusing execution", "workspace", workspaceDir, "error", err)
+			if e.channel != nil {
+				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					Channel: msg.Channel, BotID: msg.BotID, ChatID: msg.Chat.ID, ThreadID: msg.Chat.ThreadID,
+					Text:             "⛔ Security hooks could not be provisioned. This turn was blocked to avoid unguarded tool execution.",
+					ReplyToMessageID: msg.ID,
+				})
+			}
+			return fmt.Errorf("provision security hooks: %w", err)
+		}
 	}
 
-	// 5.1. Relocate Inbound Attachments to Active Workspace uploads/
-	if len(msg.Attachments) > 0 && e.workspaceManager != nil {
+	// 5.1. Lazily Materialize Inbound AttachmentRefs to Active Workspace uploads/
+	if len(msg.AttachmentRefs) > 0 && e.attachmentFetcher != nil {
+		uploadsDir := filepath.Join(workspaceDir, "uploads")
+		for _, ref := range msg.AttachmentRefs {
+			att, fetchErr := e.attachmentFetcher.FetchAttachment(turnCtx, ref, uploadsDir)
+			if fetchErr != nil {
+				slog.WarnContext(turnCtx, "Failed to lazily materialize attachment",
+					slog.String("file_name", ref.FileName),
+					slog.String("error", fetchErr.Error()),
+				)
+				continue
+			}
+			msg.Attachments = append(msg.Attachments, att)
+		}
+	} else if len(msg.Attachments) > 0 && e.workspaceManager != nil {
 		preparedAtts, prepErr := e.workspaceManager.PrepareInboundAttachments(turnCtx, workspaceDir, msg.Attachments)
 		if prepErr == nil && len(preparedAtts) > 0 {
 			msg.Attachments = preparedAtts
@@ -627,6 +767,26 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 					resolved.SkillHeaders = append(resolved.SkillHeaders, pluginResolved.SkillHeaders...)
 					resolved.ActiveMCPServers = append(resolved.ActiveMCPServers, pluginResolved.ActiveMCPServers...)
 				}
+			}
+		}
+
+		// Ensure deterministic KV-cache prefix ordering for skills and MCP servers
+		if resolved != nil {
+			if len(resolved.SkillHeaders) > 1 {
+				sort.Slice(resolved.SkillHeaders, func(i, j int) bool {
+					if resolved.SkillHeaders[i].Scope != resolved.SkillHeaders[j].Scope {
+						return resolved.SkillHeaders[i].Scope < resolved.SkillHeaders[j].Scope
+					}
+					if resolved.SkillHeaders[i].Name != resolved.SkillHeaders[j].Name {
+						return resolved.SkillHeaders[i].Name < resolved.SkillHeaders[j].Name
+					}
+					return resolved.SkillHeaders[i].FilePath < resolved.SkillHeaders[j].FilePath
+				})
+			}
+			if len(resolved.ActiveMCPServers) > 1 {
+				sort.Slice(resolved.ActiveMCPServers, func(i, j int) bool {
+					return resolved.ActiveMCPServers[i].ServerName < resolved.ActiveMCPServers[j].ServerName
+				})
 			}
 		}
 
@@ -670,6 +830,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	// 7. Dynamic MCP Mounting (with deferred unmount for Zero Context Leakage)
 	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
+		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx)
+		if err != nil {
+			slog.ErrorContext(turnCtx, "MCP turn lease failed; refusing execution", "session_key", sessionKey, "error", err)
+			return fmt.Errorf("acquire MCP turn lease: %w", err)
+		}
+		defer releaseMCPLease()
+
 		for i := range activeMCPServers {
 			if activeMCPServers[i].Env == nil {
 				activeMCPServers[i].Env = make(map[string]string)
@@ -687,9 +854,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				activeMCPServers[i].Env["AGYENT_USER_ID"] = msg.Sender.ID
 			}
 		}
-		_ = e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers)
+		if err := e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers); err != nil {
+			slog.ErrorContext(turnCtx, "MCP mount failed; refusing execution", "session_key", sessionKey, "error", err)
+			return fmt.Errorf("mount MCP servers: %w", err)
+		}
 		defer func() {
-			_ = e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeMCPServers)
+			if err := e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeMCPServers); err != nil {
+				slog.Error("MCP unmount failed", "session_key", sessionKey, "error", err)
+			}
 		}()
 	}
 
@@ -713,6 +885,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		Mode:                       e.cfg.AGY.DefaultMode,
 		DangerouslySkipPermissions: e.cfg.AGY.DangerouslySkipPermissions,
 		AgentName:                  agent.Name,
+		ProjectName:                session.ActiveProject,
 		SessionKey:                 sessionKey,
 		UserID:                     msg.Sender.ID,
 	}
@@ -726,7 +899,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	var execResult *domain.ExecutionResult
 	var execErr error
 
-	if e.securityManager != nil {
+	principal := domain.Principal{
+		Kind:      domain.PrincipalUser,
+		Provider:  msg.Channel,
+		SubjectID: msg.Sender.ID,
+	}
+
+	if e.executionService == nil && e.securityManager != nil {
 		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
 			ConversationID: activeConvID,
 			SessionKey:     sessionKey,
@@ -739,27 +918,41 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if isStream {
-		execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
-
-		// Edge Case: If agy fails due to unsupported effort flag, retry once with effort stripped
-		if isEffortError(execErr, execResult) && req.Effort != "" {
-			slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI, retrying without --effort",
-				slog.String("model", req.Model),
-				slog.String("effort", req.Effort),
-			)
-			req.Effort = ""
-			resolvedEffort = ""
+		if e.executionService != nil {
+			execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, true)
+		} else {
 			execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+
+			// Edge Case: If agy fails due to unsupported effort flag, retry once with effort stripped
+			if isEffortError(execErr, execResult) && req.Effort != "" {
+				slog.WarnContext(turnCtx, "Effort flag rejected by model/CLI, retrying without --effort",
+					slog.String("model", req.Model),
+					slog.String("effort", req.Effort),
+				)
+				req.Effort = domain.EffortNone
+				req.DisableEffort = true
+				resolvedEffort = ""
+				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			}
 		}
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
 			if !isEphemeral && session.GetActiveConversationID() != "" {
-				_ = e.storage.SetConversationArchived(turnCtx, session.GetActiveConversationID(), true)
+				scope := domain.ConversationScope{
+					SessionKey:  session.SessionKey,
+					AgentName:   session.ActiveAgent,
+					ProjectName: session.ActiveProject,
+				}
+				_ = e.storage.SetConversationArchivedScoped(turnCtx, scope, session.GetActiveConversationID(), true)
 			}
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)
 			req.ConversationID = ""
-			execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, true)
+			} else {
+				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
+			}
 		}
 	} else {
 		heartbeatStop := make(chan struct{})
@@ -789,7 +982,11 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		// Execute Runner with Transient Error Retry & Exponential Backoff (1s, 2s, 4s)
 		for attempt := 0; attempt < 3; attempt++ {
-			execResult, execErr = e.runner.Execute(turnCtx, req)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, false)
+			} else {
+				execResult, execErr = e.runner.Execute(turnCtx, req)
+			}
 			if execErr == nil && execResult != nil && execResult.Success {
 				break
 			}
@@ -801,7 +998,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 					slog.String("model", req.Model),
 					slog.String("effort", req.Effort),
 				)
-				req.Effort = ""
+				req.Effort = domain.EffortNone
+				req.DisableEffort = true
 				resolvedEffort = ""
 				continue
 			}
@@ -824,12 +1022,21 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		if errors.Is(execErr, ports.ErrConversationNotFound) {
 			if !isEphemeral && session.GetActiveConversationID() != "" {
-				_ = e.storage.SetConversationArchived(turnCtx, session.GetActiveConversationID(), true)
+				scope := domain.ConversationScope{
+					SessionKey:  session.SessionKey,
+					AgentName:   session.ActiveAgent,
+					ProjectName: session.ActiveProject,
+				}
+				_ = e.storage.SetConversationArchivedScoped(turnCtx, scope, session.GetActiveConversationID(), true)
 			}
 			session.ResetActiveConversationID()
 			_ = e.storage.SaveSession(turnCtx, session)
 			req.ConversationID = ""
-			execResult, execErr = e.runner.Execute(turnCtx, req)
+			if e.executionService != nil {
+				execResult, execErr = e.executionService.ExecuteTurn(turnCtx, principal, req, sessionKey, false)
+			} else {
+				execResult, execErr = e.runner.Execute(turnCtx, req)
+			}
 		}
 
 		if execErr == nil && execResult != nil && execResult.Success {
@@ -907,7 +1114,12 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
-	_ = e.storage.LogAudit(turnCtx, audit)
+	// ExecutionService is the authoritative audit producer for protected turns.
+	// Retain this fallback only for lightweight unit/embedded callers that have
+	// not been wired through the production execution chokepoint.
+	if e.executionService == nil {
+		_ = e.storage.LogAudit(turnCtx, audit)
+	}
 
 	if auditStatus == domain.StatusError {
 		slog.ErrorContext(ctx, "Turn execution failed",

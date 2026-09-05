@@ -2,10 +2,14 @@ package telegram
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,7 +43,9 @@ type Adapter struct {
 	unsubList  []ports.UnsubscribeFunc
 	cancelPoll context.CancelFunc
 	pollDone   chan struct{}
-	httpServer *http.Server
+	httpServer  *http.Server
+	secretToken string
+	authorizer  InboundAuthorizer
 
 	mu      sync.RWMutex
 	running bool
@@ -112,6 +118,11 @@ func NewAdapter(cfg *config.Config, bus ports.EventBusPort, opts ...Option) *Ada
 			a.hitlCoord.SetBot(a.bot)
 		}
 	}
+	if a.mediaMgr == nil {
+		a.mediaMgr = NewMediaManager(cfg, a.bot)
+		a.mediaMgr.SetBotGetter(a.getBot)
+		a.mediaMgr.SetBotByAgentGetter(a.getBotByAgent)
+	}
 	return a
 }
 
@@ -125,6 +136,23 @@ func (a *Adapter) HITLCoordinator() *HITLCoordinator {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.hitlCoord
+}
+
+// MediaManager returns the active MediaManager instance.
+func (a *Adapter) MediaManager() *MediaManager {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mediaMgr
+}
+
+// SetInboundAuthorizer sets the inbound authorization evaluator for ingress filtering.
+func (a *Adapter) SetInboundAuthorizer(authorizer InboundAuthorizer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.authorizer = authorizer
+	if a.router != nil {
+		a.router.SetInboundAuthorizer(authorizer)
+	}
 }
 
 func (a *Adapter) getBot(botID int64) *gotgbot.Bot {
@@ -274,6 +302,9 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn, a.getBot)
 	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
 	a.router.SetBotBindings(a.bindAgents)
+	if a.authorizer != nil {
+		a.router.SetInboundAuthorizer(a.authorizer)
+	}
 
 	// 3. Bind EventBus subscriptions
 	if a.eventBus != nil {
@@ -403,41 +434,138 @@ func (a *Adapter) startPollingForBot(ctx context.Context, bot *gotgbot.Bot, bCfg
 	}
 }
 
-func (a *Adapter) startWebhook(ctx context.Context) error {
-	webhookPath := "/telegram/webhook"
+// WebhookHandler returns the http.Handler serving the Telegram webhook endpoints.
+func (a *Adapter) WebhookHandler() http.Handler {
+	a.mu.Lock()
+	if a.secretToken == "" {
+		if a.cfg != nil && a.cfg.Telegram.SecretToken != "" {
+			a.secretToken = a.cfg.Telegram.SecretToken
+		} else {
+			tokenBytes := make([]byte, 32)
+			if _, err := rand.Read(tokenBytes); err != nil {
+				slog.Error("failed to generate secure webhook secret token from crypto/rand", "error", err)
+				panic(fmt.Sprintf("crypto/rand failure: %v", err))
+			}
+			a.secretToken = hex.EncodeToString(tokenBytes)
+		}
+	}
+	secretToken := a.secretToken
+	a.mu.Unlock()
+
 	mux := http.NewServeMux()
-	mux.HandleFunc(webhookPath, func(w http.ResponseWriter, r *http.Request) {
+	handleWebhookUpdate := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
+
+		providedToken := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+		if secretToken == "" || subtle.ConstantTimeCompare([]byte(providedToken), []byte(secretToken)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB body limit to prevent memory DoS
 		var u gotgbot.Update
 		if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
-		if a.router != nil {
-			_ = a.router.HandleUpdate(r.Context(), a.getBot(0), &u)
+
+		// Resolve target bot by URL path /telegram/webhook/{bot} or fallback to default
+		var targetBot *gotgbot.Bot
+		pathPart := strings.TrimPrefix(r.URL.Path, "/telegram/webhook")
+		pathPart = strings.Trim(pathPart, "/")
+		if pathPart != "" {
+			targetBot = a.getBotByAgent(pathPart)
+			if targetBot == nil {
+				if id, err := strconv.ParseInt(pathPart, 10, 64); err == nil {
+					targetBot = a.getBot(id)
+				}
+			}
+		}
+		if targetBot == nil {
+			targetBot = a.getBot(0)
+		}
+
+		if a.router != nil && targetBot != nil {
+			_ = a.router.HandleUpdate(r.Context(), targetBot, &u)
 		}
 		w.WriteHeader(http.StatusOK)
-	})
+	}
+
+	mux.HandleFunc("/telegram/webhook", handleWebhookUpdate)
+	mux.HandleFunc("/telegram/webhook/", handleWebhookUpdate)
+	return mux
+}
+
+func (a *Adapter) startWebhook(ctx context.Context) error {
+	handler := a.WebhookHandler()
+
+	a.mu.RLock()
+	secretToken := a.secretToken
+	a.mu.RUnlock()
 
 	serverAddr := "127.0.0.1:8080"
 	if a.cfg != nil && a.cfg.Server.Port > 0 {
 		serverAddr = fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
 	}
 
-	slog.InfoContext(ctx, "Listening for Telegram webhook", slog.String("address", serverAddr), slog.String("path", webhookPath))
+	listener, err := net.Listen("tcp", serverAddr)
+	if err != nil {
+		return fmt.Errorf("failed to bind telegram webhook server on %s: %w", serverAddr, err)
+	}
+
+	slog.InfoContext(ctx, "Listening for Telegram webhook",
+		slog.String("address", serverAddr),
+		slog.String("path", "/telegram/webhook"),
+		slog.Bool("secret_token_enforced", secretToken != ""),
+	)
 
 	server := &http.Server{
-		Addr:    serverAddr,
-		Handler: mux,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	a.httpServer = server
 
+	// Register Webhook with Telegram API if WebhookURL is configured
+	if a.cfg != nil && a.cfg.Telegram.WebhookURL != "" {
+		for _, bot := range a.bots {
+			webhookURL := a.cfg.Telegram.WebhookURL
+			bCfg := a.botConfigs[bot.Id]
+			if bCfg.Name != "" && bCfg.Name != "default" {
+				webhookURL = strings.TrimSuffix(webhookURL, "/") + "/" + bCfg.Name
+			}
+			opts := &gotgbot.SetWebhookOpts{
+				DropPendingUpdates: false,
+				SecretToken:        secretToken,
+				RequestOpts: &gotgbot.RequestOpts{
+					Timeout: 10 * time.Second,
+				},
+			}
+			if _, setErr := bot.SetWebhook(webhookURL, opts); setErr != nil {
+				slog.WarnContext(ctx, "Failed to register Telegram webhook with API",
+					slog.Int64("bot_id", bot.Id),
+					slog.String("webhook_url", webhookURL),
+					slog.String("error", setErr.Error()),
+				)
+			} else {
+				slog.InfoContext(ctx, "Registered Telegram webhook with API",
+					slog.Int64("bot_id", bot.Id),
+					slog.String("webhook_url", webhookURL),
+				)
+			}
+		}
+	}
+
 	go func() {
 		defer close(a.pollDone)
-		_ = server.ListenAndServe()
+		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			slog.ErrorContext(ctx, "Telegram webhook server failure", slog.String("error", serveErr.Error()))
+		}
 	}()
 
 	return nil

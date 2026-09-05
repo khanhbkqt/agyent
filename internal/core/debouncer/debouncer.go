@@ -102,19 +102,25 @@ func (d *Debouncer) Ingest(ctx context.Context, msg domain.CanonicalMessage) err
 			return ErrDebouncerClosed
 		}
 
-		// Discard pending regular buffer to prevent context collision
+		// Flush pending regular buffer BEFORE executing command to prevent lost messages
+		var pendingMsgs []domain.CanonicalMessage
 		if state, exists := d.sessions[sessionKey]; exists {
 			state.mu.Lock()
 			if state.timer != nil {
 				state.timer.Stop()
 				state.timer = nil
 			}
+			pendingMsgs = state.messages
 			state.messages = nil
 			state.isFlushing.Store(true)
 			state.mu.Unlock()
 			delete(d.sessions, sessionKey)
 		}
 		d.mu.Unlock()
+
+		if len(pendingMsgs) > 0 {
+			_ = d.dispatchAsync(ctx, pendingMsgs)
+		}
 
 		// Dispatch command immediately with 0ms delay outside mutex
 		if d.handler != nil {
@@ -123,70 +129,78 @@ func (d *Debouncer) Ingest(ctx context.Context, msg domain.CanonicalMessage) err
 		return nil
 	}
 
-	// 2. REGULAR MESSAGE DEBOUNCING
-	d.mu.Lock()
-	if d.isClosed {
-		d.mu.Unlock()
-		return ErrDebouncerClosed
-	}
-
-	state, exists := d.sessions[sessionKey]
-	if !exists || state.isFlushing.Load() {
-		if len(d.sessions) >= d.config.MaxActiveSessions {
+	// 2. REGULAR MESSAGE DEBOUNCING (ADMISSION BARRIER PATTERN)
+	for {
+		d.mu.Lock()
+		if d.isClosed {
 			d.mu.Unlock()
-			return ErrTooManySessions
+			return ErrDebouncerClosed
 		}
-		state = &sessionState{
-			sessionKey:    sessionKey,
-			messages:      make([]domain.CanonicalMessage, 0, 4),
-			firstReceived: d.config.Clock.Now(),
+
+		state, exists := d.sessions[sessionKey]
+		if !exists || state.isFlushing.Load() {
+			if len(d.sessions) >= d.config.MaxActiveSessions {
+				d.mu.Unlock()
+				return ErrTooManySessions
+			}
+			state = &sessionState{
+				sessionKey:    sessionKey,
+				messages:      make([]domain.CanonicalMessage, 0, 4),
+				firstReceived: d.config.Clock.Now(),
+			}
+			d.sessions[sessionKey] = state
 		}
-		d.sessions[sessionKey] = state
-	}
-	d.mu.Unlock()
 
-	state.mu.Lock()
-	state.messages = append(state.messages, msg)
-	msgCount := len(state.messages)
-	elapsed := d.config.Clock.Now().Sub(state.firstReceived)
-	remainingMax := d.config.MaxWaitDuration - elapsed
+		state.mu.Lock()
+		if state.isFlushing.Load() {
+			// State began flushing between check and lock acquisition, retry barrier admission
+			state.mu.Unlock()
+			d.mu.Unlock()
+			continue
+		}
+		d.mu.Unlock()
 
-	// 3. CHECK FLUSH CONDITIONS (MAX COUNT OR MAX WAIT DURATION)
-	if msgCount >= d.config.MaxMessageCount || remainingMax <= 0 {
-		msgsToFlush := state.messages
-		state.messages = nil
+		state.messages = append(state.messages, msg)
+		msgCount := len(state.messages)
+		elapsed := d.config.Clock.Now().Sub(state.firstReceived)
+		remainingMax := d.config.MaxWaitDuration - elapsed
+
+		// 3. CHECK FLUSH CONDITIONS (MAX COUNT OR MAX WAIT DURATION)
+		if msgCount >= d.config.MaxMessageCount || remainingMax <= 0 {
+			msgsToFlush := state.messages
+			state.messages = nil
+			if state.timer != nil {
+				state.timer.Stop()
+				state.timer = nil
+			}
+			state.isFlushing.Store(true)
+			state.mu.Unlock()
+
+			d.mu.Lock()
+			if cur, ok := d.sessions[sessionKey]; ok && cur == state {
+				delete(d.sessions, sessionKey)
+			}
+			d.mu.Unlock()
+
+			return d.dispatchAsync(ctx, msgsToFlush)
+		}
+
+		// 4. DYNAMIC SLIDING WINDOW TIMER RESET (CLAMPED BY REMAINING MAX)
+		nextDelay := d.config.WindowDuration
+		if nextDelay > remainingMax {
+			nextDelay = remainingMax
+		}
+
 		if state.timer != nil {
 			state.timer.Stop()
-			state.timer = nil
 		}
-		state.isFlushing.Store(true)
+
+		state.timer = d.config.Clock.AfterFunc(nextDelay, func() {
+			d.onTimerFired(sessionKey, state)
+		})
 		state.mu.Unlock()
-
-		d.mu.Lock()
-		if cur, ok := d.sessions[sessionKey]; ok && cur == state {
-			delete(d.sessions, sessionKey)
-		}
-		d.mu.Unlock()
-
-		return d.dispatchAsync(ctx, msgsToFlush)
+		return nil
 	}
-
-	// 4. DYNAMIC SLIDING WINDOW TIMER RESET (CLAMPED BY REMAINING MAX)
-	nextDelay := d.config.WindowDuration
-	if nextDelay > remainingMax {
-		nextDelay = remainingMax
-	}
-
-	if state.timer != nil {
-		state.timer.Stop()
-	}
-
-	state.timer = d.config.Clock.AfterFunc(nextDelay, func() {
-		d.onTimerFired(sessionKey, state)
-	})
-	state.mu.Unlock()
-
-	return nil
 }
 
 func (d *Debouncer) onTimerFired(sessionKey string, state *sessionState) {
@@ -218,7 +232,14 @@ func (d *Debouncer) dispatchAsync(ctx context.Context, msgs []domain.CanonicalMe
 
 	coalesced := CoalesceMessages(msgs)
 
+	d.mu.Lock()
+	if d.isClosed {
+		d.mu.Unlock()
+		return d.handler(ctx, coalesced)
+	}
 	d.wg.Add(1)
+	d.mu.Unlock()
+
 	go func() {
 		defer d.wg.Done()
 		_ = d.handler(ctx, coalesced)

@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,4 +239,65 @@ func TestBuildNewSessionGreetingPrompt(t *testing.T) {
 	assert.Contains(t, promptWithTopic, "[SYSTEM DIRECTIVE: NEW CONVERSATION INITIALIZATION]")
 	assert.Contains(t, promptWithTopic, "Thiết kế Database mới")
 	assert.Contains(t, promptWithTopic, "Acknowledge the topic")
+}
+
+func TestPrefixKVCache_PrefixInvariance(t *testing.T) {
+	// Base static context (Levels 1-3)
+	resolvedBase := domain.ResolvedContext{
+		CombinedDirectives: "[GLOBAL CORE DIRECTIVES]\n<IDENTITY>\nName: agyent\n</IDENTITY>\n\n" +
+			"<SOUL>\nPersona: assistant\n</SOUL>\n\n" +
+			"<USER_PROFILE>\nName: User\n</USER_PROFILE>\n\n" +
+			"<LONG_TERM_MEMORY>\nFacts: Important long term memory\n</LONG_TERM_MEMORY>\n\n" +
+			"[WORKSPACE PROJECT DIRECTIVES]\n<CORE_RULES>\nRules: Clean Go\n</CORE_RULES>",
+		SkillHeaders: []domain.SkillHeader{
+			{Name: "code-review", Scope: domain.ScopeGlobal, FilePath: "/skills/review/SKILL.md", Description: "Reviews code"},
+			{Name: "db-migrate", Scope: domain.ScopeWorkspace, FilePath: "/skills/migrate/SKILL.md", Description: "Runs migrations"},
+		},
+	}
+
+	// Turn 1 on Day 1
+	ctx1 := resolvedBase
+	ctx1.TodayMemory = "<TODAY_MEMORY>\n- [09:00] Meeting on Day 1\n</TODAY_MEMORY>"
+	msg1 := domain.CanonicalMessage{Text: "Deploy service A"}
+	prompt1 := engine.ComposeResolvedTurnPrompt(&ctx1, msg1, "[TEMPORAL CONTEXT: Day 1, 09:15]")
+
+	// Turn 2 on Day 2 with completely different episodic memory, temporal context, and user message
+	ctx2 := resolvedBase
+	ctx2.TodayMemory = "<TODAY_MEMORY>\n- [15:00] Deploy failed on Day 2\n</TODAY_MEMORY>"
+	msg2 := domain.CanonicalMessage{Text: "Investigate database latency"}
+	prompt2 := engine.ComposeResolvedTurnPrompt(&ctx2, msg2, "[TEMPORAL CONTEXT: Day 2, 16:30]")
+
+	// Turn 3 on Day 3 with RECENT_ACTIVITY fallback (cold-start lookback)
+	ctx3 := resolvedBase
+	ctx3.TodayMemory = "<RECENT_ACTIVITY>\n- Yesterday completed benchmark\n</RECENT_ACTIVITY>"
+	msg3 := domain.CanonicalMessage{Text: "Summarize status"}
+	prompt3 := engine.ComposeResolvedTurnPrompt(&ctx3, msg3, "[TEMPORAL CONTEXT: Day 3, 08:00]")
+
+	// Extract static Level 0-3 prefix: everything up to "[TEMPORAL CONTEXT"
+	delim := "[TEMPORAL CONTEXT"
+	idx1 := strings.Index(prompt1, delim)
+	idx2 := strings.Index(prompt2, delim)
+	idx3 := strings.Index(prompt3, delim)
+
+	require.True(t, idx1 > 0, "Prompt 1 must contain temporal context marker")
+	require.True(t, idx2 > 0, "Prompt 2 must contain temporal context marker")
+	require.True(t, idx3 > 0, "Prompt 3 must contain temporal context marker")
+
+	prefix1 := prompt1[:idx1]
+	prefix2 := prompt2[:idx2]
+	prefix3 := prompt3[:idx3]
+
+	// SHA-256 hashes must be 100% bit-for-bit identical across days/turns
+	hash1 := sha256.Sum256([]byte(prefix1))
+	hash2 := sha256.Sum256([]byte(prefix2))
+	hash3 := sha256.Sum256([]byte(prefix3))
+
+	assert.Equal(t, hash1, hash2, "Level 0-3 prefix must be bit-for-bit identical between Day 1 and Day 2")
+	assert.Equal(t, hash1, hash3, "Level 0-3 prefix must be bit-for-bit identical between Day 1 and Day 3 (recent activity)")
+	assert.Equal(t, prefix1, prefix2)
+
+	// Verify dynamic elements reside strictly after the invariant prefix
+	assert.Contains(t, prompt1[idx1:], ctx1.TodayMemory)
+	assert.Contains(t, prompt2[idx2:], ctx2.TodayMemory)
+	assert.Contains(t, prompt3[idx3:], ctx3.TodayMemory)
 }

@@ -6,13 +6,21 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root
-ExecStart=/usr/local/bin/agyent run -c /root/.agyent/config.yaml
+User=agyent
+Group=agyent
+WorkingDirectory=/home/agyent
+ExecStart=/usr/local/bin/agyent run -c /home/agyent/.agyent/config.yaml
 Restart=always
 RestartSec=5s
 LimitNOFILE=65535
 LimitNPROC=65535
+
+# Process Isolation & Hardening
+StateDirectory=agyent
+RuntimeDirectory=agyent
+ReadWritePaths=/home/agyent/.gemini /home/agyent/.agyent
+ProtectSystem=full
+NoNewPrivileges=true
 
 # Process Environment
 Environment="NO_COLOR=1"

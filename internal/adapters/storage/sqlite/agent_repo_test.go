@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,4 +178,79 @@ func TestSQLiteStore_AgentOwnershipAndRBAC(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, permsAfter, 0)
 	})
+
+	t.Run("ClaimAgent Atomic Transition", func(t *testing.T) {
+		// 1. Create an unowned, private agent
+		unowned := &domain.Agent{
+			Name:          "unowned_agent",
+			Status:        domain.StatusInitialized,
+			WorkspacePath: "/data/unowned",
+			OwnerID:       "",
+			IsPublic:      false,
+		}
+		require.NoError(t, store.SaveAgent(ctx, unowned))
+
+		// Access check for any user must be false (not public, not owner)
+		allowed, _, err := store.CheckAgentAccess(ctx, "unowned_agent", "1001")
+		require.NoError(t, err)
+		assert.False(t, allowed, "Unowned private agent must not allow access to arbitrary users")
+
+		// 2. Claim agent
+		claimed, err := store.ClaimAgent(ctx, "unowned_agent", "1001")
+		require.NoError(t, err)
+		assert.True(t, claimed, "Claiming unowned agent should succeed")
+
+		// Verify user 1001 is now owner
+		retrieved, err := store.GetAgent(ctx, "unowned_agent")
+		require.NoError(t, err)
+		assert.Equal(t, "1001", retrieved.OwnerID)
+
+		// Access check now allows user 1001 as owner
+		allowed, role, err := store.CheckAgentAccess(ctx, "unowned_agent", "1001")
+		require.NoError(t, err)
+		assert.True(t, allowed)
+		assert.Equal(t, "owner", role)
+
+		// 3. Attempting to claim already-owned agent must fail (rowsAffected == 0)
+		claimedAgain, err := store.ClaimAgent(ctx, "unowned_agent", "2002")
+		require.NoError(t, err)
+		assert.False(t, claimedAgain, "Claiming already owned agent must return false")
+
+		// 4. Attempting to claim non-existent agent returns false
+		claimedNonExistent, err := store.ClaimAgent(ctx, "non_existent_agent", "1001")
+		require.NoError(t, err)
+		assert.False(t, claimedNonExistent, "Claiming non-existent agent must return false")
+	})
+}
+
+func TestSQLiteStore_CreateAgentIsInsertOnly(t *testing.T) {
+	store := setupIsolatedStore(t)
+	ctx := context.Background()
+
+	original := &domain.Agent{
+		Name:           "immutable-owner",
+		Description:    "original profile",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  "/safe/original",
+		OwnerID:        "owner-1",
+		SecurityPreset: domain.PresetStrict,
+	}
+	require.NoError(t, store.CreateAgent(ctx, original))
+
+	attacker := &domain.Agent{
+		Name:           "immutable-owner",
+		Description:    "attacker profile",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  "/attacker/controlled",
+		OwnerID:        "attacker-2",
+		SecurityPreset: domain.PresetBalanced,
+	}
+	require.ErrorIs(t, store.CreateAgent(ctx, attacker), ports.ErrAlreadyExists)
+
+	stored, err := store.GetAgent(ctx, original.Name)
+	require.NoError(t, err)
+	assert.Equal(t, original.OwnerID, stored.OwnerID)
+	assert.Equal(t, original.WorkspacePath, stored.WorkspacePath)
+	assert.Equal(t, original.Description, stored.Description)
+	assert.Equal(t, original.SecurityPreset, stored.SecurityPreset)
 }

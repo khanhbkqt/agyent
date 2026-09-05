@@ -50,8 +50,9 @@ func TestContextResolver_ResolveDirectives(t *testing.T) {
 	assert.Contains(t, res.GlobalDirectives, "Múi giờ: Asia/Ho_Chi_Minh")
 	assert.Contains(t, res.GlobalDirectives, "<LONG_TERM_MEMORY>")
 	assert.Contains(t, res.GlobalDirectives, "Fact: Go Clean Architecture")
-	assert.Contains(t, res.GlobalDirectives, "<TODAY_MEMORY>")
-	assert.Contains(t, res.GlobalDirectives, "[10:00] Daily standup meeting")
+	assert.NotContains(t, res.GlobalDirectives, "<TODAY_MEMORY>")
+	assert.Contains(t, res.TodayMemory, "<TODAY_MEMORY>")
+	assert.Contains(t, res.TodayMemory, "[10:00] Daily standup meeting")
 	assert.Contains(t, res.WorkspaceDirectives, "<CORE_RULES>")
 	assert.Contains(t, res.WorkspaceDirectives, "Clean Architecture Go")
 

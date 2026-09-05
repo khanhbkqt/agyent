@@ -75,14 +75,18 @@ func (r *ContextResolver) Resolve(ctx context.Context, globalHome string, worksp
 		ResolvedAt:   time.Now(),
 	}
 
-	// 1. Scan Global Directives
+	// 1. Scan Global Directives (Level 1: static prefix)
 	if globalHome != "" {
 		resolved.GlobalDirectives = r.scanDirectives(globalHome)
+		resolved.TodayMemory = r.scanTodayMemory(globalHome)
 	}
 
-	// 2. Scan Workspace Directives
+	// 2. Scan Workspace Directives (Level 2: workspace prefix)
 	if workspaceDir != "" && workspaceDir != globalHome {
 		resolved.WorkspaceDirectives = r.scanDirectives(workspaceDir)
+		if resolved.TodayMemory == "" {
+			resolved.TodayMemory = r.scanTodayMemory(workspaceDir)
+		}
 	}
 
 	// 3. Assemble Combined Directives Block
@@ -101,13 +105,44 @@ func (r *ContextResolver) Resolve(ctx context.Context, globalHome string, worksp
 
 	resolved.CombinedDirectives = strings.TrimSpace(sb.String())
 
-	// 4. Discover Skills (Progressive Disclosure)
+	// 4. Discover Skills (Progressive Disclosure - Level 3)
 	skills, err := r.DiscoverSkills(ctx, globalHome, workspaceDir)
 	if err == nil {
 		resolved.SkillHeaders = skills
 	}
 
+	// 5. Deterministic sorting for KV-cache prefix invariance
+	r.sortContext(resolved)
+
 	return resolved, nil
+}
+
+// sortContext ensures deterministic ordering of slices for KV-cache invariance.
+func (r *ContextResolver) sortContext(resolved *domain.ResolvedContext) {
+	if resolved == nil {
+		return
+	}
+	if len(resolved.SkillHeaders) > 1 {
+		sort.Slice(resolved.SkillHeaders, func(i, j int) bool {
+			if resolved.SkillHeaders[i].Scope != resolved.SkillHeaders[j].Scope {
+				return resolved.SkillHeaders[i].Scope < resolved.SkillHeaders[j].Scope
+			}
+			if resolved.SkillHeaders[i].Name != resolved.SkillHeaders[j].Name {
+				return resolved.SkillHeaders[i].Name < resolved.SkillHeaders[j].Name
+			}
+			return resolved.SkillHeaders[i].FilePath < resolved.SkillHeaders[j].FilePath
+		})
+	}
+	if len(resolved.ActiveMCPServers) > 1 {
+		sort.Slice(resolved.ActiveMCPServers, func(i, j int) bool {
+			return resolved.ActiveMCPServers[i].ServerName < resolved.ActiveMCPServers[j].ServerName
+		})
+	}
+	if len(resolved.ActivePlugins) > 1 {
+		sort.Slice(resolved.ActivePlugins, func(i, j int) bool {
+			return resolved.ActivePlugins[i].Manifest.Name < resolved.ActivePlugins[j].Manifest.Name
+		})
+	}
 }
 
 // DetectUserLocation inspects USER.md in dir to detect the user's timezone, defaulting to time.Local.
@@ -121,18 +156,15 @@ func DetectUserLocation(dir string) *time.Location {
 		return time.Local
 	}
 	data, err := os.ReadFile(safePath)
-	if err != nil {
-		return time.Local
+	if err == nil {
+		return domain.ParseLocationFromText(string(data))
 	}
-	return domain.ParseLocationFromText(string(data))
+	return time.Local
 }
 
+// scanDirectives scans static directives: IDENTITY.md, SOUL.md, USER.md, MEMORY.md, AGENTS.md.
+// Dynamic daily memory is explicitly excluded to preserve Level 0-3 KV-cache prefix invariance.
 func (r *ContextResolver) scanDirectives(dir string) string {
-	loc := DetectUserLocation(dir)
-	now := time.Now().In(loc)
-	todayStr := now.Format("2006-01-02")
-	todayRel := filepath.Join("memory", fmt.Sprintf("%s.md", todayStr))
-
 	files := []struct {
 		tag  string
 		name string
@@ -141,13 +173,11 @@ func (r *ContextResolver) scanDirectives(dir string) string {
 		{tag: "SOUL", name: "SOUL.md"},
 		{tag: "USER_PROFILE", name: "USER.md"},
 		{tag: "LONG_TERM_MEMORY", name: "MEMORY.md"},
-		{tag: "TODAY_MEMORY", name: todayRel},
 		{tag: "CORE_RULES", name: "AGENTS.md"},
 	}
 
 	var sb strings.Builder
 	hasContent := false
-	hasTodayMemory := false
 
 	for _, f := range files {
 		targetFile := filepath.Join(dir, f.name)
@@ -161,25 +191,6 @@ func (r *ContextResolver) scanDirectives(dir string) string {
 			if len(trimmed) > 0 {
 				sb.WriteString(fmt.Sprintf("<%s>\n%s\n</%s>\n\n", f.tag, trimmed, f.tag))
 				hasContent = true
-				if f.tag == "TODAY_MEMORY" {
-					hasTodayMemory = true
-				}
-			}
-		}
-	}
-
-	// 48h Rolling Window: If TODAY_MEMORY is absent or empty, check YESTERDAY_MEMORY for cold-start handover
-	if !hasTodayMemory {
-		yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
-		yesterdayRel := filepath.Join("memory", fmt.Sprintf("%s.md", yesterdayStr))
-		targetFile := filepath.Join(dir, yesterdayRel)
-		if safePath, err := ValidateSecurePath(dir, targetFile); err == nil {
-			if data, err := os.ReadFile(safePath); err == nil {
-				trimmed := strings.TrimSpace(string(data))
-				if len(trimmed) > 0 {
-					sb.WriteString(fmt.Sprintf("<RECENT_ACTIVITY>\n%s\n</RECENT_ACTIVITY>\n\n", trimmed))
-					hasContent = true
-				}
 			}
 		}
 	}
@@ -188,6 +199,44 @@ func (r *ContextResolver) scanDirectives(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+// scanTodayMemory scans dynamic daily episodic memory (memory/YYYY-MM-DD.md)
+// or falls back to yesterday's memory if absent (48h rolling window).
+// This content is placed in Level 4 (turn dynamic scope) to avoid invalidating Gemini KV-caches.
+func (r *ContextResolver) scanTodayMemory(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	loc := DetectUserLocation(dir)
+	now := time.Now().In(loc)
+	todayStr := now.Format("2006-01-02")
+	todayRel := filepath.Join("memory", fmt.Sprintf("%s.md", todayStr))
+
+	targetFile := filepath.Join(dir, todayRel)
+	if safePath, err := ValidateSecurePath(dir, targetFile); err == nil {
+		if data, err := os.ReadFile(safePath); err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if len(trimmed) > 0 {
+				return fmt.Sprintf("<TODAY_MEMORY>\n%s\n</TODAY_MEMORY>", trimmed)
+			}
+		}
+	}
+
+	// 48h Rolling Window: If TODAY_MEMORY is absent or empty, check YESTERDAY_MEMORY for cold-start handover
+	yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
+	yesterdayRel := filepath.Join("memory", fmt.Sprintf("%s.md", yesterdayStr))
+	targetFile = filepath.Join(dir, yesterdayRel)
+	if safePath, err := ValidateSecurePath(dir, targetFile); err == nil {
+		if data, err := os.ReadFile(safePath); err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if len(trimmed) > 0 {
+				return fmt.Sprintf("<RECENT_ACTIVITY>\n%s\n</RECENT_ACTIVITY>", trimmed)
+			}
+		}
+	}
+
+	return ""
 }
 
 // DiscoverSkills scans both global and workspace directories for .agents/skills/ or skills/,
@@ -224,7 +273,13 @@ func (r *ContextResolver) DiscoverSkills(ctx context.Context, globalHome string,
 
 	// Deterministic sorting to preserve Gemini Prefix KV-Cache invariant across turns
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
+		if result[i].Scope != result[j].Scope {
+			return result[i].Scope < result[j].Scope
+		}
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].FilePath < result[j].FilePath
 	})
 
 	return result, nil

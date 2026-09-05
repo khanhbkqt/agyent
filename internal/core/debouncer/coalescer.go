@@ -35,6 +35,8 @@ func CoalesceMessages(msgs []domain.CanonicalMessage) domain.CanonicalMessage {
 	var textBuilder, rawTextBuilder strings.Builder
 	var attachments []domain.Attachment
 	seenAttachments := make(map[string]struct{})
+	var attachmentRefs []domain.InboundAttachmentRef
+	seenAttachmentRefs := make(map[string]struct{})
 
 	isMentioned := false
 	isReplyToBot := false
@@ -99,12 +101,31 @@ func CoalesceMessages(msgs []domain.CanonicalMessage) domain.CanonicalMessage {
 				attachments = append(attachments, att)
 			}
 		}
+
+		for _, ref := range m.AttachmentRefs {
+			key := ref.SourceID
+			if key == "" {
+				key = ref.ID
+			}
+			if key == "" {
+				key = ref.FileName
+			}
+			if key != "" {
+				if _, exists := seenAttachmentRefs[key]; !exists {
+					seenAttachmentRefs[key] = struct{}{}
+					attachmentRefs = append(attachmentRefs, ref)
+				}
+			} else {
+				attachmentRefs = append(attachmentRefs, ref)
+			}
+		}
 	}
 
 	result := first
 	result.Text = textBuilder.String()
 	result.RawText = rawTextBuilder.String()
 	result.Attachments = attachments
+	result.AttachmentRefs = attachmentRefs
 	result.IsMentioned = isMentioned
 	result.IsReplyToBot = isReplyToBot
 	if latestReplyToID != "" {

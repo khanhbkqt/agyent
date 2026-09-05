@@ -32,22 +32,36 @@ type Attachment struct {
 	Caption  string `json:"caption,omitempty"`
 }
 
+// InboundAttachmentRef represents a lazy reference to an inbound media attachment.
+// It avoids downloading files to disk before authorization and execution admission.
+type InboundAttachmentRef struct {
+	ID       string `json:"id"`
+	FileName string `json:"file_name"`
+	MIMEType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+	Type     string `json:"type"` // "image", "document", "audio", "video", etc.
+	Caption  string `json:"caption,omitempty"`
+	BotID    int64  `json:"bot_id,omitempty"`
+	SourceID string `json:"source_id"` // Provider-specific ID (e.g. Telegram file_id)
+}
+
 // CanonicalMessage is the standardized representation of any inbound message across channels.
 type CanonicalMessage struct {
-	ID               string       `json:"id"`
-	Timestamp        time.Time    `json:"timestamp"`
-	Channel          string       `json:"channel"` // e.g. "telegram"
-	BotID            int64        `json:"bot_id,omitempty"`
-	BotUsername      string       `json:"bot_username,omitempty"`
-	BindAgent        string       `json:"bind_agent,omitempty"` // Dedicated bound agent for this bot
-	Sender           SenderUser   `json:"sender"`
-	Chat             ChatContext  `json:"chat"`
-	Text             string       `json:"text"`
-	RawText          string       `json:"raw_text"`
-	Attachments      []Attachment `json:"attachments,omitempty"`
-	IsMentioned      bool         `json:"is_mentioned"`
-	IsReplyToBot     bool         `json:"is_reply_to_bot"`
-	ReplyToMessageID string       `json:"reply_to_message_id,omitempty"`
+	ID               string                 `json:"id"`
+	Timestamp        time.Time              `json:"timestamp"`
+	Channel          string                 `json:"channel"` // e.g. "telegram"
+	BotID            int64                  `json:"bot_id,omitempty"`
+	BotUsername      string                 `json:"bot_username,omitempty"`
+	BindAgent        string                 `json:"bind_agent,omitempty"` // Dedicated bound agent for this bot
+	Sender           SenderUser             `json:"sender"`
+	Chat             ChatContext            `json:"chat"`
+	Text             string                 `json:"text"`
+	RawText          string                 `json:"raw_text"`
+	Attachments      []Attachment           `json:"attachments,omitempty"`
+	AttachmentRefs   []InboundAttachmentRef `json:"attachment_refs,omitempty"`
+	IsMentioned      bool                   `json:"is_mentioned"`
+	IsReplyToBot     bool                   `json:"is_reply_to_bot"`
+	ReplyToMessageID string                 `json:"reply_to_message_id,omitempty"`
 }
 
 // OutboundAttachment represents a file or artifact to send out.

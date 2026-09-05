@@ -37,6 +37,10 @@ type SessionRepository interface {
 type AgentRepository interface {
 	GetAgent(ctx context.Context, name string) (*domain.Agent, error)
 	ListAgents(ctx context.Context) ([]domain.Agent, error)
+	// CreateAgent atomically creates a new agent profile. It must never update an
+	// existing profile; callers use SaveAgent only after authorization to mutate a
+	// known agent.
+	CreateAgent(ctx context.Context, agent *domain.Agent) error
 	SaveAgent(ctx context.Context, agent *domain.Agent) error
 	DeleteAgent(ctx context.Context, name string) error
 
@@ -46,6 +50,8 @@ type AgentRepository interface {
 	ListAgentPermissions(ctx context.Context, agentName string) ([]domain.AgentPermission, error)
 	CheckAgentAccess(ctx context.Context, agentName, userID string) (bool, string, error)
 	ListAgentsForUser(ctx context.Context, userID string) ([]domain.Agent, error)
+	ClaimAgent(ctx context.Context, name string, newOwnerID string) (bool, error)
+	ClaimAgentWithAudit(ctx context.Context, name string, newOwnerID string, audit domain.AuditLog) (bool, error)
 }
 
 // ProjectRepository defines persistence operations for managed projects.
@@ -80,18 +86,38 @@ type AuditRepository interface {
 	ListAuditLogs(ctx context.Context, sessionKey string, limit int) ([]domain.AuditLog, error)
 	GetTokenStats(ctx context.Context, sessionKey string, convID string) (*domain.TokenUsage, error)
 	GetTokenEfficiencyReport(ctx context.Context, sessionKey string, agentName string) (*domain.TokenEfficiencyReport, error)
+
+	// Security audit events (security_audit_events table)
+	LogSecurityEvent(ctx context.Context, evt *domain.AuditSecurityEvent) error
+	ListSecurityEvents(ctx context.Context, limit int) ([]domain.AuditSecurityEvent, error)
 }
+
+// ISP (Interface Segregation Principle) Store Aliases:
+type SessionStore = SessionRepository
+type AgentStore = AgentRepository
+type ProjectStore = ProjectRepository
+type UserStore = UserRepository
+type GroupStore = GroupRepository
+type AuditStore = AuditRepository
+type ConversationStore = ConversationRepository
+type SubagentStore = SubagentRepository
+type ScheduleStore = ScheduleRepository
 
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.
 type ConversationRepository interface {
 	GetConversation(ctx context.Context, id string) (*domain.Conversation, error)
+	GetConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) (*domain.Conversation, error)
 	GetConversationByAlias(ctx context.Context, sessionKey, agentName, projectName string, aliasIndex int) (*domain.Conversation, error)
 	ListRecentConversations(ctx context.Context, sessionKey, agentName, projectName string, limit int, offset int) ([]domain.Conversation, int, error)
 	SaveConversation(ctx context.Context, conv *domain.Conversation) error
 	TouchConversation(ctx context.Context, sessionKey, agentName, projectName, convID, promptSnippet string) error
 	SetConversationPinned(ctx context.Context, id string, isPinned bool) error
+	SetConversationPinnedScoped(ctx context.Context, scope domain.ConversationScope, id string, isPinned bool) error
 	SetConversationArchived(ctx context.Context, id string, isArchived bool) error
+	SetConversationArchivedScoped(ctx context.Context, scope domain.ConversationScope, id string, isArchived bool) error
 	SetConversationTitle(ctx context.Context, id string, title string) error
+	SetConversationTitleScoped(ctx context.Context, scope domain.ConversationScope, id string, title string) error
+	DeleteConversationScoped(ctx context.Context, scope domain.ConversationScope, id string) error
 	GetExpiredArchivedConversationIDs(ctx context.Context, olderThanDays int) ([]string, error)
 	PurgeConversations(ctx context.Context, ids []string) error
 	UpdateConversationReflectedStep(ctx context.Context, id string, step int) error

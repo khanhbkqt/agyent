@@ -98,6 +98,13 @@ func NewEvolutionOrchestrator(
 	return orch
 }
 
+// SetExecutionService injects the secure execution service into the reflection engine.
+func (o *EvolutionOrchestrator) SetExecutionService(svc ports.ExecutionServicePort) {
+	if ref, ok := o.reflection.(*ReflectionEngine); ok {
+		ref.SetExecutionService(svc)
+	}
+}
+
 // Start launches worker pool consumers and the background idle scanner.
 func (o *EvolutionOrchestrator) Start(ctx context.Context) error {
 	if !o.cfg.Enabled {

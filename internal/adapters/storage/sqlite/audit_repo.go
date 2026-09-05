@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -397,4 +398,131 @@ func (s *SQLiteStore) GetTokenEfficiencyReport(ctx context.Context, sessionKey s
 	}
 
 	return report, nil
+}
+
+// LogSecurityEvent persists a security event into the security_audit_events table.
+func (s *SQLiteStore) LogSecurityEvent(ctx context.Context, evt *domain.AuditSecurityEvent) error {
+	if evt == nil {
+		return errors.New("cannot log nil security event")
+	}
+
+	query := `
+		INSERT INTO security_audit_events (
+			id, timestamp, event_type, actor_id, actor_provider,
+			action, resource_kind, resource_id, decision, details
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	id := evt.EventID
+	if id == "" {
+		id = fmt.Sprintf("sec-%d", time.Now().UnixNano())
+		evt.EventID = id
+	}
+
+	ts := evt.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
+	details := evt.Reason
+	if evt.Metadata != nil {
+		if metaBytes, err := json.Marshal(evt.Metadata); err == nil {
+			details = fmt.Sprintf("%s | meta: %s", details, string(metaBytes))
+		}
+	}
+
+	actorID := fmt.Sprintf("%d", evt.UserID)
+	actorProvider := "system"
+	if evt.SessionKey != "" {
+		parts := strings.SplitN(evt.SessionKey, ":", 2)
+		if len(parts) > 0 {
+			actorProvider = parts[0]
+		}
+	}
+
+	action := evt.ToolName
+	if action == "" {
+		action = evt.Checkpoint
+	}
+
+	resourceKind := "agent"
+	if evt.ToolName != "" {
+		resourceKind = "tool"
+	}
+
+	resourceID := evt.TargetResource
+	if resourceID == "" {
+		resourceID = evt.AgentName
+	}
+
+	_, err := s.writer().ExecContext(ctx, query,
+		id,
+		ts.Unix(),
+		evt.Checkpoint,
+		actorID,
+		actorProvider,
+		action,
+		resourceKind,
+		resourceID,
+		string(evt.Decision),
+		details,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert security audit event: %w", err)
+	}
+
+	return nil
+}
+
+// ListSecurityEvents retrieves recent security audit events ordered by timestamp DESC.
+func (s *SQLiteStore) ListSecurityEvents(ctx context.Context, limit int) ([]domain.AuditSecurityEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := `
+		SELECT id, timestamp, event_type, actor_id, action, resource_id, decision, details
+		FROM security_audit_events
+		ORDER BY timestamp DESC, id DESC
+		LIMIT ?
+	`
+
+	rows, err := s.reader().QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list security audit events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []domain.AuditSecurityEvent
+	for rows.Next() {
+		var (
+			id           string
+			tsSec        int64
+			checkpoint   string
+			actorIDStr   string
+			action       string
+			resourceID   string
+			decision     string
+			details      string
+		)
+		if err := rows.Scan(&id, &tsSec, &checkpoint, &actorIDStr, &action, &resourceID, &decision, &details); err != nil {
+			return nil, fmt.Errorf("failed to scan security audit event: %w", err)
+		}
+
+		var uid int64
+		_, _ = fmt.Sscanf(actorIDStr, "%d", &uid)
+
+		events = append(events, domain.AuditSecurityEvent{
+			EventID:        id,
+			Timestamp:      time.Unix(tsSec, 0),
+			Checkpoint:     checkpoint,
+			UserID:         uid,
+			ToolName:       action,
+			TargetResource: resourceID,
+			Decision:       domain.SecurityDecisionType(decision),
+			Reason:         details,
+		})
+	}
+
+	return events, nil
 }
