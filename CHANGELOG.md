@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.26] - 2026-09-05
+
+### Added
+- **Security Architecture v3.1 Production Hardening & Defense-in-Depth:**
+  - **Centralized Policy Engine (`core/auth`):** Implemented centralized ABAC/RBAC engine with principal resolution (user ID, roles, bot affiliations, workspace permissions) and audit event emission.
+  - **Ingress Security & Default Agent Privacy:** Added SQLite migration `000011` making new agents private (`is_public = FALSE`) by default to prevent cross-tenant discovery; added constant-time secret token verification on Telegram webhooks.
+  - **Single Execution Chokepoint (`core/execution`):** Created a unified `ExecutionService` acting as the authoritative chokepoint before subprocess dispatch.
+  - **OS Peer Credential Verification:** Integrated socket-level caller verification via `SO_PEERCRED` (Linux) and `LOCAL_PEERCRED` (macOS) on local IPC connections.
+  - **Anti-IDOR Scoped Repositories:** Enforced parent session/tenant boundaries on all conversation and subagent task repository queries.
+  - **Atomic CAS Subagent State Machine:** Implemented Compare-And-Swap lifecycle transitions preventing race conditions during concurrent subagent task execution.
+  - **Dynamic MCP Isolation:** Configured per-agent and per-session tool mounting preventing context and tool leakage across workspaces.
+  - **Admission Barrier Debouncer & Safe Janitor:** Introduced early authorization checks in message debouncer and non-blocking lock checks in background janitor.
+  - **Per-Agent Security Presets & Host CLI (`agyent agent`):** Introduced host CLI management (`agyent agent create/list/edit/delete`) with configurable security presets (`strict`, `balanced`, `developer`, `unrestricted`) and defense-in-depth anti-self-escalation.
+- **Scheduler Outbound Media & Artifact Delivery:** Propagated `conversationID`, `workspaceDir`, and media artifacts generated during scheduled turns for seamless Telegram delivery.
+
+---
+
 ## [1.0.25] - 2026-09-05
 
 ### Added
