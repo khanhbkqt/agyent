@@ -661,6 +661,14 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	chat1 := domain.ChatContext{ID: "111", Type: "private"}
 	chat2 := domain.ChatContext{ID: "222", Type: "private"}
 
+	// Self-service agent creation is intentionally scoped to an owner/admin of
+	// the current agent. Give Alice ownership of the fixture's default agent
+	// before exercising that flow.
+	baseAgent, err := store.GetAgent(ctx, "agyent")
+	require.NoError(t, err)
+	baseAgent.OwnerID = user1.ID
+	require.NoError(t, store.SaveAgent(ctx, baseAgent))
+
 	// 1. User 1 creates private agent 'alice_sec'
 	createMsg := domain.CanonicalMessage{
 		ID:        "msg-create-1",
@@ -670,7 +678,7 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 		Chat:      chat1,
 		Text:      "/a new alice_sec Alice Private Security Agent",
 	}
-	err := eng.HandleDebouncedMessage(ctx, createMsg)
+	err = eng.HandleDebouncedMessage(ctx, createMsg)
 	require.NoError(t, err)
 
 	agent, err := store.GetAgent(ctx, "alice_sec")

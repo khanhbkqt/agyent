@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
@@ -96,6 +97,13 @@ func NewEngine(
 		ctx:                     ctx,
 		cancel:                  cancel,
 		startTime:               time.Now(),
+	}
+	// A command/turn engine without a policy evaluator must never silently
+	// become permissive. The composition root may replace this instance with a
+	// decorated policy engine, but every normally constructed Engine has the
+	// default-deny policy available from its first request.
+	if storage != nil && cfg != nil {
+		e.policyEngine = auth.NewEngine(storage, cfg)
 	}
 
 	if cfg != nil {
@@ -396,16 +404,33 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 		defaultAgent = msg.BindAgent
 	}
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
-	if err == nil {
-		oldConvID := session.GetActiveConversationID()
-		if oldConvID != "" && e.evolution != nil {
-			bgCtx := context.WithoutCancel(ctx)
-			concurrency.SafeGo(func() {
-				_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
-			})
+	if err != nil {
+		return fmt.Errorf("load session for new conversation: %w", err)
+	}
+	authSession := *session
+	if msg.BindAgent != "" {
+		authSession.ActiveAgent = msg.BindAgent
+	}
+	if err := e.authorizeAgentAction(ctx, msg.Sender, domain.ActionConvoSwitch, domain.ResourceKindConversation, "", &authSession); err != nil {
+		if e.channel != nil {
+			_ = e.channel.Send(ctx, *e.commandDeniedMessage(msg))
 		}
-		session.ResetActiveConversationID()
-		_ = e.storage.SaveSession(ctx, session)
+		return nil
+	}
+	if msg.BindAgent != "" {
+		session.ActiveAgent = msg.BindAgent
+		session.ActiveProject = ""
+	}
+	oldConvID := session.GetActiveConversationID()
+	if oldConvID != "" && e.evolution != nil {
+		bgCtx := context.WithoutCancel(ctx)
+		concurrency.SafeGo(func() {
+			_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+		})
+	}
+	session.ResetActiveConversationID()
+	if err := e.storage.SaveSession(ctx, session); err != nil {
+		return fmt.Errorf("reset active conversation: %w", err)
 	}
 
 	// 2. Prepare proactive greeting prompt with optional topic
@@ -452,12 +477,28 @@ func (e *Engine) CheckAccess(ctx context.Context, agent *domain.Agent, senderID 
 // AuthorizeInbound evaluates whether an inbound message sender has permission to interact
 // with an agent persona before message processing or side effects occur.
 func (e *Engine) AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error) {
+	return e.AuthorizeInboundSession(ctx, senderID, bindAgent, chatType, "")
+}
+
+// AuthorizeInboundSession resolves an existing session's active agent before
+// ingress. This keeps a user who has selected a shared/dedicated agent from
+// being incorrectly evaluated against the unrelated default persona, while a
+// dedicated bot binding remains authoritative.
+func (e *Engine) AuthorizeInboundSession(ctx context.Context, senderID string, bindAgent string, chatType string, sessionKey string) (bool, error) {
+	_ = chatType // Group admission is checked by the channel adapter; RBAC is sender/agent scoped.
 	if e.IsSuperAdmin(senderID) {
 		return true, nil
+	}
+	if e.storage == nil {
+		return false, fmt.Errorf("inbound authorization unavailable: storage is not initialized")
 	}
 	targetAgent := "agyent"
 	if bindAgent != "" {
 		targetAgent = bindAgent
+	} else if sessionKey != "" {
+		if session, err := e.storage.GetSession(ctx, sessionKey); err == nil && session != nil && session.ActiveAgent != "" {
+			targetAgent = session.ActiveAgent
+		}
 	}
 	agent, err := e.storage.GetAgent(ctx, targetAgent)
 	if err != nil || agent == nil {
@@ -651,9 +692,29 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			contextTag = fmt.Sprintf("📁 [%s • %s]", agent.Name, proj.ProjectName)
 		}
 	}
-	_ = os.MkdirAll(workspaceDir, 0755)
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		slog.ErrorContext(turnCtx, "Failed to prepare turn workspace", "workspace", workspaceDir, "error", err)
+		if e.channel != nil {
+			_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+				Channel: msg.Channel, BotID: msg.BotID, ChatID: msg.Chat.ID, ThreadID: msg.Chat.ThreadID,
+				Text:             fmt.Sprintf("⛔ Security setup failed: unable to prepare the isolated workspace (%v). The turn was not executed.", err),
+				ReplyToMessageID: msg.ID,
+			})
+		}
+		return fmt.Errorf("prepare workspace: %w", err)
+	}
 	if e.securityManager != nil {
-		_ = e.securityManager.EnsureWorkspaceHooks(workspaceDir)
+		if err := e.securityManager.EnsureWorkspaceHooks(workspaceDir); err != nil {
+			slog.ErrorContext(turnCtx, "Security hook provisioning failed; refusing execution", "workspace", workspaceDir, "error", err)
+			if e.channel != nil {
+				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					Channel: msg.Channel, BotID: msg.BotID, ChatID: msg.Chat.ID, ThreadID: msg.Chat.ThreadID,
+					Text:             "⛔ Security hooks could not be provisioned. This turn was blocked to avoid unguarded tool execution.",
+					ReplyToMessageID: msg.ID,
+				})
+			}
+			return fmt.Errorf("provision security hooks: %w", err)
+		}
 	}
 
 	// 5.1. Lazily Materialize Inbound AttachmentRefs to Active Workspace uploads/
@@ -769,6 +830,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	// 7. Dynamic MCP Mounting (with deferred unmount for Zero Context Leakage)
 	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
+		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx)
+		if err != nil {
+			slog.ErrorContext(turnCtx, "MCP turn lease failed; refusing execution", "session_key", sessionKey, "error", err)
+			return fmt.Errorf("acquire MCP turn lease: %w", err)
+		}
+		defer releaseMCPLease()
+
 		for i := range activeMCPServers {
 			if activeMCPServers[i].Env == nil {
 				activeMCPServers[i].Env = make(map[string]string)
@@ -786,9 +854,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				activeMCPServers[i].Env["AGYENT_USER_ID"] = msg.Sender.ID
 			}
 		}
-		_ = e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers)
+		if err := e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers); err != nil {
+			slog.ErrorContext(turnCtx, "MCP mount failed; refusing execution", "session_key", sessionKey, "error", err)
+			return fmt.Errorf("mount MCP servers: %w", err)
+		}
 		defer func() {
-			_ = e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeMCPServers)
+			if err := e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeMCPServers); err != nil {
+				slog.Error("MCP unmount failed", "session_key", sessionKey, "error", err)
+			}
 		}()
 	}
 
@@ -812,6 +885,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		Mode:                       e.cfg.AGY.DefaultMode,
 		DangerouslySkipPermissions: e.cfg.AGY.DangerouslySkipPermissions,
 		AgentName:                  agent.Name,
+		ProjectName:                session.ActiveProject,
 		SessionKey:                 sessionKey,
 		UserID:                     msg.Sender.ID,
 	}
@@ -1040,7 +1114,12 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
-	_ = e.storage.LogAudit(turnCtx, audit)
+	// ExecutionService is the authoritative audit producer for protected turns.
+	// Retain this fallback only for lightweight unit/embedded callers that have
+	// not been wired through the production execution chokepoint.
+	if e.executionService == nil {
+		_ = e.storage.LogAudit(turnCtx, audit)
+	}
 
 	if auditStatus == domain.StatusError {
 		slog.ErrorContext(ctx, "Turn execution failed",

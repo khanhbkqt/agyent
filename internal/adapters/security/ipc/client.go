@@ -13,9 +13,8 @@ import (
 
 // Client coordinates IPC communication from the agyent-hook binary to the running Gateway Daemon.
 type Client struct {
-	addr        string
-	secretToken string
-	turnID      string
+	addr   string
+	turnID string
 }
 
 // NewClient constructs a new IPC client.
@@ -24,11 +23,6 @@ func NewClient(addr string) *Client {
 		addr = DefaultIPCAddress
 	}
 	return &Client{addr: addr}
-}
-
-// SetSecretToken sets the daemon IPC secret token on the client.
-func (c *Client) SetSecretToken(token string) {
-	c.secretToken = token
 }
 
 // SetTurnID sets the execution turn ID on the client.
@@ -111,7 +105,11 @@ func (c *Client) SendAction(action string, params any, timeout time.Duration) (A
 		timeout = 10 * time.Second
 	}
 
-	conn, err := net.DialTimeout("tcp", c.addr, 2*time.Second)
+	actionAddr := c.addr
+	if actionAddr == DefaultIPCAddress {
+		actionAddr = DefaultActionIPCAddress
+	}
+	conn, err := net.DialTimeout("tcp", actionAddr, 2*time.Second)
 	if err != nil {
 		return ActionResponse{
 			Success: false,
@@ -125,13 +123,6 @@ func (c *Client) SendAction(action string, params any, timeout time.Duration) (A
 	payload := map[string]interface{}{
 		"action": action,
 		"params": params,
-	}
-	token := c.secretToken
-	if token == "" {
-		token = os.Getenv("AGYENT_IPC_TOKEN")
-	}
-	if token != "" {
-		payload["token"] = token
 	}
 	turnID := c.turnID
 	if turnID == "" {

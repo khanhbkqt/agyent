@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,7 +29,6 @@ type Service struct {
 	securityManager ports.SecurityManagerPort
 	storage         ports.StoragePort
 	configProvider  ConfigProvider
-	secretToken     string
 	logger          *slog.Logger
 }
 
@@ -42,7 +39,6 @@ func NewService(
 	securityManager ports.SecurityManagerPort,
 	storage ports.StoragePort,
 	cfgProvider ConfigProvider,
-	secretToken string,
 	logger *slog.Logger,
 ) *Service {
 	if logger == nil {
@@ -54,7 +50,6 @@ func NewService(
 		securityManager: securityManager,
 		storage:         storage,
 		configProvider:  cfgProvider,
-		secretToken:     secretToken,
 		logger:          logger,
 	}
 }
@@ -87,10 +82,14 @@ func (s *Service) ExecuteTurn(
 	if resource.AgentName == "" {
 		resource.AgentName = "agyent"
 	}
+	preset := domain.PresetBalanced
 	if s.storage != nil {
 		if agent, err := s.storage.GetAgent(ctx, resource.AgentName); err == nil && agent != nil {
 			resource.OwnerID = agent.OwnerID
 			resource.IsPublic = agent.IsPublic
+			if agent.SecurityPreset != "" {
+				preset = agent.SecurityPreset
+			}
 		}
 	}
 
@@ -109,6 +108,7 @@ func (s *Service) ExecuteTurn(
 			_ = s.storage.LogAudit(ctx, &domain.AuditLog{
 				SessionKey:     sessionKey,
 				AgentName:      req.AgentName,
+				ProjectName:    req.ProjectName,
 				ConversationID: req.ConversationID,
 				PromptLength:   len(req.Prompt),
 				Status:         "ERROR",
@@ -155,18 +155,6 @@ func (s *Service) ExecuteTurn(
 		req.Env = make(map[string]string)
 	}
 	req.Env["AGYENT_TURN_ID"] = turnID
-	if s.secretToken != "" {
-		req.Env["AGYENT_IPC_TOKEN"] = s.secretToken
-	}
-
-	// Per-process isolated MCP directory
-	mcpDir := filepath.Join(os.TempDir(), "agyent-mcp", turnID)
-	if err := os.MkdirAll(mcpDir, 0700); err == nil {
-		defer func() {
-			_ = os.RemoveAll(mcpDir)
-		}()
-		req.Env["AGYENT_MCP_DIR"] = mcpDir
-	}
 
 	// 6. Register Turn in Security Manager
 	if s.securityManager != nil {
@@ -179,6 +167,8 @@ func (s *Service) ExecuteTurn(
 			Resource:       resource,
 			WorkspaceDir:   req.WorkspaceDir,
 			AgentName:      req.AgentName,
+			ProjectName:    req.ProjectName,
+			Preset:         preset,
 			CreatedAt:      time.Now(),
 		})
 		defer s.securityManager.UnregisterTurnByID(turnID)
@@ -244,6 +234,7 @@ func (s *Service) ExecuteTurn(
 		_ = s.storage.LogAudit(ctx, &domain.AuditLog{
 			SessionKey:      sessionKey,
 			AgentName:       req.AgentName,
+			ProjectName:     req.ProjectName,
 			ConversationID:  req.ConversationID,
 			Model:           req.Model,
 			Effort:          req.Effort,

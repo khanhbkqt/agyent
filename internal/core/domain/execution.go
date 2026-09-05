@@ -20,6 +20,7 @@ type ExecutionRequest struct {
 	Timeout                    time.Duration     `json:"timeout"`
 	DangerouslySkipPermissions bool              `json:"dangerously_skip_permissions"`
 	AgentName                  string            `json:"agent_name,omitempty"`
+	ProjectName                string            `json:"project_name,omitempty"`
 	SessionKey                 string            `json:"session_key,omitempty"`
 	UserID                     string            `json:"user_id,omitempty"`
 	Env                        map[string]string `json:"env,omitempty"`

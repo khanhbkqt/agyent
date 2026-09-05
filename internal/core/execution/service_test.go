@@ -128,7 +128,7 @@ func (m *mockSecurityManager) GetDashboardSummary(sessionKey string) domain.Secu
 	return domain.SecurityDashboard{}
 }
 func (m *mockSecurityManager) EnsureWorkspaceHooks(workspaceDir string) error { return nil }
-func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string)        {}
+func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string)       {}
 
 type mockConfigProvider struct {
 	admins map[string]bool
@@ -150,7 +150,7 @@ func TestExecuteTurn_AuthorizationDenied(t *testing.T) {
 		},
 	}
 	secMgr := newMockSecurityManager()
-	svc := NewService(runner, policy, secMgr, nil, nil, "test-secret", nil)
+	svc := NewService(runner, policy, secMgr, nil, nil, nil)
 
 	principal := domain.Principal{
 		SubjectID: "user-unauthorized",
@@ -174,7 +174,7 @@ func TestExecuteTurn_PrivilegedFlagsStrippedForNonAdmin(t *testing.T) {
 	policy := &mockPolicy{}
 	secMgr := newMockSecurityManager()
 	cfgProvider := &mockConfigProvider{admins: map[string]bool{"admin-user": true}}
-	svc := NewService(runner, policy, secMgr, nil, cfgProvider, "test-secret", nil)
+	svc := NewService(runner, policy, secMgr, nil, cfgProvider, nil)
 
 	// Non-admin user tries dangerously skip permissions
 	principal := domain.Principal{
@@ -194,9 +194,9 @@ func TestExecuteTurn_PrivilegedFlagsStrippedForNonAdmin(t *testing.T) {
 	require.Len(t, runner.executeCalls, 1)
 	assert.False(t, runner.executeCalls[0].DangerouslySkipPermissions, "dangerously_skip_permissions must be stripped for non-admin")
 	assert.NotEmpty(t, runner.executeCalls[0].TurnID)
-	assert.Equal(t, "test-secret", runner.executeCalls[0].Env["AGYENT_IPC_TOKEN"])
+	assert.NotContains(t, runner.executeCalls[0].Env, "AGYENT_IPC_TOKEN", "master IPC credentials must never enter a subprocess environment")
 	assert.Equal(t, runner.executeCalls[0].TurnID, runner.executeCalls[0].Env["AGYENT_TURN_ID"])
-	assert.NotEmpty(t, runner.executeCalls[0].Env["AGYENT_MCP_DIR"])
+	assert.NotContains(t, runner.executeCalls[0].Env, "AGYENT_MCP_DIR", "AGY has no per-process MCP config flag; the registry holds the explicit global turn lease")
 }
 
 func TestExecuteTurn_PrivilegedFlagsPreservedForSuperAdmin(t *testing.T) {
@@ -204,7 +204,7 @@ func TestExecuteTurn_PrivilegedFlagsPreservedForSuperAdmin(t *testing.T) {
 	policy := &mockPolicy{}
 	secMgr := newMockSecurityManager()
 	cfgProvider := &mockConfigProvider{admins: map[string]bool{"admin-user": true}}
-	svc := NewService(runner, policy, secMgr, nil, cfgProvider, "test-secret", nil)
+	svc := NewService(runner, policy, secMgr, nil, cfgProvider, nil)
 
 	principal := domain.Principal{
 		SubjectID: "admin-user",
@@ -242,7 +242,7 @@ func TestExecuteTurn_EffortErrorFallback(t *testing.T) {
 		},
 	}
 	policy := &mockPolicy{}
-	svc := NewService(runner, policy, nil, nil, nil, "", nil)
+	svc := NewService(runner, policy, nil, nil, nil, nil)
 
 	principal := domain.Principal{
 		SubjectID: "user1",
@@ -269,7 +269,7 @@ func TestExecuteTurn_StreamingAndCleanup(t *testing.T) {
 	runner := &mockRunner{}
 	policy := &mockPolicy{}
 	secMgr := newMockSecurityManager()
-	svc := NewService(runner, policy, secMgr, nil, nil, "token123", nil)
+	svc := NewService(runner, policy, secMgr, nil, nil, nil)
 
 	principal := domain.Principal{
 		SubjectID: "user1",
@@ -299,7 +299,7 @@ func TestInterruptTurn(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewService(runner, nil, nil, nil, nil, "", nil)
+	svc := NewService(runner, nil, nil, nil, nil, nil)
 
 	err := svc.InterruptTurn(context.Background(), "tg:session123")
 	require.NoError(t, err)

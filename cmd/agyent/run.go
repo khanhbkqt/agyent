@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
@@ -119,15 +117,16 @@ var runCmd = &cobra.Command{
 		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)
 		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")
 		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(starterWS, "", mainLogger); err != nil {
-			mainLogger.Debug("Provisioned starter workspace hooks", "workspace", starterWS, "error", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision mandatory security hooks for starter workspace: %v\n", err)
+			os.Exit(1)
 		}
 
 		// 7. Initialize Context Resolver, MCP Syncer & Plugin Manager
 		contextResolver := contextAdapter.NewContextResolver()
 		mcpSyncer, err := mcp.NewMCPSyncer("")
 		if err != nil {
-			mainLogger.Warn("Failed to init MCP syncer", "error", err)
-			fmt.Fprintf(os.Stderr, "⚠️ Warning: Failed to init MCP syncer: %v\n", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to initialize the mandatory MCP isolation registry: %v\n", err)
+			os.Exit(1)
 		}
 		pluginMgr := pluginAdapter.NewPluginManager("builtin/plugins", &builtin.EmbeddedPluginsFS)
 		if syncResults, syncErr := pluginMgr.SyncPlugins(context.Background(), "", false); syncErr == nil {
@@ -166,18 +165,12 @@ var runCmd = &cobra.Command{
 		eng.SetWorkspaceManager(wsMgr)
 
 		// Centralized Authorization Policy & Execution Chokepoint
-		ipcSecretBytes := make([]byte, 32)
-		if _, err := rand.Read(ipcSecretBytes); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Failed to generate secure IPC secret: %v\n", err)
-			os.Exit(1)
-		}
-		ipcSecret := hex.EncodeToString(ipcSecretBytes)
-		ipcServer.SetSecretToken(ipcSecret)
-
 		policyEngine := auth.NewEngine(store, cfg)
-		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, ipcSecret, mainLogger)
+		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, mainLogger)
 		eng.SetPolicyEngine(policyEngine)
 		eng.SetExecutionService(execSvc)
+		ipcServer.SetPolicyEngine(policyEngine)
+		ipcServer.SetScheduleStore(store)
 		channel.SetInboundAuthorizer(eng)
 
 		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
@@ -191,8 +184,6 @@ var runCmd = &cobra.Command{
 		subDispatcher.SetSecurityManager(secMgr)
 		subDispatcher.SetPolicyEngine(policyEngine)
 		subDispatcher.SetStoragePort(store)
-		subDispatcher.SetConfig(cfg)
-		subDispatcher.SetIPCSecret(ipcSecret)
 		eng.SetSubagentDispatcher(subDispatcher)
 		ipcServer.SetSubagents(subDispatcher)
 
@@ -207,7 +198,8 @@ var runCmd = &cobra.Command{
 		defer cancelDaemon()
 
 		if err := ipcServer.Start(daemonCtx); err != nil {
-			mainLogger.Warn("Failed to start Security IPC server", "error", err)
+			fmt.Fprintf(os.Stderr, "❌ Failed to start mandatory security IPC server: %v\n", err)
+			os.Exit(1)
 		}
 		defer ipcServer.Stop()
 

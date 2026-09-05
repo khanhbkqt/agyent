@@ -331,7 +331,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: false,
 				AllowedPaths:         []string{"~", "."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 5,
@@ -368,7 +368,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 1,
@@ -404,7 +404,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 2,
@@ -450,7 +450,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 3,

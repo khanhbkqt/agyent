@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -180,6 +181,10 @@ func runShowCurrentPreset(cmd *cobra.Command) error {
 }
 
 func runSetPreset(cmd *cobra.Command, mode string, agentName string) error {
+	if os.Getenv("AGYENT_TURN_ID") != "" || os.Getenv("AGYENT_SUBPROCESS") != "" {
+		return fmt.Errorf("⛔ [Security Violation]: Administrative CLI commands cannot be invoked from within an active agent session (AGYENT_TURN_ID detected). Self-privilege escalation is strictly forbidden.")
+	}
+
 	out := cmd.OutOrStdout()
 	mode = strings.ToLower(strings.TrimSpace(mode))
 

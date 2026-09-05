@@ -3,18 +3,16 @@ import json
 import socket
 import os
 
-DEFAULT_IPC_ADDR = "127.0.0.1:49215"
+DEFAULT_IPC_ADDR = "127.0.0.1:49216"
 
 def send_ipc_action(action, params=None, timeout=10.0):
-    ipc_addr = os.environ.get("AGYENT_SECURITY_IPC_ADDR", DEFAULT_IPC_ADDR)
-    token = os.environ.get("AGYENT_IPC_TOKEN", "").strip()
+    ipc_addr = os.environ.get("AGYENT_ACTION_IPC_ADDR", DEFAULT_IPC_ADDR)
     turn_id = os.environ.get("AGYENT_TURN_ID", "").strip()
     host, port_str = ipc_addr.split(":", 1)
     port = int(port_str)
 
     payload = {
         "action": action,
-        "token": token,
         "turn_id": turn_id,
         "params": params or {}
     }

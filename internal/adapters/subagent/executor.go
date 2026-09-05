@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"agyent/internal/adapters/harness/agy"
-	"agyent/internal/config"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
 )
@@ -38,8 +38,6 @@ type taskExecutor struct {
 	securityManager ports.SecurityManagerPort
 	policy          ports.PolicyEngine
 	storage         ports.StoragePort
-	config          *config.Config
-	ipcSecret       string
 }
 
 func newTaskExecutor(binaryPath string, defaultTimeout time.Duration) *taskExecutor {
@@ -74,31 +72,17 @@ func (e *taskExecutor) executeTurn(
 		"--mode", "accept-edits",
 	}
 
-	workspaceDir := ""
-	if task.WorkspaceMode == "share" && task.ProjectName != "" {
-		if e.storage != nil {
-			if proj, err := e.storage.GetProject(parentCtx, task.ProjectName); err == nil && proj != nil && proj.ProjectPath != "" {
-				if fi, err := os.Stat(proj.ProjectPath); err == nil && fi.IsDir() {
-					workspaceDir = proj.ProjectPath
-				}
-			}
-		}
-		if workspaceDir == "" {
-			if fi, err := os.Stat(task.ProjectName); err == nil && fi.IsDir() {
-				workspaceDir = task.ProjectName
-			}
-		}
+	workspaceDir, agent, cleanupWorkspace, err := e.resolveWorkspace(parentCtx, task)
+	if err != nil {
+		return &TurnResult{
+			ConversationID:  convID,
+			Status:          domain.TaskStatusFailed,
+			ErrorMessage:    err.Error(),
+			DurationSeconds: time.Since(tCtx.startedAt).Seconds(),
+		}, err
 	}
-	if workspaceDir == "" && e.config != nil && task.AgentName != "" {
-		if agCfg, ok := e.config.Agents[task.AgentName]; ok && agCfg.WorkspacePath != "" {
-			if fi, err := os.Stat(agCfg.WorkspacePath); err == nil && fi.IsDir() {
-				workspaceDir = agCfg.WorkspacePath
-			}
-		}
-	}
-	if workspaceDir != "" {
-		args = append(args, "--add-dir", workspaceDir)
-	}
+	defer cleanupWorkspace()
+	args = append(args, "--add-dir", workspaceDir)
 
 	// Policy authorization check for system:subagent principal
 	principal := domain.Principal{
@@ -106,29 +90,35 @@ func (e *taskExecutor) executeTurn(
 		Provider:  "internal",
 		SubjectID: "system:subagent",
 	}
-	if e.policy != nil {
-		res := domain.Resource{
-			Kind:        domain.ResourceKindAgent,
-			ID:          task.AgentName,
-			AgentName:   task.AgentName,
-			SessionKey:  task.ParentSessionKey,
-			ProjectName: task.ProjectName,
-		}
-		if e.storage != nil {
-			if ag, err := e.storage.GetAgent(parentCtx, task.AgentName); err == nil && ag != nil {
-				res.OwnerID = ag.OwnerID
-				res.IsPublic = ag.IsPublic
-			}
-		}
-		if err := e.policy.Authorize(parentCtx, principal, domain.ActionTaskDispatch, res); err != nil {
-			errMsg := fmt.Sprintf("unauthorized: policy denied subagent execution: %v", err)
-			return &TurnResult{
-				ConversationID:  convID,
-				Status:          domain.TaskStatusFailed,
-				ErrorMessage:    errMsg,
-				DurationSeconds: 0,
-			}, errors.New(errMsg)
-		}
+	if e.policy == nil {
+		err := errors.New("subagent execution denied: policy engine is not initialized")
+		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
+	}
+	res := domain.Resource{
+		Kind:        domain.ResourceKindAgent,
+		ID:          task.AgentName,
+		AgentName:   task.AgentName,
+		SessionKey:  task.ParentSessionKey,
+		ProjectName: task.ProjectName,
+		OwnerID:     agent.OwnerID,
+		IsPublic:    agent.IsPublic,
+	}
+	if err := e.policy.Authorize(parentCtx, principal, domain.ActionTaskDispatch, res); err != nil {
+		errMsg := fmt.Sprintf("unauthorized: policy denied subagent execution: %v", err)
+		return &TurnResult{
+			ConversationID:  convID,
+			Status:          domain.TaskStatusFailed,
+			ErrorMessage:    errMsg,
+			DurationSeconds: 0,
+		}, errors.New(errMsg)
+	}
+	if e.securityManager == nil {
+		err := errors.New("subagent execution denied: security manager is not initialized")
+		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
+	}
+	if err := e.securityManager.EnsureWorkspaceHooks(workspaceDir); err != nil {
+		err = fmt.Errorf("subagent security hook provisioning failed: %w", err)
+		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
 	}
 
 	modelInput := task.Model
@@ -171,34 +161,31 @@ func (e *taskExecutor) executeTurn(
 	}
 
 	turnID := fmt.Sprintf("turn-sub-%s-%d", task.ID, time.Now().UnixNano())
-	if e.securityManager != nil {
-		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
-			TurnID:         turnID,
-			ConversationID: convID,
-			SessionKey:     task.ParentSessionKey,
-			Principal:      principal,
-			Action:         domain.ActionTaskDispatch,
-			WorkspaceDir:   workspaceDir,
-			AgentName:      task.AgentName,
-			CreatedAt:      time.Now(),
-		})
-		defer e.securityManager.UnregisterTurnByID(turnID)
-	}
+	e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
+		TurnID:         turnID,
+		ConversationID: convID,
+		SessionKey:     task.ParentSessionKey,
+		Principal:      principal,
+		Action:         domain.ActionTaskDispatch,
+		Resource:       res,
+		WorkspaceDir:   workspaceDir,
+		AgentName:      task.AgentName,
+		ProjectName:    task.ProjectName,
+		Preset:         agent.SecurityPreset,
+		CreatedAt:      time.Now(),
+	})
+	defer e.securityManager.UnregisterTurnByID(turnID)
 
 	cmd := exec.CommandContext(execCtx, e.binaryPath, args...)
-	if workspaceDir != "" {
-		cmd.Dir = workspaceDir
-	}
+	cmd.Dir = workspaceDir
 	env := append(os.Environ(),
 		"NO_COLOR=1",
 		"TERM=dumb",
 		"AGYENT_TURN_ID="+turnID,
 		"AGYENT_SESSION_KEY="+task.ParentSessionKey,
 		"AGYENT_AGENT_NAME="+task.AgentName,
+		"AGYENT_PROJECT_NAME="+task.ProjectName,
 	)
-	if e.ipcSecret != "" {
-		env = append(env, "AGYENT_IPC_TOKEN="+e.ipcSecret)
-	}
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
 
@@ -385,4 +372,61 @@ func (e *taskExecutor) executeTurn(
 		DurationSeconds: durationSec,
 		ToolsExecuted:   toolsExecuted,
 	}, nil
+}
+
+// resolveWorkspace selects a workspace solely from authoritative agent/project
+// records. In particular, a task's ProjectName is an identifier, never an
+// arbitrary filesystem path supplied by a model or plugin.
+func (e *taskExecutor) resolveWorkspace(ctx context.Context, task domain.SubagentTask) (string, *domain.Agent, func(), error) {
+	if e.storage == nil {
+		return "", nil, nil, errors.New("subagent execution denied: storage is not initialized")
+	}
+	agent, err := e.storage.GetAgent(ctx, task.AgentName)
+	if err != nil || agent == nil {
+		return "", nil, nil, fmt.Errorf("subagent execution denied: unable to resolve agent %q: %w", task.AgentName, err)
+	}
+	if strings.TrimSpace(agent.WorkspacePath) == "" {
+		return "", nil, nil, fmt.Errorf("subagent execution denied: agent %q has no workspace", task.AgentName)
+	}
+
+	workspaceDir := agent.WorkspacePath
+	cleanup := func() {}
+	switch task.WorkspaceMode {
+	case "share":
+		if task.ProjectName != "" {
+			projectID := domain.FormatProjectID(task.AgentName, task.ProjectName)
+			project, err := e.storage.GetProject(ctx, projectID)
+			if err != nil || project == nil || project.AgentName != task.AgentName || project.ProjectPath == "" {
+				return "", nil, nil, fmt.Errorf("subagent execution denied: unable to resolve project %q", task.ProjectName)
+			}
+			workspaceDir = project.ProjectPath
+		}
+	case "persona":
+		// Agent workspace selected above.
+	case "scratch":
+		scratchRoot := filepath.Join(os.TempDir(), "agyent-subagent-scratch")
+		if err := os.MkdirAll(scratchRoot, 0700); err != nil {
+			return "", nil, nil, fmt.Errorf("create subagent scratch root: %w", err)
+		}
+		scratchDir, err := os.MkdirTemp(scratchRoot, task.ID+"-")
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("create subagent scratch workspace: %w", err)
+		}
+		workspaceDir = scratchDir
+		cleanup = func() { _ = os.RemoveAll(scratchDir) }
+	default:
+		return "", nil, nil, fmt.Errorf("subagent execution denied: unsupported workspace mode %q", task.WorkspaceMode)
+	}
+
+	absoluteWorkspace, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		cleanup()
+		return "", nil, nil, fmt.Errorf("resolve subagent workspace: %w", err)
+	}
+	info, err := os.Stat(absoluteWorkspace)
+	if err != nil || !info.IsDir() {
+		cleanup()
+		return "", nil, nil, fmt.Errorf("subagent execution denied: workspace is unavailable")
+	}
+	return absoluteWorkspace, agent, cleanup, nil
 }

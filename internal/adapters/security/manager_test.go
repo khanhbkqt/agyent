@@ -124,6 +124,72 @@ func TestSecurityManager_EvaluateToolCall_CommandPolicies(t *testing.T) {
 	assert.Equal(t, "conv-123", payload.ConversationID)
 }
 
+func TestSecurityManager_AntiSelfEscalation(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mgr := NewManager(cfg, nil, nil)
+	ctx := context.Background()
+
+	// 1. agyent agent preset command should be denied
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "run_command",
+		Args:     map[string]interface{}{"CommandLine": "agyent agent preset content_weaver unrestricted"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Privilege Escalation Blocked")
+
+	// 2. agyent security preset command should be denied
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "run_command",
+		Args:     map[string]interface{}{"CommandLine": "./bin/agyent security preset unrestricted"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Privilege Escalation Blocked")
+
+	// 3. sqlite3 touching agyent.db should be denied
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "run_command",
+		Args:     map[string]interface{}{"CommandLine": "sqlite3 ~/.agyent/agyent.db \"UPDATE agents SET security_preset='unrestricted'\""},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Privilege Escalation Blocked")
+
+	// 4. pkill agyent should be denied
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "run_command",
+		Args:     map[string]interface{}{"CommandLine": "pkill -9 agyent"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Privilege Escalation Blocked")
+
+	// 5. write_to_file with python script connecting to agyent.db should be blocked at creation time
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "write_to_file",
+		Args: map[string]interface{}{
+			"TargetFile":  "hack.py",
+			"CodeContent": "import sqlite3\nconn = sqlite3.connect('/home/user/.agyent/agyent.db')\nconn.execute('UPDATE agents SET security_preset=\"unrestricted\"')",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Staged Privilege Escalation Blocked")
+
+	// 6. write_to_file with script calling agyent agent preset should be blocked at creation time
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName: "write_to_file",
+		Args: map[string]interface{}{
+			"TargetFile":  "escalate.sh",
+			"CodeContent": "#!/bin/bash\nagyent agent preset content_weaver unrestricted\n",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Staged Privilege Escalation Blocked")
+}
+
 type mockEventBusForSecMgr struct {
 	ports.EventBusPort
 	emitFn func(domain.Event)

@@ -118,4 +118,17 @@ func TestSecurityCLI(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid security preset")
 	})
+
+	t.Run("Security Preset Blocked During Agent Turn (Anti-Self-Escalation)", func(t *testing.T) {
+		t.Setenv("AGYENT_TURN_ID", "turn-in-flight-12345")
+		buf := new(bytes.Buffer)
+		rootCmd.SetOut(buf)
+		rootCmd.SetErr(buf)
+		rootCmd.SetArgs([]string{"security", "preset", "unrestricted", "-c", tempCfgPath})
+
+		err := rootCmd.Execute()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "Self-privilege escalation is strictly forbidden")
+	})
 }
+

@@ -32,8 +32,6 @@ type SubagentDispatcher struct {
 	mu           sync.RWMutex
 	policyEngine ports.PolicyEngine
 	storagePort  ports.StoragePort
-	appConfig    *config.Config
-	ipcSecret    string
 }
 
 // NewDispatcher constructs a new SubagentDispatcher instance.
@@ -95,26 +93,6 @@ func (d *SubagentDispatcher) SetStoragePort(s ports.StoragePort) {
 	}
 }
 
-// SetConfig injects the application configuration.
-func (d *SubagentDispatcher) SetConfig(cfg *config.Config) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.appConfig = cfg
-	if d.executor != nil {
-		d.executor.config = cfg
-	}
-}
-
-// SetIPCSecret injects the daemon IPC secret token for subagent environment.
-func (d *SubagentDispatcher) SetIPCSecret(secret string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.ipcSecret = secret
-	if d.executor != nil {
-		d.executor.ipcSecret = secret
-	}
-}
-
 // Start launches the background worker pool consumers.
 func (d *SubagentDispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()
@@ -165,24 +143,31 @@ func (d *SubagentDispatcher) pollerLoop() {
 }
 
 func (d *SubagentDispatcher) enqueuePendingTasks() {
+	d.mu.RLock()
+	if !d.started || d.ctx == nil {
+		d.mu.RUnlock()
+		return
+	}
+	runCtx := d.ctx
+	d.mu.RUnlock()
+
 	if d.storage == nil {
 		return
 	}
-	pendingTasks, err := d.storage.ListPendingSubagentTasks(d.ctx, 10)
+	pendingTasks, err := d.storage.ListPendingSubagentTasks(runCtx, 10)
 	if err != nil || len(pendingTasks) == 0 {
 		return
 	}
 
 	for _, task := range pendingTasks {
-		if !d.registry.Has(task.ID) {
-			tCtx := &taskRuntimeContext{
-				task:      task,
-				startedAt: time.Now(),
-			}
-			d.registry.Register(tCtx)
+		tCtx := &taskRuntimeContext{
+			task:      task,
+			startedAt: time.Now(),
+		}
+		if d.registry.TryRegister(tCtx) {
 
 			if d.eventBus != nil {
-				d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
+				d.eventBus.AsyncEmit(runCtx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
 			}
 
 			select {
@@ -204,7 +189,6 @@ func (d *SubagentDispatcher) Stop(ctx context.Context) error {
 	}
 	d.started = false
 	d.cancel()
-	close(d.taskQueue)
 	d.mu.Unlock()
 
 	// Wait for workers to drain or context timeout
@@ -265,6 +249,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 	if task.WorkspaceMode == "" {
 		task.WorkspaceMode = "share"
 	}
+	if task.WorkspaceMode != "share" && task.WorkspaceMode != "scratch" && task.WorkspaceMode != "persona" {
+		return "", fmt.Errorf("unsupported workspace_mode %q", task.WorkspaceMode)
+	}
 	if task.CallbackMode == "" {
 		task.CallbackMode = domain.CallbackNotifyUser
 	}
@@ -282,7 +269,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 		task:      task,
 		startedAt: time.Now(),
 	}
-	d.registry.Register(tCtx)
+	if !d.registry.TryRegister(tCtx) {
+		return "", fmt.Errorf("task %s is already queued", task.ID)
+	}
 
 	// 3. Emit Dispatched Event
 	if d.eventBus != nil {
@@ -385,7 +374,9 @@ func (d *SubagentDispatcher) SendTaskInputScoped(ctx context.Context, sessionKey
 		startedAt:      time.Now(),
 		conversationID: task.SubConversationID,
 	}
-	d.registry.Register(tCtx)
+	if !d.registry.TryRegister(tCtx) {
+		return fmt.Errorf("task %s is already queued", task.ID)
+	}
 
 	// 4. Enqueue into worker pool
 	select {
@@ -453,10 +444,7 @@ func (d *SubagentDispatcher) workerLoop(workerID int) {
 		select {
 		case <-d.ctx.Done():
 			return
-		case task, ok := <-d.taskQueue:
-			if !ok {
-				return
-			}
+		case task := <-d.taskQueue:
 			d.runTask(task)
 		}
 	}
@@ -507,6 +495,12 @@ func (d *SubagentDispatcher) runTask(task domain.SubagentTask) {
 
 func (d *SubagentDispatcher) handleTurnResult(tCtx *taskRuntimeContext, res *TurnResult, err error) {
 	taskID := tCtx.task.ID
+	// Cancellation wins every race with process completion. The SQL updates are
+	// guarded too, but avoiding an in-memory/event transition prevents users
+	// from receiving a false "completed" notification for a cancelled task.
+	if tCtx.snapshot().Status == domain.TaskStatusCancelled {
+		return
+	}
 
 	if res == nil {
 		errMsg := "unknown execution error"
@@ -554,7 +548,9 @@ func (d *SubagentDispatcher) handleTurnResult(tCtx *taskRuntimeContext, res *Tur
 }
 
 func generateTaskID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("task-%x", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("task-%s", hex.EncodeToString(b))
 }

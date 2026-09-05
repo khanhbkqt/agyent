@@ -82,6 +82,7 @@ const (
 	ActionSessionCompact Action = "session.compact"
 
 	// Project Management
+	ActionProjectInspect    Action = "project.inspect"
 	ActionProjectCreate     Action = "project.create"
 	ActionProjectCreatePath Action = "project.create_custom_path"
 	ActionProjectDelete     Action = "project.delete"
@@ -96,12 +97,13 @@ const (
 	ActionConvoRename  Action = "conversation.rename"
 
 	// Agent Management
-	ActionAgentCreate Action = "agent.create"
-	ActionAgentEdit   Action = "agent.edit"
-	ActionAgentDelete Action = "agent.delete"
-	ActionAgentClaim  Action = "agent.claim"
-	ActionAgentShare  Action = "agent.share"
-	ActionAgentRevoke Action = "agent.revoke"
+	ActionAgentInspect Action = "agent.inspect"
+	ActionAgentCreate  Action = "agent.create"
+	ActionAgentEdit    Action = "agent.edit"
+	ActionAgentDelete  Action = "agent.delete"
+	ActionAgentClaim   Action = "agent.claim"
+	ActionAgentShare   Action = "agent.share"
+	ActionAgentRevoke  Action = "agent.revoke"
 
 	// Subagent Tasks
 	ActionTaskDispatch Action = "task.dispatch"

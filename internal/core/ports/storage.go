@@ -37,6 +37,10 @@ type SessionRepository interface {
 type AgentRepository interface {
 	GetAgent(ctx context.Context, name string) (*domain.Agent, error)
 	ListAgents(ctx context.Context) ([]domain.Agent, error)
+	// CreateAgent atomically creates a new agent profile. It must never update an
+	// existing profile; callers use SaveAgent only after authorization to mutate a
+	// known agent.
+	CreateAgent(ctx context.Context, agent *domain.Agent) error
 	SaveAgent(ctx context.Context, agent *domain.Agent) error
 	DeleteAgent(ctx context.Context, name string) error
 

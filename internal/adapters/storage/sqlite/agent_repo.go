@@ -193,6 +193,64 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 	return agents, nil
 }
 
+// CreateAgent atomically inserts a new agent profile without permitting an
+// existing profile's ownership or workspace to be overwritten.
+func (s *SQLiteStore) CreateAgent(ctx context.Context, agent *domain.Agent) error {
+	if agent == nil || agent.Name == "" {
+		return errors.New("cannot create nil or unnamed agent")
+	}
+
+	now := time.Now()
+	createdAt := agent.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := agent.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+
+	isPublicInt := 0
+	if agent.IsPublic {
+		isPublicInt = 1
+	}
+	secPreset := string(agent.SecurityPreset)
+	if secPreset == "" {
+		secPreset = string(domain.PresetBalanced)
+	}
+
+	result, err := s.writer().ExecContext(ctx, `
+		INSERT INTO agents (
+			name, description, status, workspace_path, default_model, default_effort,
+			security_preset, owner_id, is_public, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING
+	`,
+		agent.Name,
+		agent.Description,
+		string(agent.Status),
+		agent.WorkspacePath,
+		agent.DefaultModel,
+		agent.DefaultEffort,
+		secPreset,
+		agent.OwnerID,
+		isPublicInt,
+		timeToMilli(createdAt),
+		timeToMilli(updatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create agent %s: %w", agent.Name, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to determine create result for agent %s: %w", agent.Name, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("%w: agent %s", ports.ErrAlreadyExists, agent.Name)
+	}
+	return nil
+}
+
 // SaveAgent creates or updates an agent profile.
 func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error {
 	if agent == nil {

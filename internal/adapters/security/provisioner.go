@@ -110,7 +110,17 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 
 	allHooks := make(map[string]json.RawMessage)
 	if existingData, err := os.ReadFile(hookFilePath); err == nil {
-		_ = json.Unmarshal(existingData, &allHooks)
+		if err := json.Unmarshal(existingData, &allHooks); err != nil {
+			// Replacing an invalid configuration would silently discard user hook
+			// entries and run the next turn with an ambiguous policy. Refuse the
+			// turn instead; operators can repair the file explicitly.
+			return "", fmt.Errorf("invalid existing hooks configuration %s: %w", hookFilePath, err)
+		}
+		if allHooks == nil { // JSON `null` is valid syntax but not a hook map.
+			allHooks = make(map[string]json.RawMessage)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to read existing hooks configuration %s: %w", hookFilePath, err)
 	}
 
 	gateData, err := json.Marshal(gateConfig)

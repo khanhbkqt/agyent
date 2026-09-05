@@ -3,18 +3,17 @@ import json
 import os
 import socket
 
-DEFAULT_IPC_ADDR = "127.0.0.1:49215"
+DEFAULT_IPC_ADDR = "127.0.0.1:49216"
 
 def send_ipc_action(action, params):
     """Sends an authenticated/scoped action to the agyent core IPC daemon via local socket."""
-    ipc_addr_str = os.environ.get("AGYENT_IPC_ADDRESS", DEFAULT_IPC_ADDR).strip()
-    token = os.environ.get("AGYENT_IPC_TOKEN", "").strip()
+    ipc_addr_str = os.environ.get("AGYENT_ACTION_IPC_ADDR", DEFAULT_IPC_ADDR).strip()
     turn_id = os.environ.get("AGYENT_TURN_ID", "").strip()
     try:
         host, port_str = ipc_addr_str.split(":")
         port = int(port_str)
     except Exception:
-        host, port = "127.0.0.1", 49215
+        host, port = "127.0.0.1", 49216
 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(10.0)
@@ -22,7 +21,6 @@ def send_ipc_action(action, params):
         s.connect((host, port))
         action_payload = {
             "action": action,
-            "token": token,
             "turn_id": turn_id,
             "params": params,
         }

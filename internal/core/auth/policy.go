@@ -167,6 +167,7 @@ func (e *Engine) evaluateRoleAction(role domain.AgentRole, action domain.Action,
 		switch action {
 		case domain.ActionTurnExecute, domain.ActionTurnInterrupt, domain.ActionTurnForceUnlock,
 			domain.ActionSessionReset, domain.ActionSessionCompact,
+			domain.ActionProjectInspect,
 			domain.ActionConvoInspect, domain.ActionConvoSwitch, domain.ActionConvoDelete,
 			domain.ActionConvoPin, domain.ActionConvoArchive, domain.ActionConvoRename,
 			domain.ActionTaskDispatch, domain.ActionTaskInspect, domain.ActionTaskReply, domain.ActionTaskCancel:

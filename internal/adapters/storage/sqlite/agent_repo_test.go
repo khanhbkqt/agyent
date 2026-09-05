@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -220,4 +221,36 @@ func TestSQLiteStore_AgentOwnershipAndRBAC(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, claimedNonExistent, "Claiming non-existent agent must return false")
 	})
+}
+
+func TestSQLiteStore_CreateAgentIsInsertOnly(t *testing.T) {
+	store := setupIsolatedStore(t)
+	ctx := context.Background()
+
+	original := &domain.Agent{
+		Name:           "immutable-owner",
+		Description:    "original profile",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  "/safe/original",
+		OwnerID:        "owner-1",
+		SecurityPreset: domain.PresetStrict,
+	}
+	require.NoError(t, store.CreateAgent(ctx, original))
+
+	attacker := &domain.Agent{
+		Name:           "immutable-owner",
+		Description:    "attacker profile",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  "/attacker/controlled",
+		OwnerID:        "attacker-2",
+		SecurityPreset: domain.PresetBalanced,
+	}
+	require.ErrorIs(t, store.CreateAgent(ctx, attacker), ports.ErrAlreadyExists)
+
+	stored, err := store.GetAgent(ctx, original.Name)
+	require.NoError(t, err)
+	assert.Equal(t, original.OwnerID, stored.OwnerID)
+	assert.Equal(t, original.WorkspacePath, stored.WorkspacePath)
+	assert.Equal(t, original.Description, stored.Description)
+	assert.Equal(t, original.SecurityPreset, stored.SecurityPreset)
 }

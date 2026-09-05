@@ -172,13 +172,17 @@ func backupSnapshotIfNeeded(ctx context.Context, db *sql.DB, dbPath string, lega
 
 	// Check if schema_migrations table exists
 	var tableExists bool
-	_ = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')`).Scan(&tableExists)
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')`).Scan(&tableExists); err != nil {
+		return fmt.Errorf("failed to inspect schema_migrations before backup: %w", err)
+	}
 	if !tableExists {
 		return nil // Fresh DB before initial schema migration
 	}
 
 	var maxVersion int
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&maxVersion)
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&maxVersion); err != nil {
+		return fmt.Errorf("failed to determine legacy schema version before backup: %w", err)
+	}
 	if maxVersion == 0 || maxVersion >= 11 {
 		return nil // Fresh DB or already migrated to v11+
 	}
@@ -198,7 +202,9 @@ func backupSnapshotIfNeeded(ctx context.Context, db *sql.DB, dbPath string, lega
 		return fmt.Errorf("failed to create pre-migration snapshot via VACUUM INTO: %w", err)
 	}
 
-	_ = os.Chmod(backupPath, 0600)
+	if err := os.Chmod(backupPath, 0600); err != nil {
+		return fmt.Errorf("failed to secure backup snapshot permissions: %w", err)
+	}
 
 	// Verify integrity of the backup snapshot
 	verifyDB, err := sql.Open("sqlite", BuildDSN(backupPath))

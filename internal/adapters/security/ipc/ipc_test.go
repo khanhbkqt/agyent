@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,6 +14,17 @@ import (
 type mockSecurityManager struct {
 	evaluateToolCallFn   func(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error)
 	sanitizeToolOutputFn func(ctx context.Context, toolName string, output string) (string, error)
+	turn                 *domain.TurnSecurityContext
+}
+
+type allowPolicy struct{}
+
+func (allowPolicy) Authorize(context.Context, domain.Principal, domain.Action, domain.Resource) error {
+	return nil
+}
+
+func (allowPolicy) ResolveAgentRole(context.Context, domain.Principal, string) (domain.AgentRole, error) {
+	return domain.AgentRoleOwner, nil
 }
 
 func (m *mockSecurityManager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error) {
@@ -58,12 +70,55 @@ func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir str
 	return domain.TurnSecurityContext{}, false
 }
 func (m *mockSecurityManager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	if m.turn != nil && turnID == m.turn.TurnID {
+		return *m.turn, true
+	}
 	if turnID != "" {
-		return domain.TurnSecurityContext{TurnID: turnID, SessionKey: "telegram:12345", AgentName: "agyent"}, true
+		return domain.TurnSecurityContext{
+			TurnID:     turnID,
+			SessionKey: "telegram:12345",
+			AgentName:  "agyent",
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  "telegram",
+				SubjectID: "12345",
+			},
+			Resource: domain.Resource{AgentName: "agyent"},
+		}, true
 	}
 	return domain.TurnSecurityContext{}, false
 }
-func (m *mockSecurityManager) UnregisterTurnByID(turnID string)          {}
+
+func TestIPC_HookUsesRegisteredWorkspaceAndConversation(t *testing.T) {
+	addr := "127.0.0.1:49974"
+	trustedTurn := domain.TurnSecurityContext{
+		TurnID:         "turn-trusted-scope",
+		ConversationID: "conversation-trusted",
+		SessionKey:     "telegram:12345",
+		AgentName:      "agyent",
+		WorkspaceDir:   "/trusted/workspace",
+	}
+	mockMgr := &mockSecurityManager{turn: &trustedTurn}
+	mockMgr.evaluateToolCallFn = func(_ context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error) {
+		assert.Equal(t, trustedTurn.WorkspaceDir, req.WorkspaceDir)
+		assert.Equal(t, trustedTurn.ConversationID, req.ConversationID)
+		return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+	}
+	server := NewServer(mockMgr, addr, nil)
+	require.NoError(t, server.Start(context.Background()))
+	defer server.Stop()
+
+	resp, err := NewClient(addr).SendHookRequest(HookRequest{
+		TurnID:         trustedTurn.TurnID,
+		HookType:       "pre",
+		ConversationID: "attacker-conversation",
+		WorkspacePaths: []string{"/"},
+		ToolCall:       HookToolCall{Name: "view_file", Args: map[string]interface{}{}},
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, string(domain.DecisionAllow), resp.Decision)
+}
+func (m *mockSecurityManager) UnregisterTurnByID(turnID string)         {}
 func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string) {}
 
 func TestIPCServerAndClient_PreToolUse(t *testing.T) {
@@ -192,14 +247,67 @@ func (m *mockScheduler) TriggerHeartbeatNow(ctx context.Context, agentName strin
 func (m *mockScheduler) Start(ctx context.Context) error { return nil }
 func (m *mockScheduler) Stop(ctx context.Context) error  { return nil }
 
+// mockScheduleRepository is deliberately separate from mockScheduler because
+// the persistence and orchestration ports intentionally expose different list
+// signatures. It lets cancellation tests prove that IPC checks stored scope
+// before invoking the scheduler.
+type mockScheduleRepository struct {
+	task *domain.ScheduleTask
+}
+
+var _ ports.ScheduleRepository = (*mockScheduleRepository)(nil)
+
+func (m *mockScheduleRepository) SaveSchedule(context.Context, *domain.ScheduleTask) error {
+	return nil
+}
+func (m *mockScheduleRepository) GetSchedule(_ context.Context, id string) (*domain.ScheduleTask, error) {
+	if m.task == nil || m.task.ID != id {
+		return nil, ports.ErrNotFound
+	}
+	copy := *m.task
+	return &copy, nil
+}
+func (m *mockScheduleRepository) DeleteSchedule(context.Context, string) error { return nil }
+func (m *mockScheduleRepository) ListSchedules(context.Context, string, domain.ScheduleStatus, int, int) ([]domain.ScheduleTask, int, error) {
+	return nil, 0, nil
+}
+func (m *mockScheduleRepository) AcquireDueSchedules(context.Context, int64, int) ([]domain.ScheduleTask, error) {
+	return nil, nil
+}
+func (m *mockScheduleRepository) UpdateScheduleRun(context.Context, string, int64, string, domain.ScheduleStatus) error {
+	return nil
+}
+func (m *mockScheduleRepository) AdvanceScheduleNextRun(context.Context, string, int64) error {
+	return nil
+}
+func (m *mockScheduleRepository) SanitizeInterruptedSchedules(context.Context) error { return nil }
+func (m *mockScheduleRepository) GetHeartbeat(context.Context, string) (*domain.HeartbeatConfig, error) {
+	return nil, ports.ErrNotFound
+}
+func (m *mockScheduleRepository) SaveHeartbeat(context.Context, *domain.HeartbeatConfig) error {
+	return nil
+}
+func (m *mockScheduleRepository) AcquireDueHeartbeats(context.Context, int64, int) ([]domain.HeartbeatConfig, error) {
+	return nil, nil
+}
+func (m *mockScheduleRepository) UpdateHeartbeatRun(context.Context, string, int64, string, domain.HeartbeatStatus) error {
+	return nil
+}
+func (m *mockScheduleRepository) SanitizeInterruptedHeartbeats(context.Context) error { return nil }
+
 func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	addr := "127.0.0.1:49989"
 	mockMgr := &mockSecurityManager{}
 	mockSched := &mockScheduler{}
 
 	server := NewServer(mockMgr, addr, nil)
-	server.SetSecretToken("test-ipc-secret")
+	server.SetPolicyEngine(allowPolicy{})
 	server.SetScheduler(mockSched)
+	server.SetScheduleStore(&mockScheduleRepository{task: &domain.ScheduleTask{
+		ID:               "sched-test-1",
+		AgentName:        "agyent",
+		TargetSessionKey: "telegram:12345",
+	}})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -211,7 +319,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	client := NewClient(addr)
-	client.SetSecretToken("test-ipc-secret")
+	client.SetTurnID("turn-schedule-test")
 
 	// 1. Test schedule_task
 	schedResp, err := client.SendAction("schedule_task", map[string]interface{}{
@@ -219,7 +327,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 		"prompt":          "Perform automated backup",
 		"time_expression": "0 2 * * *",
 		"schedule_type":   "cron",
-		"agent_name":      "coder",
+		"agent_name":      "agyent",
 	}, 2*time.Second)
 	require.NoError(t, err)
 	assert.True(t, schedResp.Success)
@@ -227,7 +335,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 
 	// 2. Test list_schedules
 	listResp, err := client.SendAction("list_schedules", map[string]interface{}{
-		"agent_name": "coder",
+		"agent_name": "agyent",
 	}, 2*time.Second)
 	require.NoError(t, err)
 	assert.True(t, listResp.Success)
@@ -243,7 +351,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 
 	// 4. Test configure_heartbeat
 	hbResp, err := client.SendAction("configure_heartbeat", map[string]interface{}{
-		"agent_name": "coder",
+		"agent_name": "agyent",
 		"enabled":    true,
 		"interval":   "45m",
 		"prompt":     "Review unread alerts",
@@ -254,7 +362,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 
 	// 5. Test trigger_heartbeat
 	trigResp, err := client.SendAction("trigger_heartbeat", map[string]interface{}{
-		"agent_name": "coder",
+		"agent_name": "agyent",
 	}, 2*time.Second)
 	require.NoError(t, err)
 	assert.True(t, trigResp.Success)
@@ -279,7 +387,7 @@ func (m *mockSubagentDispatcher) GetTask(ctx context.Context, taskID string) (*d
 	if m.getTaskFn != nil {
 		return m.getTaskFn(ctx, taskID)
 	}
-	return &domain.SubagentTask{ID: taskID, Status: domain.TaskStatusRunning, Title: "Mock Running Task"}, nil
+	return &domain.SubagentTask{ID: taskID, AgentName: "agyent", Status: domain.TaskStatusRunning, Title: "Mock Running Task"}, nil
 }
 
 func (m *mockSubagentDispatcher) GetTaskScoped(ctx context.Context, sessionKey, taskID string) (*domain.SubagentTask, error) {
@@ -294,7 +402,7 @@ func (m *mockSubagentDispatcher) ListTasks(ctx context.Context, sessionKey strin
 	if m.listTasksFn != nil {
 		return m.listTasksFn(ctx, sessionKey, limit, offset)
 	}
-	return []domain.SubagentTask{{ID: "task-1", Title: "Task 1"}}, 1, nil
+	return []domain.SubagentTask{{ID: "task-1", AgentName: "agyent", Title: "Task 1"}}, 1, nil
 }
 
 func (m *mockSubagentDispatcher) SendTaskInput(ctx context.Context, taskID string, input string) error {
@@ -329,9 +437,10 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 		},
 		getTaskFn: func(ctx context.Context, taskID string) (*domain.SubagentTask, error) {
 			return &domain.SubagentTask{
-				ID:     taskID,
-				Status: domain.TaskStatusRunning,
-				Title:  "Deep Research",
+				ID:        taskID,
+				AgentName: "agyent",
+				Status:    domain.TaskStatusRunning,
+				Title:     "Deep Research",
 			}, nil
 		},
 		cancelTaskFn: func(ctx context.Context, taskID string) error {
@@ -341,7 +450,7 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 	}
 
 	server := NewServer(mockMgr, addr, nil)
-	server.SetSecretToken("test-ipc-secret")
+	server.SetPolicyEngine(allowPolicy{})
 	server.SetSubagents(mockSub)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,13 +462,13 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 	client := NewClient(addr)
-	client.SetSecretToken("test-ipc-secret")
+	client.SetTurnID("turn-subagent-test")
 
 	// 1. Test dispatch_subagent
 	dispResp, err := client.SendAction("dispatch_subagent", map[string]interface{}{
 		"title":              "Deep Research",
 		"prompt":             "Research Go concurrency models",
-		"agent_name":         "researcher",
+		"agent_name":         "agyent",
 		"parent_session_key": "telegram:12345",
 	}, 2*time.Second)
 	require.NoError(t, err)
@@ -392,11 +501,11 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 	assert.Contains(t, string(listResp.Data), "task-1")
 }
 
-func TestIPC_ActionSecretTokenAuthAndHookValidation(t *testing.T) {
+func TestIPC_ActionTurnCapabilityAndHookValidation(t *testing.T) {
 	addr := "127.0.0.1:49976"
 	mockMgr := &mockSecurityManager{}
 	server := NewServer(mockMgr, addr, nil)
-	server.SetSecretToken("super-secret-token")
+	server.SetPolicyEngine(allowPolicy{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -408,16 +517,17 @@ func TestIPC_ActionSecretTokenAuthAndHookValidation(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	client := NewClient(addr)
 
-	// 1. Action without token or turn ID should be rejected
+	// 1. Actions without an active turn capability are rejected. A process-wide
+	// token is intentionally not accepted as an alternative credential.
 	unauthResp, err := client.SendAction("list_subagents", map[string]interface{}{}, 2*time.Second)
 	require.NoError(t, err)
 	assert.False(t, unauthResp.Success)
 	assert.Contains(t, unauthResp.Error, "unauthorized")
 
-	// 2. Action with valid secret token should succeed (even if subagents not configured, reaches handler)
-	authResp, err := client.SendAction("list_subagents", map[string]interface{}{
-		"token": "super-secret-token",
-	}, 2*time.Second)
+	// 2. A valid active turn reaches the handler, which then reports its own
+	// configuration error because no subagent dispatcher is installed.
+	client.SetTurnID("turn-capability-test")
+	authResp, err := client.SendAction("list_subagents", map[string]interface{}{}, 2*time.Second)
 	require.NoError(t, err)
 	assert.False(t, authResp.Success) // fails at subagent nil check, not auth!
 	assert.Contains(t, authResp.Error, "subagent dispatcher is not initialized")
