@@ -1,5 +1,9 @@
 # Autonomous Self-Learning & Memory Evolution Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/evolution`, engine evolution integration, evolution domain/ports
+> **Last verified:** 2026-09-05
+
 This document provides the comprehensive technical specification for the **Self-Learning, Semantic AI Handoff, and Memory Evolution Subsystem** in the `agyent` ecosystem. 
 
 This design transforms `agyent` from a static conversational proxy into an **Autonomous, Self-Calibrating & Continuously Improving Partner**. It senses user feedback and corrections, performs root-cause analysis on mistakes, prevents persona drift, and autonomously evolves a two-tier memory hierarchy safely, securely, and sustainably.
@@ -78,7 +82,11 @@ During architecture development, an empirical test suite was executed against th
 - **Case E (ADR / Architectural Decision):** *"Thống nhất dự án này chuyển qua kiến trúc Ports & Adapters, không dùng monolithic nữa"*
 - **Case F (Code Paste with Comment Bug):** Go snippet containing `// fix crash when scanning nil timestamp`.
 
-### 3.2. Model Benchmark Comparison
+### 3.2. Historical Model Fixture Snapshot
+
+The following table records one earlier fixture run. It is not a general model
+accuracy claim or a current release gate; rerun the relevant tests before using
+it for a model-selection decision.
 | Model | Reasoning Effort | Test Case | Target Expected | Actual Result | Accuracy | Status |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: |
 | `gemini-3.7-flash` | `low` | Case A (Correction) | `should_reflect: true` | `true` (`lesson`) | 100% | ✅ **PASS** |
@@ -90,8 +98,8 @@ During architecture development, an empirical test suite was executed against th
 | `gemini-3.5-flash` | `low` | All Cases | Variable | `false` (`none`) | 16.6% | ❌ **FAIL** |
 
 ### 3.3. Key Empirical Findings
-1. **Gemini 3.7 Flash Superiority:** `gemini-3.7-flash` achieved **100% classification accuracy**, effortlessly comprehending Vietnamese colloquialisms (*anh/em*, implied preferences) and distinguishing historic bug discussions from active agent feedback.
-2. **Quota Efficiency of Single-Pass:** Running a single-pass extraction prompt with fail-fast `{"candidates": []}` resolves gating and extraction simultaneously in **under 1.5 seconds**, consuming exactly **1 request quota** only when the session actually goes idle.
+1. **Fixture result:** In the recorded sample, `gemini-3.7-flash` classified all six cases as expected. Treat that as a fixture outcome, not evidence of general superiority.
+2. **Single-pass design:** A single extraction prompt with fail-fast `{"candidates": []}` combines gating and extraction. Latency and quota behavior depend on the selected provider and must be measured in the target environment.
 
 ---
 

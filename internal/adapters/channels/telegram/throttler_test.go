@@ -526,3 +526,328 @@ func TestThrottler_TurnRaceCondition_StaleTurnDoesNotKillActiveTurn(t *testing.T
 
 	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Turn 2 must cleanly finalize and clean up")
 }
+
+// TC-THR-12: Transient Server Error (5xx) Retry Succeeds
+func TestThrottler_TransientServerErrorRetry(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_12")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	// Simulate a 502 Bad Gateway on first sendMessage attempt
+	mockServer.SimulateSendErrorStatus = 502
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_12",
+		TurnID:         "turn-12",
+	}))
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_12",
+		TurnID:         "turn-12",
+		Status:         "SUCCESS",
+		Response:       "Retried message successfully delivered!",
+	}))
+	require.NoError(t, err)
+
+	// Wait for retry to succeed
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, "Retried message successfully delivered!", mockServer.SentMessages[0].Text)
+	mockServer.mu.Unlock()
+}
+
+// TC-THR-13: Message Too Long (400) Recursively Splits and Delivers All Chunks
+func TestThrottler_MessageTooLongRecursiveSplit(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_13")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	// Simulate 400 "message is too long" on the first send attempt
+	mockServer.SimulateTooLongOnce = true
+
+	longText := strings.Repeat("This is a long sentence that exceeds limits. ", 80)
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_13",
+		TurnID:         "turn-13",
+	}))
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_13",
+		TurnID:         "turn-13",
+		Status:         "SUCCESS",
+		Response:       longText,
+	}))
+	require.NoError(t, err)
+
+	// Throttler should recursively split and deliver multiple chunks without dropping
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) >= 2
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	var totalDelivered string
+	for _, m := range mockServer.SentMessages {
+		totalDelivered += m.Text
+	}
+	mockServer.mu.Unlock()
+
+	assert.Contains(t, totalDelivered, "This is a long sentence")
+}
+
+// TC-THR-14: Edit Failure Falls Back to Sending Fresh Message
+func TestThrottler_EditFailureFallbackToSendMessage(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_14")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_14",
+		TurnID:         "turn-14",
+	}))
+
+	// 1. First delta creates message (sent message #1)
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_14",
+		TurnID:         "turn-14",
+		TextDelta:      "Part 1...",
+	}))
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	// 2. Make edit fail permanently (e.g. 500 internal server error or network issue)
+	mockServer.SimulateEditErrorStatus = 500
+
+	// 3. Complete stream with final response
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_14",
+		TurnID:         "turn-14",
+		Status:         "SUCCESS",
+		Response:       "Part 1... and Part 2 final answer!",
+	}))
+	require.NoError(t, err)
+
+	// Since edit failed, throttler MUST send a fresh message so the response isn't swallowed!
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 2
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, "Part 1... and Part 2 final answer!", mockServer.SentMessages[1].Text)
+	mockServer.mu.Unlock()
+}
+
+// TC-THR-15: Empty AI Response Delivers Friendly Feedback (Never Swallowed)
+func TestThrottler_EmptyResponseFeedback(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_15")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_15",
+		TurnID:         "turn-15",
+	}))
+
+	// Complete turn with empty response and no prior deltas
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_15",
+		TurnID:         "turn-15",
+		Status:         "SUCCESS",
+		Response:       "",
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Contains(t, mockServer.SentMessages[0].Text, "không có nội dung phản hồi")
+	mockServer.mu.Unlock()
+}
+
+// TC-THR-16: Multi-Chunk Overflow With 3+ Chunks (No Chunks Dropped)
+func TestThrottler_MultiChunkOverflow_ThreeOrMoreChunks(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_16")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_16",
+		TurnID:         "turn-16",
+	}))
+
+	// 1. Initial token to spawn first message
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_16",
+		TurnID:         "turn-16",
+		TextDelta:      "Initial greeting... ",
+	}))
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	// 2. Large rapid burst exceeding 3 full chunks (>7000 runes)
+	largeText := strings.Repeat("Chunk segment content that will span multiple chunks. \n\n", 150)
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_16",
+		TurnID:         "turn-16",
+		TextDelta:      largeText,
+	}))
+
+	// Wait for multi-message overflow to handle chunks
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) >= 3
+	}, 2*time.Second, 50*time.Millisecond)
+
+	// Complete stream
+	_ = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_16",
+		TurnID:         "turn-16",
+		Status:         "SUCCESS",
+		Response:       largeText,
+	}))
+
+	mockServer.mu.Lock()
+	sentCount := len(mockServer.SentMessages)
+	mockServer.mu.Unlock()
+	assert.GreaterOrEqual(t, sentCount, 3, "All 3+ chunks must be delivered without data loss")
+}
+
+// TC-THR-17: Edit Failure Preserves Forum Topic ThreadID
+func TestThrottler_EditFailure_PreservesForumTopicThreadID(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_17")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	sessionKey := "telegram:0:-100123456:7788" // ThreadID = 7788 (forum topic)
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_17",
+		TurnID:         "turn-17",
+	}))
+
+	// 1. Initial delta creates message in topic 7788
+	_ = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_17",
+		TurnID:         "turn-17",
+		TextDelta:      "Starting in forum topic...",
+	}))
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, int64(-100123456), mockServer.SentMessages[0].ChatID)
+	assert.Equal(t, int64(7788), mockServer.SentMessages[0].ThreadID)
+	mockServer.mu.Unlock()
+
+	// 2. Simulate edit failure on final flush
+	mockServer.SimulateEditErrorStatus = 500
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_17",
+		TurnID:         "turn-17",
+		Status:         "SUCCESS",
+		Response:       "Final answer delivered to forum topic!",
+	}))
+	require.NoError(t, err)
+
+	// Fallback send MUST have ThreadID = 7788
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) == 2
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, int64(7788), mockServer.SentMessages[1].ThreadID, "Fallback message must maintain forum topic ThreadID")
+	assert.Equal(t, "Final answer delivered to forum topic!", mockServer.SentMessages[1].Text)
+	mockServer.mu.Unlock()
+}
+

@@ -1,48 +1,46 @@
 ---
 name: schedule-management
-description: >-
-  Schedule delayed one-off reminders, recurring cron jobs, and configure agent heartbeats for automated autonomous wakeups.
+description: Create, list, cancel, or inspect one-off schedules, recurring cron tasks, and agent heartbeats. Use when the user asks for a reminder, future/recurring execution, or heartbeat configuration.
 ---
 
-# Schedule, Cron & Heartbeat Management
+# Schedule and heartbeat management
 
-Use this skill when the user asks to:
-1. **Schedule a delayed or future prompt / reminder** (e.g. *"Remind me in 30 minutes to check deployment"*, *"Run this test after 2 hours"*).
-2. **Setup recurring cron tasks** (e.g. *"Run git pull and summarize changes every day at 9am"*, *"Check server health every hour"*).
-3. **Configure agent heartbeat** (e.g. *"Turn on heartbeat every 15 minutes"*, *"Update heartbeat instructions to monitor logs"*).
-4. **List or cancel active scheduled tasks**.
+Translate the user's time request using their known timezone. If an absolute time
+is ambiguous and the timezone cannot be inferred from context, ask for the missing
+timezone before creating the task.
 
----
+## One-off and recurring tasks
 
-## Tool Guidance
+Use `schedule_task` with a self-contained `prompt` and `time_expression`:
 
-### 1. One-off Scheduled Tasks (`schedule_task`)
-- Use `schedule_task` with a relative delay or timestamp:
-  - `time_expression`: `"in 30m"`, `"after 2h"`, `"in 45s"`, or ISO timestamp `"2026-09-05T09:00:00Z"`.
-  - `schedule_type`: `"one_off"`.
-  - `prompt`: Write a clear, self-contained instruction for the agent to execute when waking up.
-  - `title`: Short title (e.g. `Deployment Check`).
+- Relative or absolute one-time execution: `schedule_type: "one_off"`; expressions
+  can include `in 30m`, `after 2h`, or an ISO timestamp.
+- Recurring execution: `schedule_type: "cron"`; use a standard five-field cron or
+  a supported preset such as `@daily`.
+- When the expression makes the type obvious, `schedule_type: "auto"` is valid.
+- Default `overlap_policy` to `skip` unless the user explicitly needs queued work
+  or cancellation of the previous run.
 
-### 2. Recurring Cron Tasks (`schedule_task`)
-- Use `schedule_task` with standard 5-field cron or presets:
-  - `time_expression`: `"0 8 * * *"` (every day at 8:00 AM), `"*/30 * * * *"` (every 30 mins), `"0 0 * * 1"` (every Monday at midnight), `@daily`, `@hourly`.
-  - `schedule_type`: `"cron"`.
-  - `prompt`: Instruction for the recurring task.
-  - `overlap_policy`: `"skip"` (default, avoid thundering herd).
+Do not silently turn an immediate request into a scheduled task. The stored prompt
+must contain the context needed at wake time without relying on the current chat
+turn.
 
-### 3. Agent Heartbeats (`configure_heartbeat`, `get_heartbeat`, `trigger_heartbeat`)
-- Heartbeat is a lightweight background pulse driven by the workspace prompt `HEARTBEAT.md`.
-- To turn on:
-  ```json
-  {"enabled": true, "interval": "30m", "prompt": "Check ongoing background tasks and notify user if any failed."}
-  ```
-- To turn off:
-  ```json
-  {"enabled": false}
-  ```
-- To trigger immediately:
-  Call `trigger_heartbeat`.
+After creation, report the task ID, interpreted next run time with timezone, target
+agent, recurrence, and overlap policy from the tool response.
 
-### 4. Listing & Cancelling
-- List tasks using `list_schedules`.
-- Cancel a task using `cancel_schedule` with the `task_id` ticket.
+## Listing and cancellation
+
+- Use `list_schedules`; narrow by agent/status when the user supplied them.
+- Use `cancel_schedule` only for the exact `task_id` the user selected. If a name
+  matches several tasks, list them before cancelling.
+
+## Heartbeats
+
+- Use `configure_heartbeat` to enable/disable, set interval, or update the
+  `HEARTBEAT.md` instruction.
+- Use `get_heartbeat` to inspect current state.
+- Use `trigger_heartbeat` only when the user asks for an immediate pulse; enabling
+  a heartbeat does not imply an immediate run.
+
+Report the effective interval, target agent, next run, and whether instructions
+were changed.

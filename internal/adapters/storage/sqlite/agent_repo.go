@@ -193,6 +193,64 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 	return agents, nil
 }
 
+// CreateAgent atomically inserts a new agent profile without permitting an
+// existing profile's ownership or workspace to be overwritten.
+func (s *SQLiteStore) CreateAgent(ctx context.Context, agent *domain.Agent) error {
+	if agent == nil || agent.Name == "" {
+		return errors.New("cannot create nil or unnamed agent")
+	}
+
+	now := time.Now()
+	createdAt := agent.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	updatedAt := agent.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
+
+	isPublicInt := 0
+	if agent.IsPublic {
+		isPublicInt = 1
+	}
+	secPreset := string(agent.SecurityPreset)
+	if secPreset == "" {
+		secPreset = string(domain.PresetBalanced)
+	}
+
+	result, err := s.writer().ExecContext(ctx, `
+		INSERT INTO agents (
+			name, description, status, workspace_path, default_model, default_effort,
+			security_preset, owner_id, is_public, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO NOTHING
+	`,
+		agent.Name,
+		agent.Description,
+		string(agent.Status),
+		agent.WorkspacePath,
+		agent.DefaultModel,
+		agent.DefaultEffort,
+		secPreset,
+		agent.OwnerID,
+		isPublicInt,
+		timeToMilli(createdAt),
+		timeToMilli(updatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create agent %s: %w", agent.Name, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to determine create result for agent %s: %w", agent.Name, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("%w: agent %s", ports.ErrAlreadyExists, agent.Name)
+	}
+	return nil
+}
+
 // SaveAgent creates or updates an agent profile.
 func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error {
 	if agent == nil {
@@ -356,8 +414,8 @@ func (s *SQLiteStore) CheckAgentAccess(ctx context.Context, agentName, userID st
 		return false, "", err
 	}
 
-	// 1. Check if public or unclaimed system agent
-	if agent.IsPublic || agent.OwnerID == "" {
+	// 1. Check if public
+	if agent.IsPublic {
 		return true, "public", nil
 	}
 
@@ -378,4 +436,102 @@ func (s *SQLiteStore) CheckAgentAccess(ctx context.Context, agentName, userID st
 	}
 
 	return true, role, nil
+}
+
+// ClaimAgent atomically claims an unowned agent profile for a new owner.
+// Returns true if successfully claimed, false if the agent does not exist or already has an owner.
+func (s *SQLiteStore) ClaimAgent(ctx context.Context, name string, newOwnerID string) (bool, error) {
+	if name == "" || newOwnerID == "" {
+		return false, errors.New("agent name and owner ID cannot be empty")
+	}
+	query := `
+		UPDATE agents
+		SET owner_id = ?, updated_at = ?
+		WHERE name = ? AND (owner_id IS NULL OR owner_id = '');
+	`
+	res, err := s.writer().ExecContext(ctx, query, newOwnerID, time.Now().UnixMilli(), name)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim agent %s: %w", name, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
+// ClaimAgentWithAudit atomically claims an unowned agent profile and inserts the audit log in a single transaction.
+func (s *SQLiteStore) ClaimAgentWithAudit(ctx context.Context, name string, newOwnerID string, log domain.AuditLog) (bool, error) {
+	if name == "" || newOwnerID == "" {
+		return false, errors.New("agent name and owner ID cannot be empty")
+	}
+
+	tx, err := s.writer().BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `
+		UPDATE agents
+		SET owner_id = ?, updated_at = ?
+		WHERE name = ? AND (owner_id IS NULL OR owner_id = '');
+	`
+	res, err := tx.ExecContext(ctx, query, newOwnerID, time.Now().UnixMilli(), name)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim agent %s: %w", name, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows != 1 {
+		return false, nil
+	}
+
+	createdAt := log.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	status := log.Status
+	if status == "" {
+		status = "SUCCESS"
+	}
+
+	auditQuery := `
+		INSERT INTO audit_logs (
+			session_key, agent_name, project_name, conversation_id,
+			model, effort,
+			prompt_length, response_length, duration_seconds,
+			input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens,
+			status, error_message, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	if _, err := tx.ExecContext(ctx, auditQuery,
+		log.SessionKey,
+		log.AgentName,
+		log.ProjectName,
+		log.ConversationID,
+		log.Model,
+		log.Effort,
+		log.PromptLength,
+		log.ResponseLength,
+		log.DurationSeconds,
+		log.Usage.InputTokens,
+		log.Usage.OutputTokens,
+		log.Usage.ThinkingTokens,
+		log.Usage.CacheReadTokens,
+		log.Usage.TotalTokens,
+		status,
+		log.ErrorMessage,
+		timeToMilli(createdAt),
+	); err != nil {
+		return false, fmt.Errorf("failed to insert audit log for claim: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("failed to commit claim transaction: %w", err)
+	}
+
+	return true, nil
 }

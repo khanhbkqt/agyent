@@ -21,7 +21,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 1800, cfg.AGY.DefaultTimeoutSeconds)
 	assert.Equal(t, "high", cfg.AGY.DefaultEffort)
 	assert.Equal(t, "accept-edits", cfg.AGY.DefaultMode)
-	assert.True(t, cfg.AGY.DangerouslySkipPermissions)
+	assert.False(t, cfg.AGY.DangerouslySkipPermissions)
 	assert.Equal(t, 2.0, cfg.Storage.DebounceSeconds)
 	assert.Equal(t, 4.0, cfg.Storage.HeartbeatIntervalSeconds)
 	assert.Equal(t, "info", cfg.Logging.Level)
@@ -484,18 +484,44 @@ func TestMultiBotConfig_NormalizationAndValidation(t *testing.T) {
 	})
 }
 
+func TestConfig_RejectsDualWebhookListener(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Telegram.BotToken = "telegram-token"
+	cfg.Telegram.AdminUserIDs = []int64{1}
+	cfg.Telegram.Mode = "webhook"
+	cfg.Telegram.WebhookURL = "https://example.test/telegram"
+	cfg.Zalo.BotToken = "zalo-token"
+	cfg.Zalo.Mode = "webhook"
+	cfg.Zalo.WebhookURL = "https://example.test/zalo"
+
+	assert.ErrorContains(t, cfg.Validate(), "cannot both use webhook mode")
+}
+
 func TestConfig_IsAdmin(t *testing.T) {
-	t.Run("nil config returns true (open local-dev mode)", func(t *testing.T) {
+	t.Run("nil config returns false (fail-closed)", func(t *testing.T) {
 		var cfg *config.Config
-		assert.True(t, cfg.IsAdmin("12345"))
+		assert.False(t, cfg.IsAdmin("12345"))
 	})
 
-	t.Run("empty admin lists return true (open local-dev mode)", func(t *testing.T) {
+	t.Run("empty admin lists fail closed by default", func(t *testing.T) {
 		cfg := config.DefaultConfig()
 		cfg.Security.AdminUserIDs = []int64{}
 		cfg.Telegram.AdminUserIDs = []int64{}
+		cfg.Security.AllowUnauthenticatedLocalDev = false
+		assert.False(t, cfg.IsAdmin("12345"))
+		assert.False(t, cfg.IsAdmin("any_user"))
+	})
+
+	t.Run("empty admin lists allow local dev when AllowUnauthenticatedLocalDev enabled", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = []int64{}
+		cfg.Telegram.AdminUserIDs = []int64{}
+		cfg.Security.AllowUnauthenticatedLocalDev = true
 		assert.True(t, cfg.IsAdmin("12345"))
 		assert.True(t, cfg.IsAdmin("any_user"))
+		// But remote provider like telegram STILL fails closed!
+		assert.False(t, cfg.IsAdminForProvider("12345", "telegram"))
+		assert.False(t, cfg.IsAdminForProvider("12345", "discord"))
 	})
 
 	t.Run("empty sender ID returns false when admins configured", func(t *testing.T) {
@@ -518,6 +544,15 @@ func TestConfig_IsAdmin(t *testing.T) {
 		assert.True(t, cfg.IsAdmin("555"))
 		assert.True(t, cfg.IsAdmin("666"))
 		assert.False(t, cfg.IsAdmin("777"))
+	})
+
+	t.Run("scopes Zalo administrators to Zalo", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Security.AdminUserIDs = nil
+		cfg.Telegram.AdminUserIDs = nil
+		cfg.Zalo.AdminUserIDs = []string{"zalo-admin"}
+		assert.True(t, cfg.IsAdminForProvider("zalo-admin", "zalo"))
+		assert.False(t, cfg.IsAdminForProvider("zalo-admin", "telegram"))
 	})
 
 	t.Run("handles non-numeric or invalid string IDs safely", func(t *testing.T) {

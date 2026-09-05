@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -451,4 +452,66 @@ func TestDebouncer_MaxActiveSessionsCapacityExceeded(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, debouncer.ErrTooManySessions))
+}
+
+func TestDebouncer_StressTest5000MessagesNoLoss(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var receivedCount atomic.Int64
+	var mu sync.Mutex
+	receivedMap := make(map[string]bool)
+
+	deb := debouncer.NewDebouncer(debouncer.Config{
+		WindowDuration:    20 * time.Millisecond,
+		MaxWaitDuration:   50 * time.Millisecond,
+		MaxMessageCount:   20,
+		MaxActiveSessions: 1000,
+	}, func(ctx context.Context, msg domain.CanonicalMessage) error {
+		// Coalesced message contains lines formatted with text
+		lines := strings.Split(msg.Text, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "msg-") {
+				mu.Lock()
+				if !receivedMap[line] {
+					receivedMap[line] = true
+					receivedCount.Add(1)
+				}
+				mu.Unlock()
+			}
+		}
+		return nil
+	})
+
+	const numGoroutines = 50
+	const msgsPerGoroutine = 100
+	const totalExpected = numGoroutines * msgsPerGoroutine // 5000 messages
+
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(gID int) {
+			defer wg.Done()
+			sessionID := fmt.Sprintf("session-%d", gID%10)
+			for m := 0; m < msgsPerGoroutine; m++ {
+				msgID := fmt.Sprintf("msg-%d-%d", gID, m)
+				_ = deb.Ingest(context.Background(), domain.CanonicalMessage{
+					ID:      msgID,
+					Channel: "telegram",
+					Chat:    domain.ChatContext{ID: sessionID},
+					Text:    msgID,
+				})
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	// Flush and close all
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := deb.Close(ctx)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(totalExpected), receivedCount.Load(), "All 5000 messages must be delivered with zero loss")
 }

@@ -1,5 +1,9 @@
 # Sub-Agent Dispatch & Non-Blocking Multi-Agent Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/subagent`, subagent domain/ports/repository, engine tools
+> **Last verified:** 2026-09-05
+
 This document provides a comprehensive technical architecture and engineering specification for the **Sub-Agent Background Dispatching and Non-Blocking Multi-Agent Subsystem** in **`agyent`**.
 
 ---
@@ -13,12 +17,12 @@ In earlier versions of `agyent`, each user interaction is processed as a synchro
 3. **Single-Threaded Execution:** The assistant cannot delegate independent subtasks to specialized personas (e.g., dispatching `@researcher` for web scraping while `@coder` refactors tests).
 
 ### 1.2. Architectural Objectives & Invariants
-- **Non-Blocking Main Track (< 1ms Dispatch):** Main Agent dispatches background tasks, returns an acknowledgment ticket immediately, and releases the session lock within sub-seconds.
+- **Non-Blocking Main Track:** Main Agent dispatches background tasks, returns an acknowledgment ticket promptly, and releases the session lock without waiting for task completion. Validate latency with benchmarks.
 - **True OS Subprocess Concurrency:** Each dispatched sub-agent runs as an independent OS child process (`agy.exe --output-format stream-json`) with dedicated conversation isolation.
-- **Zero Context Pollution:** Intermediate raw logs remain isolated within the sub-agent’s ephemeral workspace/brain directory (`~/.gemini/antigravity/brain/<sub_conv_id>/`). Only distilled summaries and artifacts are reported back.
+- **Context Isolation:** Intermediate raw logs remain in the sub-agent workspace/brain directory (`~/.gemini/antigravity/brain/<sub_conv_id>/`). Only distilled summaries and artifacts should be reported back to the parent.
 - **Interactive Multi-Turn Continuation (`WAITING_FOR_INPUT`):** If a sub-agent encounters ambiguities or needs user input/decisions, it enters `WAITING_FOR_INPUT`. The Main Agent can either resolve it autonomously or escalate to the human user via Telegram, resuming the exact sub-agent session via `agy --conversation <sub_conv_id>` with zero memory/CPU waste during idle periods.
-- **Multi-Tier Model Selection (Cost Optimization):** Main Agent leverages reasoning-capable models (e.g., `gemini-pro`), while background workers execute via cost-efficient models (e.g., `gemini-flash` or `gemini-flash-lite`), cutting token expenditures by 70–85%.
-- **Zero-CGO & Memory-Safe Process Management:** Pure-Go SQLite WAL persistence with Windows Kernel Job Objects and POSIX process groups guaranteeing 100% process tree termination without PID or goroutine leaks.
+- **Multi-Tier Model Selection (Cost Optimization):** Main Agent can use a reasoning-capable model while background workers use a lower-cost model when task quality permits. Measure cost and quality for the configured provider.
+- **Zero-CGO & Process Management:** Pure-Go SQLite WAL persistence is combined with Windows Kernel Job Objects and POSIX process groups. OS-specific cancellation tests must verify descendant cleanup and leak behavior.
 
 ---
 
@@ -37,7 +41,7 @@ flowchart TB
         LockMgr["SessionLockManager\n(Main FIFO Mutex)"]
         EngineRouter["Engine Turn Orchestrator"]
         
-        subgraph SubagentSubsystem ["Subagent Dispatcher Subsystem (internal/core/subagent/)"]
+        subgraph SubagentSubsystem ["Subagent Dispatcher Subsystem (internal/adapters/subagent/)"]
             TaskQueue["Worker Pool & Priority Queue\n(Max: 3-5 Concurrent Workers)"]
             StateRegistry["In-Memory Task State Registry\n(Step, Tool, Elapsed, Heartbeat)"]
             EventBridge["Inter-Agent EventBus Bridge\n(SyncEmit & Callback Router)"]
@@ -86,7 +90,7 @@ flowchart TB
 
 ## 3. Database Schema & Persistence
 
-### 3.1. SQLite Migration: `000005_subagent_tasks.up.sql`
+### 3.1. SQLite Migration: `000006_subagent_tasks.up.sql`
 
 ```sql
 CREATE TABLE IF NOT EXISTS subagent_tasks (
@@ -394,14 +398,16 @@ Main Agent is equipped with the following tool signatures:
 - **Sub-Agent Session Key:** `subtask:telegram:<chat_id>:<task_uuid>` operates under an isolated lock scope, preventing any lock contention with ongoing user messages.
 
 ### 8.2. Process Tree Termination
-- **Windows Kernel Job Object:** Processes are attached via `CreateJobObject` + `SetInformationJobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Process trees are guaranteed to terminate upon cancellation or timeout without orphaned child processes.
+- **Windows Kernel Job Object:** Processes are attached via `CreateJobObject` + `SetInformationJobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Windows tests must verify descendant termination on cancellation and timeout.
 - **POSIX Process Groups:** Processes are assigned `Setpgid: true` and cleanly killed via negative PID signal (`syscall.Kill(-pid, syscall.SIGKILL)`).
 
 ---
 
 ## 9. Empirical Benchmark Validation (POC Findings)
 
-Empirical results captured using the live `agy.exe` (v1.1.20) binary in `cmd/poc_subagent/main.go`:
+Historical empirical results were captured with an earlier live `agy.exe` proof of
+concept. That POC program is no longer part of the repository; treat the figures
+below as historical context rather than a current verification gate:
 
 | Metric | Empirical Measured Value | Target SLA | Outcome |
 | :--- | :---: | :---: | :---: |
@@ -409,9 +415,9 @@ Empirical results captured using the live `agy.exe` (v1.1.20) binary in `cmd/poc
 | **Main Track Parallel Turn Latency** | **`30.56 ms`** | Responsive | **PASSED (Zero Blocking) ✅** |
 | **Sub-Agent Execution Time (Repo Scan)** | **`13.96 s`** | Task Completion | **PASSED ✅** |
 | **Tool Calls Intercepted Live** | **3 calls** (`find_by_name`, `run_command` x2) | Real-time NDJSON | **PASSED ✅** |
-| **Token Savings on Main Context** | **`32,523 tokens` isolated** | 0 Bloat | **PASSED (100% Cache Shield) ✅** |
+| **Main-context isolation in fixture** | **`32,523 tokens` isolated** | Avoid raw-log bloat | **PASSED in recorded fixture** |
 | **Process Tree Cleanup** | **Clean Exit (Windows Job Object)** | Zero Leaks | **PASSED ✅** |
-| **Unit Test Coverage** | **100% PASS (`0.772s`)** | Code Correctness | **PASSED ✅** |
+| **Recorded unit-test run** | **All tests passed (`0.772s`)** | Code correctness | **Historical result; rerun required** |
 
 ---
 

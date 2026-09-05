@@ -1,0 +1,153 @@
+{
+  "$schema": "./workflow.schema.json",
+  "schema_version": 1,
+  "id": "change",
+  "title": "Controlled existing-behavior change",
+  "intent": "Modify an existing implementation, contract, configuration, refactor, or document with bounded impact and converged review.",
+  "instruction_priority": "The user request and higher-level instructions take precedence. This graph does not grant broader mutation, delegation, release, or external-action authority.",
+  "entrypoint": "scope",
+  "terminal_nodes": ["final_gate"],
+  "documentation_node": "docs_sync",
+  "final_gate": "final_gate",
+  "required_reviewers": ["architecture_review", "correctness_review", "risk_review"],
+  "review_policy": {
+    "independence": "Reviewers are read-only, must not author the change they review, and must cite inspected evidence.",
+    "blocking_severities": ["P0", "P1", "P2"],
+    "finding_schema": ["id", "severity", "dimension", "location", "evidence", "impact", "required_action"]
+  },
+  "nodes": {
+    "scope": {
+      "kind": "intake",
+      "may_edit": false,
+      "system_prompt": "You are the change intake gate. Translate the request into a bounded current-behavior delta, explicit non-goals, affected users, and an authorization boundary before editing.",
+      "guide": ["Record the initial worktree and unrelated user changes.", "State before and after behavior in observable terms.", "Classify compatibility, security, persistence, concurrency, prompt, plugin, and documentation risk."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:git status --short", "shell:rg", "shell:go list"],
+      "inputs": ["user_request"],
+      "outputs": ["change_contract", "non_goals", "risk_classification"],
+      "gate": {"requires": ["change_contract", "non_goals", "risk_classification"], "acceptance": ["The requested delta is testable and bounded.", "Material unknowns that would change scope are resolved or surfaced."]},
+      "transitions": {"accepted": "impact_analysis"}
+    },
+    "impact_analysis": {
+      "kind": "analysis",
+      "may_edit": false,
+      "system_prompt": "You are the impact analyst. Trace every affected entry point, contract, implementation, caller, test, migration, skill, and document before choosing where the change belongs.",
+      "guide": ["Follow the composition root through core-owned contracts to adapters.", "Locate protocol, configuration, database, and prompt compatibility surfaces.", "Identify test and documentation authority for each affected behavior."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:rg", "shell:go list -deps", "shell:go test -list", "shell:git log"],
+      "inputs": ["change_contract", "risk_classification"],
+      "outputs": ["impact_map", "authority_map", "compatibility_constraints"],
+      "gate": {"requires": ["impact_map", "authority_map", "compatibility_constraints"], "acceptance": ["All implementations and externally visible contracts are accounted for.", "The intended dependency direction remains inward."]},
+      "transitions": {"complete": "contract_design"}
+    },
+    "contract_design": {
+      "kind": "design",
+      "may_edit": false,
+      "system_prompt": "You are the change designer. Define the smallest contract-preserving design, implementation slices, tests, migration or rollback behavior, and documentation impact before modification.",
+      "guide": ["Draw input to domain contract to policy to port to adapter to output.", "Decide whether an ADR, versioned protocol, or migration is required.", "Define acceptance, negative, compatibility, and cancellation cases."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:rg", "shell:go list -deps", "shell:git diff"],
+      "inputs": ["impact_map", "authority_map", "compatibility_constraints"],
+      "outputs": ["design_contract", "implementation_plan", "verification_plan"],
+      "gate": {"requires": ["design_contract", "implementation_plan", "verification_plan"], "acceptance": ["Placement and contract ownership are justified.", "Every material risk has a verification action."]},
+      "transitions": {"accepted": "implement"}
+    },
+    "implement": {
+      "kind": "implementation",
+      "may_edit": true,
+      "system_prompt": "You are the change implementer. Apply the accepted design in small reviewable slices, preserve unrelated work, and keep tests aligned with observable behavior rather than implementation wording.",
+      "guide": ["Change domain and port contracts before dependent implementations when required.", "Keep technology-specific behavior in adapters and wiring in cmd/agyent.", "Inspect the diff after each slice and stop on scope drift."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["apply_patch", "shell:gofmt", "shell:go test -run", "shell:git diff"],
+      "inputs": ["design_contract", "implementation_plan", "verification_plan"],
+      "outputs": ["implementation_diff", "behavioral_tests", "scope_accounting"],
+      "gate": {"requires": ["implementation_diff", "behavioral_tests", "scope_accounting"], "acceptance": ["The implementation matches the accepted contract.", "No unrelated behavior or user changes were overwritten."]},
+      "transitions": {"implemented": "focused_verification"}
+    },
+    "focused_verification": {
+      "kind": "verification",
+      "may_edit": false,
+      "system_prompt": "You are the change verifier. Test the requested behavior, preserved behavior, denied and failure paths, and each risk identified in the impact analysis using reproducible commands.",
+      "guide": ["Run focused tests first, then required broader package checks.", "Use race, migration, cross-build, prompt-order, MCP, or security tests when applicable.", "Record commands, exit codes, meaningful skips, and residual risk."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:go test", "shell:go test -race", "shell:go vet", "shell:make architecture-check"],
+      "inputs": ["implementation_diff", "behavioral_tests", "verification_plan"],
+      "outputs": ["focused_test_evidence", "compatibility_evidence", "residual_risk"],
+      "gate": {"requires": ["focused_test_evidence", "compatibility_evidence", "residual_risk"], "acceptance": ["Requested and preserved behavior are evidenced.", "Every risk-specific check passes or blocks the workflow."]},
+      "transitions": {"passed": "docs_sync", "failed": "implement"}
+    },
+    "docs_sync": {
+      "kind": "documentation",
+      "may_edit": true,
+      "system_prompt": "You are the documentation synchronizer. Make current code, tests, AGENTS rules, architecture references, skills, schemas, command help, changelog, and ADRs tell one consistent story.",
+      "guide": ["Update only the smallest authoritative documents identified by the authority map.", "Use Proposed or Historical status for unshipped or superseded material.", "If no docs change is needed, produce a file-by-file non-impact rationale."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["apply_patch", "shell:rg", "shell:make docs-check", "skill:quick_validate"],
+      "inputs": ["implementation_diff", "authority_map", "residual_risk"],
+      "outputs": ["docs_impact_matrix", "docs_diff_or_rationale", "docs_validation"],
+      "gate": {"requires": ["docs_impact_matrix", "docs_diff_or_rationale", "docs_validation"], "acceptance": ["Every affected current contract, skill, and help surface is dispositioned.", "Documentation and skill checks pass."]},
+      "transitions": {"ready": ["architecture_review", "correctness_review", "risk_review"]}
+    },
+    "architecture_review": {
+      "kind": "review",
+      "may_edit": false,
+      "system_prompt": "You are an independent architecture reviewer. Do not edit. Verify placement, dependency direction, composition wiring, contract ownership, deterministic prompt behavior, and agreement with canonical documents.",
+      "guide": ["Inspect the whole diff plus callers and implementations.", "Run architecture checks and trace all changed interfaces.", "Return structured findings with precise evidence."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["collaboration:spawn_agent when authorized", "shell:git diff", "shell:go list -deps", "shell:make architecture-check"],
+      "inputs": ["implementation_diff", "design_contract", "docs_diff_or_rationale"],
+      "outputs": ["architecture_review_report"],
+      "gate": {"requires": ["architecture_review_report"], "acceptance": ["All affected architecture boundaries and docs were examined.", "The reviewer made no edits."]},
+      "transitions": {"completed": "review_convergence"}
+    },
+    "correctness_review": {
+      "kind": "review",
+      "may_edit": false,
+      "system_prompt": "You are an independent correctness reviewer. Do not edit. Falsify the changed behavior with boundary values, alternate call paths, errors, backward compatibility, and test-quality analysis.",
+      "guide": ["Compare requested before and after behavior to the actual diff.", "Look for missing callers, silent fallback, and assertions coupled to implementation.", "Return structured findings with reproducible evidence."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["collaboration:spawn_agent when authorized", "shell:git diff", "shell:go test -run", "shell:go test ./..."],
+      "inputs": ["change_contract", "implementation_diff", "focused_test_evidence"],
+      "outputs": ["correctness_review_report"],
+      "gate": {"requires": ["correctness_review_report"], "acceptance": ["Requested, preserved, failure, and compatibility behavior were examined.", "The reviewer made no edits."]},
+      "transitions": {"completed": "review_convergence"}
+    },
+    "risk_review": {
+      "kind": "review",
+      "may_edit": false,
+      "system_prompt": "You are an independent security and systems-risk reviewer. Do not edit. Assess authorization, tenancy, persistence, concurrency, lifecycle, subprocess, network, secret, and upgrade effects of the change.",
+      "guide": ["Trace each identity and resource scope affected by the change.", "Check failure defaults, lock and goroutine ownership, cancellation, cleanup, and migration behavior.", "Return structured findings or an evidenced not-applicable disposition."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["collaboration:spawn_agent when authorized", "shell:git diff", "shell:go test -race", "shell:rg"],
+      "inputs": ["implementation_diff", "risk_classification", "compatibility_evidence"],
+      "outputs": ["risk_review_report"],
+      "gate": {"requires": ["risk_review_report"], "acceptance": ["Every applicable risk dimension has an evidence-backed disposition.", "The reviewer made no edits."]},
+      "transitions": {"completed": "review_convergence"}
+    },
+    "review_convergence": {
+      "kind": "convergence",
+      "may_edit": false,
+      "system_prompt": "You are the review chair. Reconcile independent findings without weakening severity and return any material defect through implementation, verification, documentation sync, and full re-review.",
+      "guide": ["Require evidence for both findings and dismissals.", "Block on P0, P1, and P2; fix or explicitly accept P3.", "Produce a remediation plan tied to changed files and tests."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:git diff", "shell:git status --short"],
+      "inputs": ["architecture_review_report", "correctness_review_report", "risk_review_report"],
+      "outputs": ["review_disposition", "unresolved_findings", "remediation_plan"],
+      "join": ["architecture_review", "correctness_review", "risk_review"],
+      "gate": {"requires": ["review_disposition", "unresolved_findings", "remediation_plan"], "acceptance": ["All required review reports are present.", "Accepted means no unresolved P0, P1, or P2 finding."]},
+      "transitions": {"accepted": "final_gate", "changes_requested": "implement", "design_rejected": "contract_design"}
+    },
+    "final_gate": {
+      "kind": "final",
+      "may_edit": false,
+      "system_prompt": "You are the change release gate. Confirm converged reviews, required tests, architecture checks, documentation synchronization, and exact scope before declaring completion.",
+      "guide": ["Run make verify plus every risk-specific command from the verification plan.", "Inspect final diff, generated files, and worktree state.", "Report graph, outcomes, review disposition, docs, commands, and residual limitations."],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:make verify", "shell:go vet ./...", "shell:git diff --check", "shell:git status --short"],
+      "inputs": ["review_disposition", "focused_test_evidence", "docs_validation", "scope_accounting"],
+      "outputs": ["final_verification", "final_scope_accounting", "handoff_report"],
+      "gate": {"requires": ["final_verification", "final_scope_accounting", "handoff_report"], "acceptance": ["No blocking finding remains.", "Required checks pass.", "Implementation and authoritative guidance agree."]},
+      "transitions": {}
+    }
+  }
+}

@@ -1,0 +1,192 @@
+{
+  "$schema": "./workflow.schema.json",
+  "schema_version": 1,
+  "id": "debug",
+  "title": "Read-only debugging and root-cause analysis",
+  "intent": "Establish an evidence-backed diagnosis without modifying repository or runtime state.",
+  "instruction_priority": "The user request and higher-level instructions take precedence. This graph does not grant mutation, remediation, delegation, or external-action authority.",
+  "entrypoint": "triage",
+  "terminal_nodes": ["diagnosis_report"],
+  "documentation_node": "docs_assessment",
+  "final_gate": "diagnosis_report",
+  "required_reviewers": ["evidence_review", "architecture_review"],
+  "review_policy": {
+    "independence": "Reviewers are read-only and must challenge the diagnosis from raw evidence rather than the analyst's intent.",
+    "blocking_severities": ["P0", "P1", "P2"],
+    "finding_schema": ["id", "severity", "dimension", "location", "evidence", "impact", "required_action"]
+  },
+  "nodes": {
+    "triage": {
+      "kind": "intake",
+      "may_edit": false,
+      "system_prompt": "You are the debugging intake gate. Preserve the user's diagnosis-only boundary, identify the failing surface, and refuse to infer a fix before evidence establishes the problem.",
+      "guide": [
+        "Restate the observed and expected behavior without converting assumptions into facts.",
+        "Identify affected entry points, identities, data, and operational risk.",
+        "Record the initial worktree state and actions that are not authorized."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:git status --short", "shell:rg", "shell:go list"],
+      "inputs": ["user_report"],
+      "outputs": ["scope_statement", "mutation_boundary", "selected_graph"],
+      "gate": {
+        "requires": ["scope_statement", "mutation_boundary", "selected_graph"],
+        "acceptance": ["The issue boundary and expected behavior are explicit.", "The selected graph is debug and all mutation remains prohibited."]
+      },
+      "transitions": {"accepted": "collect_evidence"}
+    },
+    "collect_evidence": {
+      "kind": "evidence",
+      "may_edit": false,
+      "system_prompt": "You are a forensic evidence collector. Gather the minimum reliable code, logs, state, and timeline needed for diagnosis while protecting secrets and leaving all inspected systems unchanged.",
+      "guide": [
+        "Trace the real entry point through core contracts, adapters, storage, and tests.",
+        "For runtime incidents, inspect doctor output, scoped logs, transcripts, and read-only SQLite queries.",
+        "Redact secrets and distinguish observed evidence from inference."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:rg", "shell:agyent doctor --skip-network", "shell:go run ./scripts/debug_session.go", "sqlite:read-only"],
+      "inputs": ["scope_statement", "mutation_boundary"],
+      "outputs": ["evidence_bundle", "incident_timeline", "sensitivity_notes"],
+      "gate": {
+        "requires": ["evidence_bundle", "incident_timeline", "sensitivity_notes"],
+        "acceptance": ["Every factual claim points to a command, log, row, test, or code location.", "No secret or unrelated tenant data is exposed."]
+      },
+      "transitions": {"sufficient": "reproduce"}
+    },
+    "reproduce": {
+      "kind": "evidence",
+      "may_edit": false,
+      "system_prompt": "You are the reproduction specialist. Attempt the smallest safe, deterministic reproduction and report negative results honestly without changing production state or repository files.",
+      "guide": [
+        "Prefer an existing focused test, read-only command, mock, or isolated temporary environment.",
+        "Record exact inputs, environment differences, command, output, and repeatability.",
+        "If reproduction is unsafe or impossible, bound the missing evidence and continue with calibrated confidence."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:go test", "shell:go test -run", "shell:git diff --exit-code", "shell:mktemp -d"],
+      "inputs": ["evidence_bundle", "incident_timeline"],
+      "outputs": ["reproduction_result", "minimal_reproduction", "environment_delta"],
+      "gate": {
+        "requires": ["reproduction_result", "minimal_reproduction", "environment_delta"],
+        "acceptance": ["The result is reproducible or the reason it cannot be reproduced is evidenced.", "No persistent state was mutated."]
+      },
+      "transitions": {"bounded": "root_cause"}
+    },
+    "root_cause": {
+      "kind": "analysis",
+      "may_edit": false,
+      "system_prompt": "You are the root-cause analyst. Explain the complete causal chain from trigger to failure, test competing hypotheses, and keep confidence proportional to the evidence.",
+      "guide": [
+        "Map trigger, preconditions, control flow, state transition, failure, and user-visible symptom.",
+        "Actively disprove plausible alternative hypotheses.",
+        "Separate root cause, contributing factors, impact, and unknowns."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:rg", "shell:go test -run", "shell:git blame", "shell:git log"],
+      "inputs": ["evidence_bundle", "reproduction_result", "environment_delta"],
+      "outputs": ["causal_chain", "competing_hypotheses", "confidence_and_gaps"],
+      "gate": {
+        "requires": ["causal_chain", "competing_hypotheses", "confidence_and_gaps"],
+        "acceptance": ["The causal chain explains all material observations.", "Alternatives and uncertainty are explicit."]
+      },
+      "transitions": {"ready": "docs_assessment"}
+    },
+    "docs_assessment": {
+      "kind": "documentation",
+      "may_edit": false,
+      "system_prompt": "You are the documentation drift assessor. Compare the diagnosed behavior with canonical and reference documents, but only report required documentation action because this graph does not authorize edits.",
+      "guide": [
+        "Check AGENTS.md, docs/README.md, the relevant current document, skills, and command help.",
+        "Identify whether stale guidance contributed to the incident.",
+        "Recommend the smallest authoritative document update for a later authorized fix."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:rg", "shell:python3 scripts/check_docs.py"],
+      "inputs": ["causal_chain", "confidence_and_gaps"],
+      "outputs": ["docs_drift_report", "docs_action_recommendation"],
+      "gate": {
+        "requires": ["docs_drift_report", "docs_action_recommendation"],
+        "acceptance": ["Every relevant authoritative document is accounted for.", "No document was modified."]
+      },
+      "transitions": {"ready": ["evidence_review", "architecture_review"]}
+    },
+    "evidence_review": {
+      "kind": "review",
+      "may_edit": false,
+      "system_prompt": "You are an independent evidence reviewer. Do not edit. Rebuild the diagnosis from the raw reproduction and evidence, looking for confirmation bias, missing counterexamples, or unsupported certainty.",
+      "guide": [
+        "Inspect raw evidence and commands before reading the proposed conclusion.",
+        "Challenge reproducibility, causality, scope, and confidence.",
+        "Return structured findings with exact evidence and severity."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["collaboration:spawn_agent when authorized", "shell:rg", "shell:go test -run", "shell:git diff"],
+      "inputs": ["evidence_bundle", "reproduction_result", "causal_chain"],
+      "outputs": ["evidence_review_report"],
+      "gate": {
+        "requires": ["evidence_review_report"],
+        "acceptance": ["The report lists examined evidence and uses the required finding schema.", "The reviewer made no edits."]
+      },
+      "transitions": {"completed": "review_convergence"}
+    },
+    "architecture_review": {
+      "kind": "review",
+      "may_edit": false,
+      "system_prompt": "You are an independent architecture reviewer. Do not edit. Verify that the diagnosis respects package ownership, runtime wiring, authorization, data scope, concurrency, and lifecycle behavior.",
+      "guide": [
+        "Trace the diagnosis through the composition root, core contract, and concrete adapter.",
+        "Check whether the alleged cause is actually owned by another boundary.",
+        "Return structured findings with exact files and evidence."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["collaboration:spawn_agent when authorized", "shell:go list -deps", "shell:rg", "shell:python3 scripts/check_architecture.py"],
+      "inputs": ["causal_chain", "docs_drift_report"],
+      "outputs": ["architecture_review_report"],
+      "gate": {
+        "requires": ["architecture_review_report"],
+        "acceptance": ["All affected architectural boundaries are examined.", "The reviewer made no edits."]
+      },
+      "transitions": {"completed": "review_convergence"}
+    },
+    "review_convergence": {
+      "kind": "convergence",
+      "may_edit": false,
+      "system_prompt": "You are the review chair. Reconcile independent findings without suppressing dissent, block unsupported diagnoses, and route material findings back to analysis before reporting.",
+      "guide": [
+        "Normalize and deduplicate findings while preserving evidence and severity.",
+        "Treat every open P0, P1, or P2 as blocking; explicitly disposition P3.",
+        "Choose accepted only when both reviewers support the bounded diagnosis."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:git diff --check", "shell:git status --short"],
+      "inputs": ["evidence_review_report", "architecture_review_report"],
+      "outputs": ["review_disposition", "unresolved_findings", "reanalysis_plan"],
+      "join": ["evidence_review", "architecture_review"],
+      "gate": {
+        "requires": ["review_disposition", "unresolved_findings", "reanalysis_plan"],
+        "acceptance": ["Both required review reports are present.", "Accepted means no unresolved P0, P1, or P2 findings."]
+      },
+      "transitions": {"accepted": "diagnosis_report", "reanalysis_required": "root_cause"}
+    },
+    "diagnosis_report": {
+      "kind": "final",
+      "may_edit": false,
+      "system_prompt": "You are the diagnosis release gate. Deliver the evidence-backed cause, impact, confidence, and next safe action without claiming a fix was made or hiding unresolved limitations.",
+      "guide": [
+        "Lead with the root cause and the strongest supporting evidence.",
+        "Include reproduction status, affected boundary, review disposition, and documentation drift.",
+        "Confirm that repository and runtime state were not modified."
+      ],
+      "skills": ["agyent-engineering-workflow"],
+      "tools": ["shell:git status --short", "shell:git diff --check"],
+      "inputs": ["review_disposition", "causal_chain", "confidence_and_gaps", "docs_action_recommendation"],
+      "outputs": ["diagnosis_report", "recommended_next_action", "verification_evidence"],
+      "gate": {
+        "requires": ["diagnosis_report", "recommended_next_action", "verification_evidence"],
+        "acceptance": ["No blocking finding remains.", "The final report distinguishes evidence, inference, and unknowns.", "No unauthorized mutation occurred."]
+      },
+      "transitions": {}
+    }
+  }
+}

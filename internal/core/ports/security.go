@@ -59,11 +59,17 @@ type SecurityManagerPort interface {
 	// UnregisterActiveTurn removes the active turn association when execution concludes.
 	UnregisterActiveTurn(convID string, workspaceDir string)
 
+	// UnregisterTurnByID removes the active turn association by its unique TurnID.
+	UnregisterTurnByID(turnID string)
+
 	// ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.
 	ResolveSessionKey(convID string, workspaceDir string) string
 
 	// ResolveTurnContext retrieves the full active TurnSecurityContext for a given conversationID or workspace.
 	ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool)
+
+	// ResolveTurnByID retrieves the active TurnSecurityContext directly by TurnID.
+	ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool)
 
 	// CancelSessionApprovals terminates all pending approval requests for a given session.
 	CancelSessionApprovals(sessionKey string)

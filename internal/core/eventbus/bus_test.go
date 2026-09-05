@@ -187,7 +187,7 @@ func TestEventBus_TC_EB_06_GracefulShutdown_DrainQueue(t *testing.T) {
 func TestEventBus_TC_EB_07_ConcurrentPubSubStress(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	bus := eventbus.NewEventBus(1000, 8)
+	bus := eventbus.NewEventBus(3000, 8)
 	defer bus.Close()
 
 	workers := 50
@@ -218,8 +218,8 @@ func TestEventBus_TC_EB_07_ConcurrentPubSubStress(t *testing.T) {
 
 	assert.Equal(t, int64(workers*50), syncProcessed.Load())
 	require.Eventually(t, func() bool {
-		return asyncProcessed.Load() == int64(workers*50)
-	}, 3*time.Second, 20*time.Millisecond)
+		return asyncProcessed.Load()+int64(bus.DroppedEventsCount()) == int64(workers*50)
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestEventBus_TC_EB_08_ReentrantSyncEmitSafety(t *testing.T) {

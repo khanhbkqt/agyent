@@ -1,5 +1,9 @@
 # Milestone 12: Sub-Agent Background Dispatching & Non-Blocking Multi-Agent Orchestration
 
+> **Document status:** Historical
+> **Code authority:** subagent adapter/domain/ports/repository and current reference document
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification and implementation plan for **Milestone 12: Sub-Agent Background Dispatching, Isolated Subprocess Concurrency, Live NDJSON Stream Telemetry & Multi-Agent Orchestration** of the **`agyent`** system.
 
 ---

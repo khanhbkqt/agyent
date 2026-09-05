@@ -1,139 +1,127 @@
-# Plugin System Architecture
+# Plugin system architecture
 
-This document provides a comprehensive technical specification of the **Plugin Subsystem** for the `agyent` ecosystem. This subsystem enables users to extend assistant capabilities via a **Plug-and-Play** model, packaging infrastructure toolsets (**MCP Servers**), operational workflows (**Skills**), and safety directives (**Rules**) into self-contained bundles.
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/plugin`, `internal/adapters/context`, `internal/adapters/mcp`, `builtin/plugins`
+> **Last verified:** 2026-09-05
 
----
+An `agyent` plugin is an embedded or installed capability bundle. It can contribute
+MCP server declarations, always-on rules, and progressively disclosed skills.
 
-## 1. Design Philosophy & Plugin Structure
-
-A **Plugin** in `agyent` is a **Self-Contained Capability Bundle**. Rather than requiring fragmented manual configuration, a plugin encapsulates tools, workflows, and rules within a cohesive directory structure:
+## 1. Bundle contract
 
 ```text
-plugins/<plugin-name>/
-├── plugin.json               # [Required] Manifest defining identity, metadata, and enabled status
-├── mcp_config.json           # [Optional] MCP Server configuration (Stdio or HTTP/SSE)
-├── rules/                    # [Optional] Operational and safety rules active with this plugin
-│   └── AGENTS.md
-├── skills/                   # [Optional] Specialized domain skills and runbooks
-│   └── <skill-name>/
-│       └── SKILL.md
-└── server/ (or scripts/)     # [Optional] Executable MCP server code / helper scripts
+<plugin-name>/
+├── plugin.json                         # required, strict schema
+├── mcp_config.json                     # optional MCP server declarations
+├── rules/AGENTS.md                     # optional always-on plugin constraints
+├── skills/<skill-name>/SKILL.md        # optional workflow metadata/instructions
+├── skills/<skill-name>/references/     # optional conditional detail
+└── server.py or other runtime files    # plugin-specific
 ```
 
+`plugin.json` accepts only fields declared by `domain.PluginManifest`; unknown
+fields are rejected. The manifest name and plugin directory name must match.
+
+The current embedded catalog is:
+
+| Plugin | Default | MCP tools | Skills |
+| --- | --- | --- | --- |
+| `database-sqlite` | enabled | `sqlite_query_readonly` | `sqlite-inspect` |
+| `scheduler` | enabled | schedule/list/cancel and heartbeat tools | `schedule-management` |
+| `subagent-dispatcher` | enabled | dispatch/progress/cancel/list | `subagent-dispatch` |
+| `system-diagnostics` | enabled | `get_system_health` | `system-health` |
+| `browser-camoufox` | disabled | search, extraction, sessions, actions, capture and media tools | `web-browse-camoufox` |
+
+The manifest and each server's `tools/list` response are authoritative for exact
+capabilities.
+
+## 2. Discovery and precedence
+
+`PluginManager.ListPlugins` scans sources from lowest to highest precedence:
+
+1. Plugins embedded in the binary.
+2. Repository `builtin/plugins` when running from a development checkout.
+3. User-global `~/.agyent/plugins`.
+4. Agent-home `plugins` and `.agents/plugins` paths.
+5. Project/workspace `.agents/plugins` and `plugins` paths.
+
+Plugins are deduplicated by manifest name; later sources override earlier ones.
+Workspace overrides therefore replace a global/builtin plugin with the same name.
+Do not rely on map iteration order for presentation or prompt construction; sort
+the resulting capabilities.
+
+## 3. Activation and context assembly
+
+Only a plugin whose effective manifest has `enabled: true` contributes
+capabilities:
+
+- MCP servers become temporary mounts for a turn.
+- Each `SKILL.md` contributes a lightweight name/description/path header to the
+  Level 3 skill index. The full skill is read only when it applies.
+- `rules/AGENTS.md` is placed in the workspace/plugin directive block and is
+  therefore always active with the plugin.
+
+Keep rules small and unconditional. Put task-specific workflows in skills so they
+do not consume or constrain every turn.
+
+## 4. MCP lifecycle and isolation
+
+AGY currently discovers MCP servers from
+`~/.gemini/antigravity-cli/mcp_config.json`. `MCPSyncer` therefore:
+
+1. Acquires an OS-backed exclusive turn lease for MCP-enabled turns.
+2. Adds session-scoped server entries with a hashed ephemeral key.
+3. Writes the configuration atomically under an OS lock.
+4. Reference-counts mounts.
+5. Unmounts entries when the turn finishes.
+6. Removes stale ephemeral entries on startup while preserving base servers.
+
+The exclusive lease is an isolation constraint imposed by the process-global AGY
+configuration. Do not weaken it until AGY supports per-invocation MCP config and a
+replacement design is tested.
+
+MCP processes also receive APIS-4D identity. Plugins must enforce identity and
+path ownership themselves; temporary configuration names are not an authorization
+boundary.
+
+## 5. Installation and updates
+
+- Global installation target: `~/.agyent/plugins/<name>`.
+- Workspace installation target: `<workspace>/.agents/plugins/<name>`.
+- Enabling/disabling an embedded-only plugin first extracts it to the selected
+  disk scope, then changes that copy's manifest.
+- Embedded plugins are synchronized at daemon startup and through CLI plugin
+  update commands.
+- Dependency validation resolves declared MCP commands through `exec.LookPath`.
+
+Use `agyent plugin --help` for current CLI syntax. Chat command behavior is owned
+by `internal/core/engine/commands.go`.
+
+## 6. Skill contract
+
+A skill directory contains at least `SKILL.md` with YAML frontmatter:
+
+```yaml
 ---
-
-## 2. Plugin Lifecycle & Architecture Diagram
-
-```mermaid
-flowchart TB
-    subgraph PluginSources ["1. PLUGIN SOURCES"]
-        BuiltinRepo["Built-in Plugins Catalog (Camoufox, DB, System, Git)"]
-        CustomRepo["User Custom / Community Plugins"]
-    end
-
-    subgraph Installation ["2. INSTALLATION SCOPES"]
-        GlobalPlugins["Global Scope: ~/.agyent/plugins/<name>/"]
-        WSPlugins["Workspace Scope: <project>/.agents/plugins/<name>/"]
-    end
-
-    subgraph CoreEngine ["3. AGYENT PLUGIN MANAGER (Go Core)"]
-        Scanner["1. Plugin Scanner (Reads plugin.json)"]
-        Filter["2. State Filter (Filters plugins where enabled == true)"]
-        Unbundler["3. Capability Unbundler (Extracts MCP + Skills + Rules)"]
-    end
-
-    subgraph SubstrateInjection ["4. RUNTIME CONTEXT INJECTION"]
-        MCPRegistry["~/.gemini/antigravity/mcp_config.json (Dynamic Mount)"]
-        SkillRegistry["Prompt <skills> Header Index (Progressive Disclosure)"]
-        RuleRegistry["Prompt [PLUGIN DIRECTIVES] Block"]
-    end
-
-    subgraph LLM ["5. AGYENT AGENT EXECUTION"]
-        Agent["Executes tasks with full augmented capabilities"]
-    end
-
-    PluginSources --> Installation
-    Installation --> Scanner --> Filter --> Unbundler
-    Unbundler --> MCPRegistry & SkillRegistry & RuleRegistry
-    MCPRegistry & SkillRegistry & RuleRegistry --> Agent
+name: example-skill
+description: Explain the capability and the requests that should activate it.
+---
 ```
 
----
+Names use lowercase letters, digits, and hyphens and match the directory. The
+description must be discriminating; avoid generic catchalls. The body contains
+the shared workflow and real constraints. Conditional schemas/recipes belong in
+`references/` and must be linked from the body.
 
-## 3. Built-in Plugins Catalog
+## 7. Verification
 
-The `agyent` system provides an out-of-the-box **Built-in Plugins Catalog** ready for immediate installation:
+For any plugin change:
 
-| Plugin Name | Description & Capabilities | Packaged Components |
-| :--- | :--- | :--- |
-| **`browser-camoufox`** | Anti-detect web browsing and scraping powered by Camoufox Firefox & Playwright. | - MCP: Stdio Camoufox server.<br>- Skills: `web-browse-camoufox`, `web-scrape-data`.<br>- Rules: Stealth browsing & token optimization rules. |
-| **`system-diagnostics`** | Host resource telemetry (CPU, RAM, Disk, Process, Network) and OS-level diagnostics. | - MCP: System telemetry Stdio server.<br>- Skills: `system-health-check`, `kill-zombie-process`.<br>- Rules: System safety rules (no root file deletion). |
-| **`database-sqlite`** | Schema inspection, SQL query execution, and SQLite integrity validation. | - MCP: SQLite inspector server.<br>- Skills: `inspect-schema`, `run-sql-query`.<br>- Rules: Default READONLY; confirmation required for writes. |
-| **`github-ops`** | Pull request management, issue triage, commit exploration, and git workflow automation. | - MCP: GitHub MCP tools.<br>- Skills: `review-pr`, `summarize-issue`.<br>- Rules: Adherence to Conventional Commits. |
-
----
-
-## 4. Go Core Domain Entities & Port Interfaces
-
-### 4.1. Domain Entities (`internal/core/domain/plugin.go`)
-
-```go
-package domain
-
-import "time"
-
-type PluginManifest struct {
-    Name        string   `json:"name"`
-    Version     string   `json:"version"`
-    Description string   `json:"description"`
-    Author      string   `json:"author,omitempty"`
-    Enabled     bool     `json:"enabled"`
-    Tags        []string `json:"tags,omitempty"`
-}
-
-type Plugin struct {
-    Manifest    PluginManifest    `json:"manifest"`
-    Path        string            `json:"path"`
-    Scope       ContextScope      `json:"scope"`
-    MCPServers  []MCPServerConfig `json:"mcp_servers,omitempty"`
-    Skills      []SkillHeader     `json:"skills,omitempty"`
-    Rules       string            `json:"rules,omitempty"`
-    InstalledAt time.Time         `json:"installed_at"`
-}
+```bash
+make docs-check
+make lint-plugins
+go test ./internal/adapters/plugin/... ./internal/adapters/context/... ./internal/adapters/mcp/...
 ```
 
-### 4.2. Port Interface (`internal/core/ports/plugin.go`)
-
-```go
-package ports
-
-import (
-    "context"
-    "github.com/khanhbkqt/agyent/internal/core/domain"
-)
-
-type PluginManagerPort interface {
-    // ListPlugins scans and returns all installed plugins across Global and Workspace scopes
-    ListPlugins(ctx context.Context, globalHome, workspaceDir string) ([]domain.Plugin, error)
-    
-    // TogglePlugin enables or disables a plugin by name
-    TogglePlugin(ctx context.Context, pluginName string, enabled bool, scope domain.ContextScope, workspaceDir string) error
-    
-    // InstallBuiltinPlugin installs a plugin from the built-in library
-    InstallBuiltinPlugin(ctx context.Context, pluginName string, targetScope domain.ContextScope, workspaceDir string) error
-    
-    // AssemblePluginCapabilities combines MCP, Skills, and Rules from all active plugins
-    AssemblePluginCapabilities(ctx context.Context, globalHome, workspaceDir string) (*domain.ResolvedContext, error)
-}
-```
-
----
-
-## 5. User Slash Commands Reference
-
-Users can manage plugins directly via Telegram or CLI:
-- `/plugins`: List installed plugins with their `[ENABLED]` / `[DISABLED]` status.
-- `/plugins catalog`: Browse available built-in plugins in the library.
-- `/plugin install <name>`: Download and install a plugin from the built-in repository.
-- `/plugin enable <name>`: Enable a plugin (injects tools into subsequent turns).
-- `/plugin disable <name>`: Disable a plugin (unmounts tools from active context).
+Also exercise the MCP `initialize`, `tools/list`, invalid tool, invalid arguments,
+and authorized/denied filesystem or tenant paths relevant to the change.

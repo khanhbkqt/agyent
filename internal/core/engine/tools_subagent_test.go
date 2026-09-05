@@ -120,7 +120,7 @@ func TestSubagentCommands_Lifecycle(t *testing.T) {
 	defer store.Close()
 
 	sessionKey := "telegram:998877"
-	session, _ := store.GetOrCreateSession(ctx, sessionKey, "agyent")
+	session, _ := store.GetOrCreateSession(ctx, sessionKey, "researcher")
 
 	cfg := config.DefaultConfig()
 	cfg.Storage.DBPath = dbPath

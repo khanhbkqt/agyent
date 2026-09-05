@@ -230,8 +230,9 @@ func TestAutoCompactWatchdog(t *testing.T) {
 }
 
 func TestCompactAndContinueTurn(t *testing.T) {
-	eng, runner, channel, store, _, cleanup := setupTestEngine(t)
+	eng, runner, channel, store, cfg, cleanup := setupTestEngine(t)
 	defer cleanup()
+	cfg.Telegram.AdminUserIDs = append(cfg.Telegram.AdminUserIDs, 888001)
 
 	ctx := context.Background()
 	require.NoError(t, eng.Start(ctx))

@@ -1,10 +1,13 @@
 ---
 name: system-health
-description: >-
-  Use this skill when the user asks to check system resource usage, disk space, OS specs, or host diagnostics.
+description: Read current host OS, CPU, memory, and disk telemetry with the system-diagnostics plugin. Use for resource or host-health questions; not for process mutation or application-specific incident diagnosis.
 ---
 
-# System Health & Telemetry
+# System health
 
-1. Call tool `get_system_health` to retrieve current telemetry.
-2. Present OS information, CPU architecture, and disk metrics in a formatted markdown table.
+Call `get_system_health` once, then report the observation time and the metrics
+relevant to the user's question. Distinguish capacity from current utilization and
+flag missing/unavailable fields instead of inventing values.
+
+This tool is read-only. Telemetry alone does not authorize killing processes,
+deleting files, changing limits, or restarting services.

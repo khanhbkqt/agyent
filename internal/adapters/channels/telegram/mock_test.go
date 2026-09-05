@@ -54,18 +54,23 @@ type MockTelegramServer struct {
 	EditMessages          []EditMessageRecord
 	ChatActions           []ChatActionRecord
 	SentMedia             []SentMediaRecord
-	NextErrorStatus       int
-	NextErrorBody         string
-	NextEditError         error
-	Simulate429Once       bool
-	Simulate400Once       bool
-	SimulatePhotoFailOnce bool
-	SimulatePhoto429Once  bool
-	RetryAfterSec         int
-	FilesMap              map[string][]byte
-	GetMeCount            int64
-	RegisteredCommands    []gotgbot.BotCommand
-	BotID                 int64
+	NextErrorStatus         int
+	NextErrorBody           string
+	NextEditError           error
+	SimulateSendErrorStatus int
+	SimulateSendErrorBody   string
+	Simulate429Once         bool
+	Simulate400Once         bool
+	SimulateTooLongOnce     bool
+	SimulateEditErrorStatus int
+	SimulateEditErrorBody   string
+	SimulatePhotoFailOnce   bool
+	SimulatePhoto429Once    bool
+	RetryAfterSec           int
+	FilesMap                map[string][]byte
+	GetMeCount              int64
+	RegisteredCommands      []gotgbot.BotCommand
+	BotID                   int64
 }
 
 func NewMockTelegramServer(token string, customBotID ...int64) *MockTelegramServer {
@@ -91,6 +96,7 @@ func NewMockTelegramServer(token string, customBotID ...int64) *MockTelegramServ
 
 func (m *MockTelegramServer) Close() {
 	if m.Server != nil {
+		m.Server.CloseClientConnections()
 		m.Server.Close()
 	}
 }
@@ -272,6 +278,25 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		})
 
 	case "sendMessage":
+		if m.SimulateSendErrorStatus != 0 {
+			code := m.SimulateSendErrorStatus
+			body := m.SimulateSendErrorBody
+			m.SimulateSendErrorStatus = 0
+			m.SimulateSendErrorBody = ""
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			if body != "" {
+				w.Write([]byte(body))
+			} else {
+				json.NewEncoder(w).Encode(map[string]any{
+					"ok":          false,
+					"error_code":  code,
+					"description": "Simulated send error",
+				})
+			}
+			return
+		}
+
 		if m.Simulate429Once {
 			m.Simulate429Once = false
 			w.Header().Set("Content-Type", "application/json")
@@ -283,6 +308,18 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 				"parameters": map[string]any{
 					"retry_after": m.RetryAfterSec,
 				},
+			})
+			return
+		}
+
+		if m.SimulateTooLongOnce {
+			m.SimulateTooLongOnce = false
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  400,
+				"description": "Bad Request: message is too long",
 			})
 			return
 		}
@@ -331,6 +368,25 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		})
 
 	case "editMessageText":
+		if m.SimulateEditErrorStatus != 0 {
+			code := m.SimulateEditErrorStatus
+			body := m.SimulateEditErrorBody
+			m.SimulateEditErrorStatus = 0
+			m.SimulateEditErrorBody = ""
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			if body != "" {
+				w.Write([]byte(body))
+			} else {
+				json.NewEncoder(w).Encode(map[string]any{
+					"ok":          false,
+					"error_code":  code,
+					"description": "Bad Request: message to edit not found",
+				})
+			}
+			return
+		}
+
 		if m.Simulate429Once {
 			m.Simulate429Once = false
 			w.Header().Set("Content-Type", "application/json")

@@ -4,10 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
 
 // BotContext contains identifying metadata for the bot instance that received the update.
@@ -17,42 +19,46 @@ type BotContext struct {
 	BindAgent   string
 }
 
-// Router processes inbound Zalo updates, handles whitelisting, and transforms them into CanonicalMessages.
+// Router processes authenticated Zalo updates and converts them to domain messages.
 type Router struct {
-	cfg     *config.Config
-	hitl    *HITLCoordinator
-	media   *MediaManager
-	inbound chan<- domain.CanonicalMessage
+	cfg        *config.Config
+	hitl       *HITLCoordinator
+	inbound    chan<- domain.CanonicalMessage
+	authorizer ports.InboundAuthorizer
+	mu         sync.RWMutex
 }
 
-// NewRouter creates a new inbound message router for Zalo.
+// NewRouter creates a new update router. Media remains a constructor argument to
+// retain source compatibility; attachment downloads are intentionally deferred to
+// the core-owned attachment admission step.
 func NewRouter(cfg *config.Config, hitl *HITLCoordinator, media *MediaManager, inbound chan<- domain.CanonicalMessage) *Router {
-	return &Router{
-		cfg:     cfg,
-		hitl:    hitl,
-		media:   media,
-		inbound: inbound,
-	}
+	_ = media
+	return &Router{cfg: cfg, hitl: hitl, inbound: inbound}
 }
 
-// RouteUpdate handles a single inbound update.
+// SetInboundAuthorizer injects the core admission evaluator.
+func (r *Router) SetInboundAuthorizer(authorizer ports.InboundAuthorizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizer = authorizer
+}
+
+// RouteUpdate handles one provider update without creating local media state
+// until group filtering and core authorization have both succeeded.
 func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...BotContext) {
 	if update.Message == nil {
 		return
 	}
 	msg := update.Message
-
-	// Anti-Looping: Ignore updates sent by bots
 	if msg.From.IsBot {
 		slog.DebugContext(ctx, "ignoring update from bot user", "sender_id", msg.From.ID)
 		return
 	}
 
-	// Whitelist Check: If AllowedGroupIDs is configured, ignore messages from unlisted groups
-	if len(r.cfg.Zalo.AllowedGroupIDs) > 0 && msg.Chat.Type != "private" {
+	if r.cfg != nil && len(r.cfg.Zalo.AllowedGroupIDs) > 0 && msg.Chat.Type != "private" {
 		allowed := false
-		for _, gid := range r.cfg.Zalo.AllowedGroupIDs {
-			if gid == msg.Chat.ID {
+		for _, groupID := range r.cfg.Zalo.AllowedGroupIDs {
+			if groupID == msg.Chat.ID {
 				allowed = true
 				break
 			}
@@ -64,52 +70,64 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	}
 
 	text := strings.TrimSpace(msg.Text)
-
-	// Intercept HITL Security Approval slash commands:
-	// /approve <id> [session|always]
-	// /deny <id>
-	// /kill <id>
 	if strings.HasPrefix(text, "/approve") || strings.HasPrefix(text, "/deny") || strings.HasPrefix(text, "/kill") {
 		parts := strings.Fields(text)
-		if len(parts) >= 2 {
-			reqID := parts[1]
+		if len(parts) >= 2 && r.hitl != nil {
 			action := "allow_once"
-			if strings.HasPrefix(parts[0], "/deny") {
+			switch {
+			case strings.HasPrefix(parts[0], "/deny"):
 				action = "deny"
-			} else if strings.HasPrefix(parts[0], "/kill") {
+			case strings.HasPrefix(parts[0], "/kill"):
 				action = "force_kill"
-			} else if len(parts) >= 3 && (parts[2] == "session" || parts[2] == "always") {
+			case len(parts) >= 3 && (parts[2] == "session" || parts[2] == "always"):
 				action = "allow_session"
 			}
-
-			if r.hitl != nil {
-				err := r.hitl.HandleCommandApproval(ctx, reqID, msg.From.ID, action)
-				if err != nil {
-					slog.WarnContext(ctx, "failed to handle Zalo HITL approval command", "error", err, "req_id", reqID)
-				}
-				return
+			if err := r.hitl.HandleCommandApproval(ctx, parts[1], msg.From.ID, action); err != nil {
+				slog.WarnContext(ctx, "failed to handle Zalo HITL approval command", "error", err, "request_id", parts[1])
 			}
+			return
 		}
 	}
 
-	// Transform Inbound Attachments
-	var canonicalAtts []domain.Attachment
-	for _, att := range msg.Attachments {
-		filePath := ""
-		if r.media != nil && att.URL != "" {
-			var err error
-			filePath, err = r.media.DownloadInboundAttachment(ctx, att.URL, att.FileName)
-			if err != nil {
-				slog.WarnContext(ctx, "failed to download Zalo attachment", "url", att.URL, "error", err)
-			}
+	var botIDStr, botUsername, bindAgent string
+	if len(botCtx) > 0 {
+		botIDStr = botCtx[0].BotID
+		botUsername = botCtx[0].BotUsername
+		bindAgent = botCtx[0].BindAgent
+	}
+	botID := ParseNumericID(botIDStr)
+	sessionKey := domain.FormatSessionKey("zalo", msg.Chat.ID, msg.Chat.ThreadID, botID)
+
+	r.mu.RLock()
+	authorizer := r.authorizer
+	r.mu.RUnlock()
+	if authorizer != nil {
+		allowed, err := authorizeInboundMessage(ctx, authorizer, msg.From.ID, bindAgent, msg.Chat.Type, sessionKey)
+		if err != nil || !allowed {
+			return
 		}
-		canonicalAtts = append(canonicalAtts, domain.Attachment{
-			ID:       att.FileID,
-			FileName: att.FileName,
-			FilePath: filePath,
-			MIMEType: att.Type,
-			Size:     att.FileSize,
-			Type:     att.Type,
+	}
+
+	attachmentRefs := make([]domain.InboundAttachmentRef, 0, len(msg.Attachments))
+	for _, attachment := range msg.Attachments {
+		if strings.TrimSpace(attachment.URL) == "" {
+			continue
+		}
+		attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
+		mimeType := "application/octet-stream"
+		if attachmentType == "photo" || attachmentType == "image" {
+			attachmentType = "image"
+			mimeType = "image/jpeg"
+		}
+		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
+			Channel:  "zalo",
+			ID:       attachment.FileID,
+			SourceID: attachment.URL,
+			FileName: attachment.FileName,
+			MIMEType: mimeType,
+			Size:     attachment.FileSize,
+			Type:     attachmentType,
+			BotID:    botID,
 		})
 	}
 
@@ -117,25 +135,16 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	if msg.Date > 0 {
 		date = time.Unix(msg.Date, 0)
 	}
-
-	botIDStr := ""
-	botUsername := ""
-	bindAgent := ""
-	if len(botCtx) > 0 {
-		botIDStr = botCtx[0].BotID
-		botUsername = botCtx[0].BotUsername
-		bindAgent = botCtx[0].BindAgent
-	}
-
 	canonical := domain.CanonicalMessage{
 		ID:          msg.MessageID,
 		Timestamp:   date,
 		Channel:     "zalo",
-		BotID:       ParseNumericID(botIDStr),
+		BotID:       botID,
 		BotUsername: botUsername,
 		BindAgent:   bindAgent,
 		Sender: domain.SenderUser{
 			ID:       msg.From.ID,
+			Provider: "zalo",
 			Username: msg.From.Username,
 			FullName: msg.From.Name,
 		},
@@ -145,20 +154,26 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			Title:    msg.Chat.Title,
 			ThreadID: msg.Chat.ThreadID,
 		},
-		Text:        msg.Text,
-		RawText:     msg.Text,
-		Attachments: canonicalAtts,
+		Text:           msg.Text,
+		RawText:        msg.Text,
+		AttachmentRefs: attachmentRefs,
 	}
-
 	if msg.ReplyToMsg != nil {
 		canonical.ReplyToMessageID = msg.ReplyToMsg.MessageID
 	}
 
+	if r.inbound == nil {
+		return
+	}
 	select {
 	case r.inbound <- canonical:
 	case <-ctx.Done():
-		return
-	default:
-		slog.WarnContext(ctx, "inbound channel full, dropping Zalo message", "message_id", msg.MessageID)
 	}
+}
+
+func authorizeInboundMessage(ctx context.Context, authorizer ports.InboundAuthorizer, senderID, bindAgent, chatType, sessionKey string) (bool, error) {
+	if sessionAuthorizer, ok := authorizer.(ports.InboundSessionAuthorizer); ok {
+		return sessionAuthorizer.AuthorizeInboundSession(ctx, senderID, bindAgent, chatType, sessionKey)
+	}
+	return authorizer.AuthorizeInbound(ctx, senderID, bindAgent, chatType)
 }

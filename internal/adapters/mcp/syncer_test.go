@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"agyent/internal/adapters/mcp"
 	"agyent/internal/core/domain"
@@ -51,7 +52,8 @@ func TestMCPSyncer_MountAndUnmount(t *testing.T) {
 	// Verify file content after mount
 	content, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "__agyent_ephemeral_camoufox-test")
+	assert.Contains(t, string(content), "__agyent_ephemeral_")
+	assert.Contains(t, string(content), "_camoufox-test")
 	assert.Contains(t, string(content), "permanent-tool")
 
 	// Unmount
@@ -61,7 +63,7 @@ func TestMCPSyncer_MountAndUnmount(t *testing.T) {
 	// Verify ephemeral tool removed and permanent preserved
 	content, err = os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(content), "__agyent_ephemeral_camoufox-test")
+	assert.NotContains(t, string(content), "camoufox-test")
 	assert.Contains(t, string(content), "permanent-tool")
 }
 
@@ -132,4 +134,22 @@ func TestMCPSyncer_CrashRecovery(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "base-calc")
 	assert.NotContains(t, string(content), "__agyent_ephemeral_leaked_browser")
+}
+
+func TestMCPSyncer_ExclusiveTurnLeaseSerializesGlobalConfig(t *testing.T) {
+	syncer, err := mcp.NewMCPSyncer(filepath.Join(t.TempDir(), "mcp_config.json"))
+	require.NoError(t, err)
+
+	release, err := syncer.AcquireExclusiveTurn(context.Background())
+	require.NoError(t, err)
+
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	_, err = syncer.AcquireExclusiveTurn(blockedCtx)
+	require.Error(t, err, "another MCP turn must not mount into the shared config")
+
+	release()
+	releaseNext, err := syncer.AcquireExclusiveTurn(context.Background())
+	require.NoError(t, err)
+	releaseNext()
 }

@@ -154,3 +154,10 @@ func TestZaloClient_WebhookLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, delCalled)
 }
+
+func TestParseNumericID_StableForOpaqueProviderIDs(t *testing.T) {
+	assert.Equal(t, int64(12345), zalo.ParseNumericID("12345"))
+	assert.NotZero(t, zalo.ParseNumericID("bot_opaque_id"))
+	assert.Equal(t, zalo.ParseNumericID("bot_opaque_id"), zalo.ParseNumericID("bot_opaque_id"))
+	assert.NotEqual(t, zalo.ParseNumericID("bot_opaque_id"), zalo.ParseNumericID("another_bot"))
+}

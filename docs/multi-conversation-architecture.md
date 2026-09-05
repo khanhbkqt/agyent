@@ -1,5 +1,9 @@
 # Multi-Conversation Architecture & Lifecycle GC
 
+> **Document status:** Reference
+> **Code authority:** conversation domain/repository, engine conversation commands, lifecycle GC
+> **Last verified:** 2026-09-05
+
 This document provides a comprehensive technical architecture design for **Multi-Conversation Management**, **Isolated Ephemeral Queries (`/ask`)**, **1-Touch Conversation Switching (Adaptive Inline Keyboards)**, **Zero-Memory Pinning**, and **Tiered Automated Garbage Collection (Lifecycle GC)** in **`agyent`**.
 
 ---

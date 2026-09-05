@@ -803,3 +803,25 @@ func TestMedia_OpenFileWithRetry(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 	assert.Less(t, duration, 100*time.Millisecond, "Non-existent files must fail fast without retrying delays")
 }
+
+// TC-ACT-17: ExtractAndCleanOutboundMedia treats [Caption](photo.png) without exclamation as an image embed
+func TestMedia_ExtractAndCleanOutboundMedia_ImageLinkWithoutExclamation(t *testing.T) {
+	tempWS := t.TempDir()
+	photoPath := filepath.Join(tempWS, "be_na_photo.png")
+	err := os.WriteFile(photoPath, []byte("fake png binary"), 0644)
+	require.NoError(t, err)
+
+	inputText := "Dạ em gửi anh Khánh nè. Anh ngắm xem em có xinh không nha.\n\n[Bé Na gửi anh](be_na_photo.png)"
+	cleanedText, attachments := ExtractAndCleanOutboundMedia(inputText, tempWS, "")
+
+	require.Len(t, attachments, 1, "Must extract 1 image attachment")
+	assert.Equal(t, "image", attachments[0].Type)
+	assert.Equal(t, "be_na_photo.png", attachments[0].FileName)
+	assert.Equal(t, "Bé Na gửi anh", attachments[0].Caption)
+	assert.Equal(t, photoPath, attachments[0].FilePath)
+
+	// Cleaned text must strip the image link completely so no blue link or icon is displayed
+	assert.NotContains(t, cleanedText, "[Bé Na gửi anh](be_na_photo.png)")
+	assert.NotContains(t, cleanedText, "Bé Na gửi anh")
+	assert.Contains(t, cleanedText, "Anh ngắm xem em có xinh không nha.")
+}

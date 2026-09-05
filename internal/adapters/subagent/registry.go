@@ -94,6 +94,17 @@ func (r *taskRegistry) Register(tCtx *taskRuntimeContext) {
 	}
 }
 
+// TryRegister atomically reserves a task ID for one producer. Polling and
+// direct dispatch run concurrently, so a Load followed by Store is not enough
+// to prevent duplicate queueing of the same persisted task.
+func (r *taskRegistry) TryRegister(tCtx *taskRuntimeContext) bool {
+	if tCtx == nil || tCtx.task.ID == "" {
+		return false
+	}
+	_, loaded := r.tasks.LoadOrStore(tCtx.task.ID, tCtx)
+	return !loaded
+}
+
 func (r *taskRegistry) Get(taskID string) (*taskRuntimeContext, bool) {
 	val, ok := r.tasks.Load(taskID)
 	if !ok {

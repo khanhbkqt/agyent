@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"agyent/internal/core/domain"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +32,7 @@ type TelegramConfig struct {
 	Bots            []BotConfig `yaml:"bots" json:"bots"`           // Multi-bot lifecycle pool
 	Mode            string      `yaml:"mode" json:"mode"`           // "polling" or "webhook"
 	WebhookURL      string      `yaml:"webhook_url" json:"webhook_url"`
+	SecretToken     string      `yaml:"secret_token" json:"secret_token"` // Secret token for X-Telegram-Bot-Api-Secret-Token
 	AdminUserIDs    []int64     `yaml:"admin_user_ids" json:"admin_user_ids"`
 	AllowedGroupIDs []string    `yaml:"allowed_group_ids" json:"allowed_group_ids"`
 }
@@ -105,6 +108,14 @@ type StorageConfig struct {
 	AgentsDir                string  `yaml:"agents_dir" json:"agents_dir"`
 	DebounceSeconds          float64 `yaml:"debounce_seconds" json:"debounce_seconds"`
 	HeartbeatIntervalSeconds float64 `yaml:"heartbeat_interval_seconds" json:"heartbeat_interval_seconds"`
+}
+
+// SchedulerConfig contains configuration for scheduled tasks and heartbeats.
+type SchedulerConfig struct {
+	Enabled                   bool `yaml:"enabled" json:"enabled"`
+	PollIntervalSeconds       int  `yaml:"poll_interval_seconds" json:"poll_interval_seconds"`
+	DefaultTaskTimeoutSeconds int  `yaml:"default_task_timeout_seconds" json:"default_task_timeout_seconds"`
+	HeartbeatTimeoutSeconds   int  `yaml:"heartbeat_timeout_seconds" json:"heartbeat_timeout_seconds"`
 }
 
 // LoggingConfig contains structured logging configuration.
@@ -184,17 +195,19 @@ type DLPConfig struct {
 
 // SecurityConfig contains the Universal AI Security Gateway & Guardrails parameters.
 type SecurityConfig struct {
-	Enabled                bool                        `yaml:"enabled" json:"enabled"`
-	Preset                 string                      `yaml:"preset" json:"preset"` // "developer" | "balanced" | "strict" | "read_only"
-	Mode                   string                      `yaml:"mode" json:"mode"`     // "interactive" | "strict"
-	ApprovalTimeoutSeconds int                         `yaml:"approval_timeout_seconds" json:"approval_timeout_seconds"`
-	AdminUserIDs           []int64                     `yaml:"admin_user_ids" json:"admin_user_ids"`
-	AgentConfigManagement  AgentConfigManagementConfig `yaml:"agent_config_management" json:"agent_config_management"`
-	Commands               CommandGuardrailConfig      `yaml:"commands" json:"commands"`
-	Filesystem             FilesystemGuardrailConfig   `yaml:"filesystem" json:"filesystem"`
-	Subagents              SubagentGuardrailConfig     `yaml:"subagents" json:"subagents"`
-	Network                NetworkGuardrailConfig      `yaml:"network" json:"network"`
-	DLP                    DLPConfig                   `yaml:"dlp" json:"dlp"`
+	Enabled                      bool                        `yaml:"enabled" json:"enabled"`
+	Preset                       string                      `yaml:"preset" json:"preset"` // "developer" | "balanced" | "strict" | "read_only"
+	Mode                         string                      `yaml:"mode" json:"mode"`     // "interactive" | "strict"
+	ApprovalTimeoutSeconds       int                         `yaml:"approval_timeout_seconds" json:"approval_timeout_seconds"`
+	AdminUserIDs                 []int64                     `yaml:"admin_user_ids" json:"admin_user_ids"`
+	AllowUnauthenticatedLocalDev bool                        `yaml:"allow_unauthenticated_local_dev" json:"allow_unauthenticated_local_dev"`
+	AllowedProjectRoots          []string                    `yaml:"allowed_project_roots" json:"allowed_project_roots"`
+	AgentConfigManagement        AgentConfigManagementConfig `yaml:"agent_config_management" json:"agent_config_management"`
+	Commands                     CommandGuardrailConfig      `yaml:"commands" json:"commands"`
+	Filesystem                   FilesystemGuardrailConfig   `yaml:"filesystem" json:"filesystem"`
+	Subagents                    SubagentGuardrailConfig     `yaml:"subagents" json:"subagents"`
+	Network                      NetworkGuardrailConfig      `yaml:"network" json:"network"`
+	DLP                          DLPConfig                   `yaml:"dlp" json:"dlp"`
 }
 
 // AgentProfileConfig defines per-agent declarative configuration overrides in config.yaml.
@@ -213,6 +226,7 @@ type Config struct {
 	Zalo      ZaloConfig                    `yaml:"zalo" json:"zalo"`
 	AGY       AGYConfig                     `yaml:"agy" json:"agy"`
 	Storage   StorageConfig                 `yaml:"storage" json:"storage"`
+	Scheduler SchedulerConfig               `yaml:"scheduler" json:"scheduler"`
 	Logging   LoggingConfig                 `yaml:"logging" json:"logging"`
 	Evolution EvolutionConfig               `yaml:"evolution" json:"evolution"`
 	Subagent  SubagentConfig                `yaml:"subagent" json:"subagent"`
@@ -231,6 +245,7 @@ func DefaultConfig() *Config {
 			BotToken:        "",
 			Mode:            "polling",
 			WebhookURL:      "",
+			SecretToken:     "",
 			AdminUserIDs:    []int64{},
 			AllowedGroupIDs: []string{},
 		},
@@ -251,7 +266,7 @@ func DefaultConfig() *Config {
 			DefaultEffort:                    "high",
 			DefaultMode:                      "accept-edits",
 			ModelAliases:                     make(map[string]string),
-			DangerouslySkipPermissions:       true,
+			DangerouslySkipPermissions:       false,
 			StreamingEnabled:                 true,
 			StreamingThrottleIntervalSeconds: 1.5,
 			AutoCompact:                      true,
@@ -265,6 +280,12 @@ func DefaultConfig() *Config {
 			AgentsDir:                "~/.agyent",
 			DebounceSeconds:          2.0,
 			HeartbeatIntervalSeconds: 4.0,
+		},
+		Scheduler: SchedulerConfig{
+			Enabled:                   true,
+			PollIntervalSeconds:       1,
+			DefaultTaskTimeoutSeconds: 300,
+			HeartbeatTimeoutSeconds:   120,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -366,7 +387,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: false,
 				AllowedPaths:         []string{"~", "."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 5,
@@ -403,7 +424,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 1,
@@ -439,7 +460,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 2,
@@ -485,7 +506,7 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			Filesystem: FilesystemGuardrailConfig{
 				EnforceWorkspaceJail: true,
 				AllowedPaths:         []string{"."},
-				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
 				MaxConcurrentWorkers: 3,
@@ -658,15 +679,34 @@ func (c *Config) String() string {
 // It encapsulates admin checks across c.Security.AdminUserIDs (canonical gateway admin list)
 // and c.Telegram.AdminUserIDs (backward-compatible override).
 // Safely parses numeric string IDs while supporting string comparison for non-numeric platforms.
-// Returns true if no admin IDs are configured anywhere (open local-dev mode).
+// If no admin IDs are configured anywhere, it fails closed (returns false) unless
+// AllowUnauthenticatedLocalDev is explicitly enabled for non-remote channels.
 func (c *Config) IsAdmin(senderID string) bool {
-	if c == nil {
-		return true
+	return c.IsAdminForProvider(senderID, "")
+}
+
+// IsAdminForProvider checks whether the given senderID has administrator privileges for a specific provider.
+// Remote messaging channels (e.g. telegram, discord) ALWAYS fail closed if no admin IDs are configured,
+// regardless of AllowUnauthenticatedLocalDev.
+func (c *Config) IsAdminForProvider(senderID string, provider string) bool {
+	if c == nil || senderID == "" {
+		return false
 	}
-	if len(c.Security.AdminUserIDs) == 0 && len(c.Telegram.AdminUserIDs) == 0 {
-		return true
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	adminProvider := provider
+	if adminProvider == "" {
+		adminProvider = "telegram"
 	}
-	if senderID == "" {
+	hasProviderAdmins := len(c.Telegram.AdminUserIDs) > 0
+	if adminProvider == "zalo" {
+		hasProviderAdmins = len(c.Zalo.AdminUserIDs) > 0
+	}
+	hasAdmins := len(c.Security.AdminUserIDs) > 0 || hasProviderAdmins
+	if !hasAdmins {
+		isRemoteProvider := provider == "telegram" || provider == "zalo" || provider == "discord"
+		if !isRemoteProvider && c.Security.AllowUnauthenticatedLocalDev {
+			return true
+		}
 		return false
 	}
 	id, err := strconv.ParseInt(senderID, 10, 64)
@@ -675,12 +715,29 @@ func (c *Config) IsAdmin(senderID string) bool {
 			return true
 		}
 	}
-	for _, admin := range c.Telegram.AdminUserIDs {
-		if (err == nil && admin == id) || strconv.FormatInt(admin, 10) == senderID {
-			return true
+	if adminProvider == "telegram" {
+		for _, admin := range c.Telegram.AdminUserIDs {
+			if (err == nil && admin == id) || strconv.FormatInt(admin, 10) == senderID {
+				return true
+			}
+		}
+	}
+	if adminProvider == "zalo" {
+		for _, admin := range c.Zalo.AdminUserIDs {
+			if strings.EqualFold(strings.TrimSpace(admin), strings.TrimSpace(senderID)) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// IsSuperAdmin evaluates whether a security principal has global daemon administrative privileges.
+func (c *Config) IsSuperAdmin(principal domain.Principal) bool {
+	if c == nil {
+		return false
+	}
+	return c.IsAdminForProvider(principal.SubjectID, principal.Provider)
 }
 
 // Validate checks required fields and configuration constraints.
@@ -728,6 +785,9 @@ func (c *Config) Validate() error {
 			return errors.New("zalo webhook_url is required when mode is 'webhook'")
 		}
 	}
+	if hasTelegram && hasZalo && c.Telegram.Mode == "webhook" && c.Zalo.Mode == "webhook" {
+		return errors.New("telegram and zalo cannot both use webhook mode on the shared gateway listener; configure one channel for polling")
+	}
 
 	if strings.TrimSpace(c.Storage.DBPath) == "" {
 		return errors.New("storage db_path is required")
@@ -744,7 +804,12 @@ func (c *Config) Validate() error {
 	if c.Storage.HeartbeatIntervalSeconds < 0 {
 		return errors.New("storage heartbeat_interval_seconds cannot be negative")
 	}
-
+	if c.Telegram.SecretToken != "" && len(strings.TrimSpace(c.Telegram.SecretToken)) < 16 {
+		return errors.New("telegram secret_token must have at least 16 characters for security")
+	}
+	if c.Zalo.SecretToken != "" && len(strings.TrimSpace(c.Zalo.SecretToken)) < 16 {
+		return errors.New("zalo secret_token must have at least 16 characters for security")
+	}
 	if c.Logging.Level != "" {
 		lvl := strings.ToLower(strings.TrimSpace(c.Logging.Level))
 		if lvl != "debug" && lvl != "info" && lvl != "warn" && lvl != "warning" && lvl != "error" {

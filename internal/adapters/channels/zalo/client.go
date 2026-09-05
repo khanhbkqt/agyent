@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -345,14 +346,21 @@ func (c *Client) DeleteWebhook(ctx context.Context) error {
 	return c.executeRequest(ctx, "deleteWebhook", nil, nil)
 }
 
-// ParseNumericID extracts a numeric bot ID from string if possible, or returns 0.
+// ParseNumericID preserves provider-native numeric IDs and derives a stable,
+// positive routing ID for providers that expose opaque string bot IDs. The
+// domain session contract currently uses int64 bot identities.
 func ParseNumericID(idStr string) int64 {
+	if id, err := strconv.ParseInt(idStr, 10, 64); err == nil && id > 0 {
+		return id
+	}
 	if idStr == "" {
 		return 0
 	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return 0
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(idStr))
+	id := int64(hasher.Sum64() & uint64(^uint64(0)>>1))
+	if id == 0 {
+		return 1
 	}
 	return id
 }

@@ -1,5 +1,9 @@
 # Context Management Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/context`, plugin/MCP adapters, prompt bootstrap and compactor
+> **Last verified:** 2026-09-05
+
 This document provides a comprehensive technical specification of the **Context Management System** for **`agyent`**. This design clearly distinguishes between **Global Agent Context** and **Workspace Project Context**, integrating architectural insights from OpenClaw and empirical findings with the Antigravity CLI (`agy 1.1.20`).
 
 ---
@@ -64,7 +68,7 @@ flowchart TB
 | :--- | :--- | :--- | :--- |
 | **1. Rules** | Identity, address conventions, data safety, baseline interaction etiquette. | Code architecture (Clean Arch), linters, banned dependencies, commit conventions. | **Hierarchical Stacking:** Global rules load as base $\rightarrow$ Workspace `AGENTS.md` stacks on top as domain constraints. |
 | **2. Skills** | General system skills: Diagnostics, session management, reminder tools. | Project-specific domain runbooks: Staging deployment, database migration scripts. | **Native Progressive Disclosure:** AGY CLI automatically discovers `.agents/skills/<name>/SKILL.md` in workspace and loads full bodies only upon prompt triggers. |
-| **3. Tools / MCP** | **Global Integrations:** Google Calendar, Telegram Bot, Cloud Storage. | **Project Infrastructure:** Local DB Inspector, Docker Compose, API mock servers. | **Dynamic MCP Syncing:** AGY CLI manages MCP servers centrally at `~/.gemini/antigravity/mcp_config.json`. `agyent` dynamically mounts/unmounts project MCP servers on workspace switch. |
+| **3. Tools / MCP** | **Global Integrations:** enabled global plugins. | **Project Infrastructure:** enabled workspace plugins. | **Dynamic MCP Syncing:** AGY CLI currently reads `~/.gemini/antigravity-cli/mcp_config.json`. `agyent` mounts session-keyed MCP servers for an exclusive turn and unmounts them afterward. |
 | **4. Memory / State** | Durable facts: User preferences, working habits, Architectural Decision Records (ADRs). | Project context: Active CWD, git branch, in-progress bugs, task checklist in repo. | **Scoped Isolation:** Workspace reads global memory as needed; project notes never leak across codebases. |
 
 ---
@@ -156,7 +160,7 @@ package ports
 
 import (
     "context"
-    "github.com/khanhbkqt/agyent/internal/core/domain"
+    "agyent/internal/core/domain"
 )
 
 type ContextResolverPort interface {
@@ -166,7 +170,7 @@ type ContextResolverPort interface {
     // DiscoverSkills scans and deduplicates skills from global and workspace skill directories
     DiscoverSkills(ctx context.Context, globalHome string, workspaceDir string) ([]domain.SkillHeader, error)
     
-    // SyncWorkspaceMCP mounts or unmounts project MCP servers into ~/.gemini/antigravity/mcp_config.json
+    // SyncWorkspaceMCP mounts or unmounts project MCP servers for an exclusive turn.
     SyncWorkspaceMCP(ctx context.Context, workspaceDir string, isMount bool) error
 }
 ```
@@ -177,7 +181,10 @@ type ContextResolverPort interface {
 
 Over long-running multi-turn developer sessions, tool outputs, diffs, and conversational turns accumulate rapidly, threatening model context limits (1M on Gemini, 200k on Claude, 128k on GPT).
 
-`agyent` employs an autonomous **Context Compactor Engine** that reduces bloated sessions by **~99%** while maintaining 100% semantic continuity:
+`agyent` employs a **Context Compactor Engine** that can substantially reduce
+long session history. Semantic continuity is an output to evaluate against the
+retained goals, decisions, files, and next steps; it is not guaranteed by a
+compression percentage:
 
 ```
 [Bloated Context >= 70% of MaxContext] (e.g. 800k tokens)

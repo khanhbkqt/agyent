@@ -24,6 +24,13 @@ import (
 // Default sensitive command patterns for balanced mode
 var sensitiveCommandRegex = regexp.MustCompile(`(?i)\b(rm|del|erase|rmdir|rd|git\s+(push|reset|clean)|chmod|chown|sudo|icacls|takeown|curl|wget|nc|ncat|scp|ssh|docker\s+(run|exec|stop|rm)|npm\s+(publish|install\s+-g)|pip\s+install|cargo\s+install|go\s+install|python[0-9.]*\s+-[a-zA-Z]*c|node\s+-[a-zA-Z]*e|powershell|pwsh|cmd\.exe|taskkill|kill)\b`)
 
+// Self-escalation and gateway tampering command patterns (forbidden across all managed presets)
+var selfEscalationRegex = regexp.MustCompile(`(?i)(agyent(\.exe)?\s+(agent|agents|a|security|sec|guardrail|init|config)\b|\.agyent[/\\](agyent\.db|config\.yaml)|\bagyent\.db\b|\b(pkill|killall|taskkill)\s+.*agyent\b)`)
+
+func isSelfEscalationCommand(cmd string) bool {
+	return selfEscalationRegex.MatchString(cmd)
+}
+
 type sessionGrant struct {
 	pattern   string
 	expiresAt time.Time
@@ -214,6 +221,19 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			}
 			break
 		}
+		if isWrite && preset != domain.PresetUnrestricted {
+			content, _ := req.Args["CodeContent"].(string)
+			if content == "" {
+				content, _ = req.Args["ReplacementContent"].(string)
+			}
+			if isSelfEscalationCommand(content) {
+				decision = domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   "🛡️ [Security Gate - Staged Privilege Escalation Blocked]: Attempted to write code containing forbidden references to agyent gateway database, configuration, or administrative commands",
+				}
+				break
+			}
+		}
 		ws := req.WorkspaceDir
 		if ws == "" && hasTurn {
 			ws = turnCtx.WorkspaceDir
@@ -366,6 +386,14 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
 			Reason:   "🛡️ [Security Preset: Read Only]: Shell command execution is completely disabled",
+		}, nil
+	}
+
+	// 1.5. Check Anti-Self-Escalation & Gateway Tampering (Forbidden across all managed presets)
+	if isSelfEscalationCommand(cmd) {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   fmt.Sprintf("🛡️ [Security Gate - Privilege Escalation Blocked]: Execution of administrative command '%s' to alter agyent configuration or security presets is strictly forbidden from an AI agent session", cmd),
 		}, nil
 	}
 
@@ -590,6 +618,9 @@ func (m *Manager) RegisterActiveTurn(turn domain.TurnSecurityContext) {
 	if turn.CreatedAt.IsZero() {
 		turn.CreatedAt = time.Now()
 	}
+	if turn.TurnID != "" {
+		m.activeTurns[turn.TurnID] = turn
+	}
 	if turn.ConversationID != "" {
 		m.activeTurns[turn.ConversationID] = turn
 	}
@@ -609,6 +640,39 @@ func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 	if workspaceDir != "" {
 		delete(m.activeWorkspaces, canonicalizeWorkspacePath(workspaceDir))
 	}
+}
+
+// UnregisterTurnByID removes the active turn association by its unique TurnID,
+// cleaning up all associated conversationID and workspaceDir mappings.
+func (m *Manager) UnregisterTurnByID(turnID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if turnID == "" {
+		return
+	}
+	if turn, ok := m.activeTurns[turnID]; ok {
+		delete(m.activeTurns, turnID)
+		if turn.ConversationID != "" {
+			delete(m.activeTurns, turn.ConversationID)
+		}
+		if turn.WorkspaceDir != "" {
+			delete(m.activeWorkspaces, canonicalizeWorkspacePath(turn.WorkspaceDir))
+		}
+	}
+}
+
+// ResolveTurnByID retrieves the active TurnSecurityContext directly by TurnID.
+func (m *Manager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if turnID != "" {
+		if t, ok := m.activeTurns[turnID]; ok {
+			return t, true
+		}
+	}
+	return domain.TurnSecurityContext{}, false
 }
 
 // ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.

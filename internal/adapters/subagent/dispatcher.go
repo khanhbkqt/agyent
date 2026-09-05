@@ -18,18 +18,20 @@ import (
 
 // SubagentDispatcher coordinates the background subagent worker pool, task queue, and lifecycle.
 type SubagentDispatcher struct {
-	storage    ports.SubagentRepository
-	eventBus   ports.EventBusPort
-	config     config.SubagentConfig
-	binaryPath string
-	registry   *taskRegistry
-	executor   *taskExecutor
-	taskQueue  chan domain.SubagentTask
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	started    bool
-	mu         sync.Mutex
+	storage      ports.SubagentRepository
+	eventBus     ports.EventBusPort
+	config       config.SubagentConfig
+	binaryPath   string
+	registry     *taskRegistry
+	executor     *taskExecutor
+	taskQueue    chan domain.SubagentTask
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	started      bool
+	mu           sync.RWMutex
+	policyEngine ports.PolicyEngine
+	storagePort  ports.StoragePort
 }
 
 // NewDispatcher constructs a new SubagentDispatcher instance.
@@ -62,6 +64,35 @@ func NewDispatcher(
 	}
 }
 
+// SetSecurityManager injects the security manager port for subagent turn registration.
+func (d *SubagentDispatcher) SetSecurityManager(sec ports.SecurityManagerPort) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.executor != nil {
+		d.executor.securityManager = sec
+	}
+}
+
+// SetPolicyEngine injects the policy engine port for subagent execution authorization.
+func (d *SubagentDispatcher) SetPolicyEngine(p ports.PolicyEngine) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.policyEngine = p
+	if d.executor != nil {
+		d.executor.policy = p
+	}
+}
+
+// SetStoragePort injects the full storage port for project and agent resolution.
+func (d *SubagentDispatcher) SetStoragePort(s ports.StoragePort) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.storagePort = s
+	if d.executor != nil {
+		d.executor.storage = s
+	}
+}
+
 // Start launches the background worker pool consumers.
 func (d *SubagentDispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()
@@ -73,6 +104,12 @@ func (d *SubagentDispatcher) Start(ctx context.Context) error {
 
 	d.ctx, d.cancel = context.WithCancel(ctx)
 	d.started = true
+
+	if d.storage != nil {
+		if recCount, err := d.storage.ReconcileStaleCancellingTasks(ctx); err == nil && recCount > 0 {
+			slog.Info("reconciled stale subagent tasks on startup", "count", recCount)
+		}
+	}
 
 	for i := 0; i < d.config.MaxConcurrentWorkers; i++ {
 		d.wg.Add(1)
@@ -106,30 +143,38 @@ func (d *SubagentDispatcher) pollerLoop() {
 }
 
 func (d *SubagentDispatcher) enqueuePendingTasks() {
+	d.mu.RLock()
+	if !d.started || d.ctx == nil {
+		d.mu.RUnlock()
+		return
+	}
+	runCtx := d.ctx
+	d.mu.RUnlock()
+
 	if d.storage == nil {
 		return
 	}
-	pendingTasks, err := d.storage.ListPendingSubagentTasks(d.ctx, 10)
+	pendingTasks, err := d.storage.ListPendingSubagentTasks(runCtx, 10)
 	if err != nil || len(pendingTasks) == 0 {
 		return
 	}
 
 	for _, task := range pendingTasks {
-		if !d.registry.Has(task.ID) {
-			tCtx := &taskRuntimeContext{
-				task:      task,
-				startedAt: time.Now(),
-			}
-			d.registry.Register(tCtx)
+		tCtx := &taskRuntimeContext{
+			task:      task,
+			startedAt: time.Now(),
+		}
+		if d.registry.TryRegister(tCtx) {
 
 			if d.eventBus != nil {
-				d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
+				d.eventBus.AsyncEmit(runCtx, domain.NewEvent(domain.EventSubagentDispatched, domain.SubagentEventPayload{Task: task}))
 			}
 
 			select {
 			case d.taskQueue <- task:
 			default:
-				// Queue is full, will retry next tick
+				// Queue is full, rollback registration so next tick can re-evaluate
+				d.registry.Delete(task.ID)
 			}
 		}
 	}
@@ -144,7 +189,6 @@ func (d *SubagentDispatcher) Stop(ctx context.Context) error {
 	}
 	d.started = false
 	d.cancel()
-	close(d.taskQueue)
 	d.mu.Unlock()
 
 	// Wait for workers to drain or context timeout
@@ -166,12 +210,11 @@ func (d *SubagentDispatcher) Stop(ctx context.Context) error {
 
 // DispatchTask enqueues a new background task and returns the assigned TaskID immediately (< 1ms).
 func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.SubagentTask) (string, error) {
-	d.mu.Lock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	if !d.started {
-		d.mu.Unlock()
 		return "", errors.New("subagent dispatcher is not running or has been stopped")
 	}
-	d.mu.Unlock()
 
 	if task.ID == "" {
 		task.ID = generateTaskID()
@@ -206,6 +249,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 	if task.WorkspaceMode == "" {
 		task.WorkspaceMode = "share"
 	}
+	if task.WorkspaceMode != "share" && task.WorkspaceMode != "scratch" && task.WorkspaceMode != "persona" {
+		return "", fmt.Errorf("unsupported workspace_mode %q", task.WorkspaceMode)
+	}
 	if task.CallbackMode == "" {
 		task.CallbackMode = domain.CallbackNotifyUser
 	}
@@ -223,7 +269,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 		task:      task,
 		startedAt: time.Now(),
 	}
-	d.registry.Register(tCtx)
+	if !d.registry.TryRegister(tCtx) {
+		return "", fmt.Errorf("task %s is already queued", task.ID)
+	}
 
 	// 3. Emit Dispatched Event
 	if d.eventBus != nil {
@@ -239,8 +287,9 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 			"agent", task.AgentName,
 		)
 	default:
-		slog.Warn("subagent task queue full, spawning immediate worker goroutine", "task_id", task.ID)
-		go d.runTask(task)
+		// Queue full: rollback reservation, task remains PENDING in SQLite for poller pickup
+		d.registry.Delete(task.ID)
+		slog.Warn("subagent task queue full, task retained as PENDING in database for poller", "task_id", task.ID)
 	}
 
 	return task.ID, nil
@@ -248,9 +297,20 @@ func (d *SubagentDispatcher) DispatchTask(ctx context.Context, task domain.Subag
 
 // GetTask queries current task state and live progress metadata.
 func (d *SubagentDispatcher) GetTask(ctx context.Context, taskID string) (*domain.SubagentTask, error) {
+	return d.GetTaskScoped(ctx, "", taskID)
+}
+
+// GetTaskScoped queries task state ensuring it matches sessionKey.
+func (d *SubagentDispatcher) GetTaskScoped(ctx context.Context, sessionKey, taskID string) (*domain.SubagentTask, error) {
 	if tCtx, ok := d.registry.Get(taskID); ok {
 		snap := tCtx.snapshot()
+		if sessionKey != "" && snap.ParentSessionKey != sessionKey {
+			return nil, fmt.Errorf("%w: task %s does not belong to session %s", ports.ErrNotFound, taskID, sessionKey)
+		}
 		return &snap, nil
+	}
+	if sessionKey != "" {
+		return d.storage.GetSubagentTaskScoped(ctx, sessionKey, taskID)
 	}
 	return d.storage.GetSubagentTask(ctx, taskID)
 }
@@ -271,7 +331,12 @@ func (d *SubagentDispatcher) ListTasks(ctx context.Context, sessionKey string, l
 
 // SendTaskInput resumes a sub-agent waiting for clarification (WAITING_FOR_INPUT).
 func (d *SubagentDispatcher) SendTaskInput(ctx context.Context, taskID string, input string) error {
-	task, err := d.GetTask(ctx, taskID)
+	return d.SendTaskInputScoped(ctx, "", taskID, input)
+}
+
+// SendTaskInputScoped resumes a sub-agent waiting for clarification, scoped by sessionKey.
+func (d *SubagentDispatcher) SendTaskInputScoped(ctx context.Context, sessionKey, taskID, input string) error {
+	task, err := d.GetTaskScoped(ctx, sessionKey, taskID)
 	if err != nil {
 		return err
 	}
@@ -280,13 +345,74 @@ func (d *SubagentDispatcher) SendTaskInput(ctx context.Context, taskID string, i
 		return fmt.Errorf("task %s is in state %s, not WAITING_FOR_INPUT", taskID, task.Status)
 	}
 
-	// Launch continuation turn in background
-	go d.resumeTask(*task, input)
+	// 1. CAS transition in SQLite to PENDING
+	transitioned, err := d.storage.TransitionTaskStatus(ctx, task.ID, domain.TaskStatusWaitingInput, domain.TaskStatusPending)
+	if err != nil {
+		return err
+	}
+	if !transitioned {
+		return fmt.Errorf("task %s is not in WAITING_FOR_INPUT state", taskID)
+	}
+
+	// 2. Update task prompt with input
+	task.Prompt = input
+	task.Status = domain.TaskStatusPending
+	task.UpdatedAt = time.Now()
+	if err := d.storage.SaveSubagentTask(ctx, task); err != nil {
+		return fmt.Errorf("failed to save resumed subagent task: %w", err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if !d.started {
+		return errors.New("subagent dispatcher is not running or has been stopped")
+	}
+
+	// 3. Pre-register in registry with continuation turn
+	tCtx := &taskRuntimeContext{
+		task:           *task,
+		startedAt:      time.Now(),
+		conversationID: task.SubConversationID,
+	}
+	if !d.registry.TryRegister(tCtx) {
+		return fmt.Errorf("task %s is already queued", task.ID)
+	}
+
+	// 4. Enqueue into worker pool
+	select {
+	case d.taskQueue <- *task:
+		slog.Info("subagent continuation task enqueued", "task_id", task.ID, "session_key", task.ParentSessionKey)
+	default:
+		d.registry.Delete(task.ID)
+		slog.Warn("subagent task queue full on resume, task retained as PENDING for poller", "task_id", task.ID)
+	}
 	return nil
 }
 
-// CancelTask forcefully halts a running task and tears down the associated process tree.
+// CancelTask forcefully halts a running task and tears down the associated process tree using CAS state transition.
 func (d *SubagentDispatcher) CancelTask(ctx context.Context, taskID string) error {
+	return d.CancelTaskScoped(ctx, "", taskID)
+}
+
+// CancelTaskScoped halts a running task scoped by sessionKey.
+func (d *SubagentDispatcher) CancelTaskScoped(ctx context.Context, sessionKey, taskID string) error {
+	// 1. CAS transition in SQLite to CANCELLING
+	var transitioned bool
+	var err error
+	if sessionKey != "" {
+		transitioned, err = d.storage.TransitionTaskToCancellingScoped(ctx, sessionKey, taskID)
+	} else {
+		transitioned, err = d.storage.TransitionTaskToCancelling(ctx, taskID)
+	}
+	if err != nil {
+		return err
+	}
+	if !transitioned {
+		// Task is already terminal or cancelled; idempotent success
+		return nil
+	}
+
+	// 2. Interrupt in-memory task context and kill running process tree
 	if tCtx, ok := d.registry.Get(taskID); ok {
 		tCtx.mu.Lock()
 		if tCtx.cancel != nil {
@@ -296,7 +422,8 @@ func (d *SubagentDispatcher) CancelTask(ctx context.Context, taskID string) erro
 		tCtx.setCancelled()
 	}
 
-	if err := d.storage.UpdateSubagentTaskCancelled(ctx, taskID); err != nil {
+	// 3. Atomically transition in SQLite from CANCELLING to CANCELLED
+	if err := d.storage.TransitionTaskToCancelled(ctx, taskID); err != nil {
 		return err
 	}
 
@@ -306,7 +433,7 @@ func (d *SubagentDispatcher) CancelTask(ctx context.Context, taskID string) erro
 		}
 	}
 
-	slog.Info("subagent task cancelled", "task_id", taskID)
+	slog.Info("subagent task cancelled", "task_id", taskID, "session_key", sessionKey)
 	return nil
 }
 
@@ -317,10 +444,7 @@ func (d *SubagentDispatcher) workerLoop(workerID int) {
 		select {
 		case <-d.ctx.Done():
 			return
-		case task, ok := <-d.taskQueue:
-			if !ok {
-				return
-			}
+		case task := <-d.taskQueue:
 			d.runTask(task)
 		}
 	}
@@ -336,6 +460,15 @@ func (d *SubagentDispatcher) runTask(task domain.SubagentTask) {
 		d.registry.Register(tCtx)
 	}
 	defer d.registry.Delete(task.ID)
+
+	// Transition status to RUNNING via CAS
+	if d.storage != nil {
+		transitioned, err := d.storage.TransitionTaskStatus(d.ctx, task.ID, domain.TaskStatusPending, domain.TaskStatusRunning)
+		if err != nil || !transitioned {
+			slog.Info("subagent task status transition to RUNNING skipped or cancelled", "task_id", task.ID, "err", err)
+			return
+		}
+	}
 
 	// Update status to RUNNING
 	_ = d.storage.UpdateSubagentTaskProgress(d.ctx, task.ID, 0, "", "Starting subagent worker...")
@@ -360,39 +493,14 @@ func (d *SubagentDispatcher) runTask(task domain.SubagentTask) {
 	d.handleTurnResult(tCtx, res, err)
 }
 
-func (d *SubagentDispatcher) resumeTask(task domain.SubagentTask, input string) {
-	tCtx := &taskRuntimeContext{
-		task:           task,
-		startedAt:      time.Now(),
-		conversationID: task.SubConversationID,
-	}
-	d.registry.Register(tCtx)
-	defer d.registry.Delete(task.ID)
-
-	_ = d.storage.UpdateSubagentTaskProgress(d.ctx, task.ID, task.CurrentStep+1, "", "Resuming with input...")
-
-	onEvent := func(evt agy.StreamEvent) {
-		if evt.Event == "step_update" && evt.StepUpdate != nil {
-			step := evt.StepUpdate
-			name := step.ToolName
-			if name == "" && step.ToolInfo != nil {
-				name = step.ToolInfo.Name
-			}
-			if step.StepType == "tool" && step.State == "ACTIVE" {
-				_ = d.storage.UpdateSubagentTaskProgress(d.ctx, task.ID, step.StepIndex, name, fmt.Sprintf("Executing tool %s...", name))
-				if d.eventBus != nil {
-					d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentProgress, domain.SubagentEventPayload{Task: tCtx.snapshot()}))
-				}
-			}
-		}
-	}
-
-	res, err := d.executor.executeTurn(d.ctx, tCtx, input, task.SubConversationID, onEvent)
-	d.handleTurnResult(tCtx, res, err)
-}
-
 func (d *SubagentDispatcher) handleTurnResult(tCtx *taskRuntimeContext, res *TurnResult, err error) {
 	taskID := tCtx.task.ID
+	// Cancellation wins every race with process completion. The SQL updates are
+	// guarded too, but avoiding an in-memory/event transition prevents users
+	// from receiving a false "completed" notification for a cancelled task.
+	if tCtx.snapshot().Status == domain.TaskStatusCancelled {
+		return
+	}
 
 	if res == nil {
 		errMsg := "unknown execution error"
@@ -440,7 +548,9 @@ func (d *SubagentDispatcher) handleTurnResult(tCtx *taskRuntimeContext, res *Tur
 }
 
 func generateTaskID() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("task-%x", time.Now().UnixNano())
+	}
 	return fmt.Sprintf("task-%s", hex.EncodeToString(b))
 }

@@ -50,6 +50,7 @@ class TabSession:
         self.last_active = time.time()
         self.lock = threading.Lock()
         self.is_busy = False
+        self.busy_start = 0.0
 
         # Listen for popup pages / new tabs
         try:
@@ -58,15 +59,26 @@ class TabSession:
             pass
 
     @contextlib.contextmanager
-    def busy_guard(self):
-        """Context manager to mark session as busy and protect against concurrent reaping or closing."""
+    def busy_guard(self, timeout_sec: float = 60.0):
+        """
+        Context manager to mark session as busy and protect against concurrent reaping or closing.
+        Applies a per-action timeout to active context/pages so hanging scripts do not run indefinitely.
+        """
         with self.lock:
             self.is_busy = True
+            self.busy_start = time.time()
             self.touch()
             try:
+                if self.context:
+                    try:
+                        self.context.set_default_timeout(int(timeout_sec * 1000))
+                        self.context.set_default_navigation_timeout(int(timeout_sec * 1000))
+                    except Exception:
+                        pass
                 yield self
             finally:
                 self.is_busy = False
+                self.busy_start = 0.0
                 self.touch()
 
     def _on_new_page_created(self, page: Any) -> None:
@@ -183,16 +195,21 @@ class BrowserManager:
                 cls._instance = cls()
             return cls._instance
 
-    def reap_idle_sessions(self, idle_timeout_sec: float = 1200.0) -> int:
+    def reap_idle_sessions(self, idle_timeout_sec: float = 1200.0, stuck_timeout_sec: float = 180.0) -> int:
         """
         Closes sessions that have remained inactive longer than idle_timeout_sec (default: 20 mins).
-        Checks if session is busy and acquires session lock non-blockingly to prevent reaping active sessions mid-execution.
+        Also detects and reaps stuck sessions whose action has hung longer than stuck_timeout_sec (default: 3 mins),
+        forcefully terminating any hanging browser processes.
         """
         now = time.time()
         stale_ids = []
+        stuck_ids = []
         with self._lock:
             for sid, sess in list(self.sessions.items()):
                 if sess.is_busy:
+                    if sess.busy_start > 0 and (now - sess.busy_start > stuck_timeout_sec):
+                        sys.stderr.write(f"[CAMOUFOX_MANAGER] Detected stuck busy session {sid} (busy for {now - sess.busy_start:.1f}s > {stuck_timeout_sec}s)\n")
+                        stuck_ids.append(sid)
                     continue
                 if now - sess.last_active > idle_timeout_sec:
                     # Attempt non-blocking lock acquisition to ensure no background task is using it
@@ -205,6 +222,16 @@ class BrowserManager:
                             sess.lock.release()
 
         reaped_count = 0
+        # 1. Force kill and cleanup stuck sessions
+        for sid in stuck_ids:
+            sys.stderr.write(f"[CAMOUFOX_MANAGER] Force killing stuck session {sid}\n")
+            sess = self.sessions.get(sid)
+            if sess:
+                self.profile_vault.kill_profile_processes(sess.profile_name, agent_name=sess.agent_name, workspace_dir=sess.workspace_dir)
+            if self.close_session(sid):
+                reaped_count += 1
+
+        # 2. Reaping normal idle stale sessions
         for sid in stale_ids:
             sys.stderr.write(f"[CAMOUFOX_MANAGER] Reaping idle session {sid}\n")
             if self.close_session(sid):
@@ -409,8 +436,12 @@ class BrowserManager:
             with self._lock:
                 if lookup_key in self.profile_to_session:
                     return self.profile_to_session[lookup_key]
-            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} (agent: {clean_agent}) actively locked, falling back to ephemeral profile\n")
-            clean_profile = f"{clean_profile}_eph_{uuid.uuid4().hex[:6]}"
+            # Not owned by this manager in memory: lock is held by an orphan process from a crashed/timed-out turn!
+            sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} (agent: {clean_agent}) actively locked by orphan process. Force-cleaning zombie...\n")
+            self.profile_vault.clean_stale_locks(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir, force=True)
+            if self.profile_vault.is_profile_locked(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir):
+                sys.stderr.write(f"[CAMOUFOX_MANAGER] Warning: Profile {clean_profile} still locked after force clean, falling back to ephemeral profile\n")
+                clean_profile = f"{clean_profile}_eph_{uuid.uuid4().hex[:6]}"
 
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
         user_data_dir = self.profile_vault.get_user_data_dir(clean_profile, agent_name=clean_agent, workspace_dir=workspace_dir)
@@ -609,6 +640,12 @@ class BrowserManager:
                         session._browser_cm.__exit__(None, None, None)
                     except Exception:
                         pass
+
+                # Force cleanup of any lingering browser processes for this profile
+                try:
+                    self.profile_vault.kill_profile_processes(session.profile_name, agent_name=session.agent_name, workspace_dir=session.workspace_dir)
+                except Exception:
+                    pass
 
                 sys.stderr.write(f"[CAMOUFOX_MANAGER] Closed session {session_id} (agent: {session.agent_name})\n")
                 return True

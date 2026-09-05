@@ -6,6 +6,19 @@ import (
 	"agyent/internal/core/domain"
 )
 
+// InboundAuthorizer evaluates whether a sender may enter a channel adapter
+// before the adapter creates session state or materializes inbound media.
+type InboundAuthorizer interface {
+	AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error)
+}
+
+// InboundSessionAuthorizer can use an existing session's active agent during
+// admission. Adapters keep the smaller InboundAuthorizer dependency for tests
+// and simple implementations.
+type InboundSessionAuthorizer interface {
+	AuthorizeInboundSession(ctx context.Context, senderID, bindAgent, chatType, sessionKey string) (bool, error)
+}
+
 // ChannelPort defines the communication abstraction for messaging platforms (e.g. Telegram, Discord, Slack).
 type ChannelPort interface {
 	// Name returns the identifier of the messaging adapter (e.g., "telegram").

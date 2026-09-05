@@ -1,190 +1,279 @@
-# AGENTS.md - Repository Guide & Agent Engineering Directives
+# AGENTS.md — agyent engineering contract
 
-Welcome to **agyent** (`agy-agent`). This document serves as the primary entry point and architectural blueprint for AI agents and human contributors developing or extending this repository.
+This file is the shortest reliable entry point for coding agents. Read it before
+changing the repository, then open only the component documents needed for the
+task.
 
----
+## 1. Instruction and documentation authority
 
-## 1. Project Overview & Mission
+Apply instructions in this order:
 
-**`agyent`** is a high-performance, single-binary Personal AI Assistant Gateway and Multi-Agent Harness written in **Go (Golang)**. It connects real-time communication channels (Telegram Bot, Topics, Groups, Discord) directly to the **Antigravity CLI (`agy`)** running locally on a user's workstation or VPS.
+1. The user's current request.
+2. The nearest applicable `AGENTS.md` from the repository root to the file being
+   changed.
+3. Canonical and normative documents listed in `docs/README.md`.
+4. Current code, tests, schemas, and generated command help.
+5. Reference documents.
+6. Proposed and historical documents under `docs/plans/`.
 
-### Core Value Propositions:
-- **Zero-CGO & Single Static Binary:** Extreme resource efficiency (<10MB RAM at idle), instant cold starts, and zero native library dependencies.
-- **Autonomous Tool-Calling Brain:** Harnesses the full power of Antigravity CLI (`agy`) for terminal commands, file modifications, web browsing, subagents, and Model Context Protocol (MCP) servers.
-- **Prefix KV-Cache Optimization:** Strict prompt ordering (Levels 0–4) enabling 85–95% cache hit rates on Gemini models (0.25x Cache Read pricing).
-- **Self-Learning & Continuous Evolution:** Background reflection engine that autonomously records lessons, user preferences, and Architectural Decision Records (ADRs) into persistent memory.
+Code and executable tests are authoritative when a reference document has
+drifted. Do not implement a roadmap item merely because a historical plan
+describes it. When behavior changes, update the relevant canonical/reference
+document in the same change.
 
----
+## 2. Start here
 
-## 2. System Architecture (Hexagonal / Ports & Adapters)
+Before editing:
 
-The codebase strictly adheres to Hexagonal Architecture (Clean Ports and Adapters) to ensure complete testability and modular extensibility:
+1. Run `git status --short`; preserve unrelated user changes.
+2. Read `docs/README.md` and `docs/architecture.md`.
+3. Use `.agents/skills/agyent-engineering-workflow/SKILL.md` to select exactly one
+   workflow graph for debug, bugfix, change, or new-feature work.
+4. Trace the current behavior from composition root to port to implementation and
+   tests. Prefer `rg` and `go list` over assumptions from prose.
+5. State the contract and invariants affected by the change.
+6. Choose the smallest verification set from `docs/engineering-method.md`.
 
-```
-                  +-----------------------------------+
-                  |        CLI Entrypoint             |
-                  |         (cmd/agyent/)             |
-                  +-----------------+-----------------+
-                                    |
-+-----------------------------------v-----------------------------------+
-|                     internal/core/engine/                             |
-|          Central Orchestration, Slash Commands, Lifecycle GC          |
-|                                                                       |
-|  +--------------------+  +--------------------+  +-----------------+  |
-|  |  Debouncer/Queue   |  |   Lock Manager     |  |   EventBus      |  |
-|  | (core/debouncer/)  |  | (core/concurrency/)|  | (core/eventbus/)|  |
-|  +--------------------+  +--------------------+  +-----------------+  |
-+-----------------------------------+-----------------------------------+
-                                    |
-          +-------------------------+-------------------------+
-          | Implements Core Interfaces (internal/core/ports/) |
-          v                                                   v
-+-------------------+ +--------------------+ +--------------------+ +--------------------+
-| internal/adapters | | internal/adapters  | | internal/adapters  | | internal/adapters  |
-| /channels/telegram| |   /harness/agy/    | |  /storage/sqlite/  | | /evolution/        |
-|  Telegram Bot API | | AGY Subprocess JSON| | Pure-Go SQLite WAL | | Self-Reflection &  |
-|  Router & Throttle| | Stream & Watchdog  | | Dual-Pool Engine   | | 4D Conflict Merge  |
-+-------------------+ +--------------------+ +--------------------+ +--------------------+
-```
+For runtime session hangs, timeouts, or SQLite triage, use
+`.agents/skills/agyent-session-debugger/SKILL.md`.
 
----
+## 3. Mandatory workflow routing
 
-## 3. Directory & Module Map
+Every concrete repository diagnosis or mutation follows one validated graph in
+`.agents/workflows/`:
 
-```
-agyent/
-├── cmd/agyent/               # Main CLI executable entrypoints
-│   ├── main.go               # Root entrypoint
-│   ├── root.go               # Cobra root command setup & global flags
-│   ├── init.go               # 'agyent init' interactive setup wizard
-│   ├── run.go                # 'agyent run' gateway daemon runner
-│   ├── doctor.go             # 'agyent doctor' / 'docter' diagnostic & quota triage
-│   ├── update.go             # 'agyent update' / 'upgrade' self-updater & notices
-│   ├── hook.go               # 'agyent hook-bridge' native hook bridge
-│   ├── register_commands.go  # 'agyent register-commands' Telegram command sync
-│   └── version.go            # 'agyent version' build metadata
-│
-├── internal/
-│   ├── config/               # Configuration structs, validation & YAML persistence
-│   ├── logger/               # Structured logging setup via Go 'log/slog'
-│   ├── wizard/               # Interactive terminal wizard (charmbracelet/huh)
-│   ├── doctor/               # Modular diagnostic engine, health checks & auto-fix
-│   ├── updater/              # Self-updater, GitHub releases & version notices
-│   │
-│   ├── core/                 # Core Domain & Pure Business Logic (No External Drivers)
-│   │   ├── domain/           # Canonical models (Agent, User, Session, Conversation, Audit, Security)
-│   │   ├── ports/            # Port interfaces for Storage, Channel, Runner, EventBus, Security
-│   │   ├── engine/           # Central orchestrator, slash commands, prompt assembly, and GC
-│   │   ├── debouncer/        # Sliding window message debouncing & batch coalescing
-│   │   ├── concurrency/      # FIFO session mutexes and cross-platform OS FileLocks
-│   │   └── eventbus/         # In-memory async event publisher/subscriber
-│   │
-│   └── adapters/             # Secondary Adapters implementing Ports
-│       ├── channels/telegram # Telegram bot router, live throttler, HITL coordinator
-│       ├── harness/agy/      # Subprocess JSON streaming, watcher, and OS Job Objects
-│       ├── storage/sqlite/   # Pure-Go SQLite (modernc.org/sqlite) with WAL & FlexTime
-│       │   └── migrations/   # Versioned up/down SQL schema migrations (000001..000004)
-│       ├── context/          # 5-Tier context resolver, progressive skills index, temporal tags
-│       ├── evolution/        # Reflection engine, heuristic filter, 4D memory conflict resolver
-│       ├── security/         # Universal Security Gateway (pathjail, network, sanitizer, subagents, ipc)
-│       ├── mcp/              # Global MCP JSON config syncer and zombie cleanup
-│       └── plugin/           # Plugin manifest validation & installation
-│
-├── builtin/plugins/          # Pre-packaged plug-and-play capability plugins
-│   ├── browser-camoufox/     # Camoufox anti-detect web browsing & extraction
-│   ├── database-sqlite/      # SQLite database schema inspection & query execution
-│   └── system-diagnostics/   # Host health metrics, process inspection & disk I/O
-│
-├── docs/                     # Comprehensive Architecture & Specification Documentation
-│   ├── architecture.md       # 4-Tier system architecture overview
-│   ├── extensible-architecture.md # Microkernel, Ports/Adapters & Event Hooks
-│   ├── lifecycle-and-bootstrap.md # Genesis Onboarding & Agent Lifecycle
-│   ├── message-pipeline.md   # Message routing, debouncing & media sync
-│   ├── multi-conversation-architecture.md # Flat conversation model & lifecycle GC
-│   ├── multi-project.md      # Dual-scope context & codebase isolation
-│   ├── storage-and-config.md # SQLite schema, WAL mode & configuration reference
-│   ├── agy-cli-harness.md    # Subprocess execution, snapshot diff & watchdog
-│   ├── agy-streaming-protocol.md # Real-time delta streaming specification
-│   ├── context-management-architecture.md # 5-Tier context hierarchy & skills
-│   ├── model-and-effort-selection-architecture.md # Dynamic Model & Reasoning Effort Selection
-│   ├── agent-self-learning-and-evolution-architecture.md # Autonomous reflection & 4D memory
-│   ├── security-and-guardrails-architecture.md # Universal Security Gateway & Guardrails
-│   ├── multi-account-architecture.md # Multi-Account Profile Virtualization & Auto-Cooldown Failover
-│   ├── agent-ownership-and-multi-bot-architecture.md # Multi-Bot Gateway & Per-Agent Ownership (RBAC)
-│   └── plans/                # Master roadmap & historical milestone execution logs
-│
-├── scripts/                  # Helper scripts & systemd service units
-│   ├── deploy/               # systemd unit files (`agyent.service`)
-│   └── benchmark_tokens.py   # Benchmark simulation suite for token & KV-cache metrics
-│
-├── go.mod / go.sum           # Go module dependencies
-├── Makefile                  # Build, test, lint, and packaging shortcuts
-└── LICENSE                   # MIT License
+- `debug.json`: diagnosis only; every node is read-only.
+- `bugfix.json`: reproduce, prove root cause, fix, verify, sync docs, review.
+- `change.json`: map impact and compatibility before modifying existing behavior.
+- `new-feature.json`: acceptance criteria, architecture and ADR decision before
+  implementation.
+
+Each graph node has a subordinate system prompt, guide, named skills/tools,
+inputs, outputs, mutation capability, acceptance gate, and transitions. Mirror
+the selected nodes in the active task plan and do not skip a gate. A graph never
+expands user authorization.
+
+Bugfix, change, and feature graphs require independent read-only reviews for
+architecture, correctness, and security/systems risk. Debug requires independent
+evidence and architecture review. `P0`, `P1`, and `P2` findings block completion;
+remediation loops through verification, documentation sync, and full re-review.
+Follow `docs/engineering-workflow-graphs.md` and the graph guide.
+
+## 4. What the system is today
+
+`agyent` is a Go 1.25 personal-assistant gateway. The current production channel
+adapter is Telegram. Other channels are extension points behind `ChannelPort` and
+`CompositeChannelMux`; do not describe them as implemented unless an adapter
+exists under `internal/adapters/channels/`.
+
+The primary runtime path is:
+
+```text
+Telegram adapter
+  -> canonical message + admission checks
+  -> debouncer
+  -> core engine + session lock
+  -> context/session/agent/project resolution
+  -> policy engine
+  -> execution service (authorized chokepoint)
+  -> AGY harness
+  -> stream events
+  -> EventBus
+  -> Telegram delivery throttler
 ```
 
----
+The composition root is `cmd/agyent/run.go`. It wires SQLite, EventBus, locks,
+AGY harness, Telegram, authorization, execution, security IPC, context/plugins,
+workspace management, scheduler, subagents, and evolution.
 
-## 4. Key Engineering Invariants & Coding Rules
+## 5. Package boundaries
 
-When contributing or modifying code, agents **must adhere** to the following non-negotiable standards:
+The repository follows ports and adapters with a pragmatic application core:
 
-### 4.1. Zero-CGO & Pure-Go SQLite
-- **Never introduce CGO dependencies.** Always import `modernc.org/sqlite`.
-- Always configure SQLite in WAL mode: `_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)`.
-- Use the `FlexTime` custom scanner in `internal/adapters/storage/sqlite/helpers.go` when scanning timestamps to safely handle both ISO-8601 strings and Unix epoch integers.
-- Use the **Dual-Pool SQLite Engine**: `writeDB` with `MaxOpenConns=1` (eliminating `SQLITE_BUSY` concurrency deadlocks) and `readDB` with `MaxOpenConns=20` for high parallel read throughput.
+- `internal/core/domain`: domain values and state only. It must not import
+  adapters, CLI packages, or infrastructure libraries.
+- `internal/core/ports`: interfaces owned by the core. It may depend on domain;
+  it must not depend on adapter implementations.
+- `internal/core/{auth,concurrency,debouncer,engine,eventbus,execution,retry,scheduler}`:
+  application policy and orchestration. These packages must not import
+  `internal/adapters`.
+- `internal/adapters`: implementations for Telegram, AGY, SQLite, security, MCP,
+  plugins, subagents, context, evolution, and workspaces. Adapters depend inward
+  on domain/ports.
+- `cmd/agyent`: the composition root and CLI surface. Wiring belongs here; domain
+  policy does not.
+- `builtin/plugins`: embedded capability bundles, not Go core packages. Each
+  plugin is independently validated and runs through MCP/security boundaries.
 
-### 4.2. Prefix KV-Cache Preservation & Context Compaction
-- To ensure optimal performance and ~75% cost savings on Gemini cached models, the prompt hierarchy **must maintain strict prefix ordering**:
-  - **Level 0:** Static System Runtime Foundation (`[SYSTEM RUNTIME FOUNDATION]`) at Index 0.
-  - **Level 1:** Global Core Directives (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `AGENTS.md`).
-  - **Level 2:** Workspace Project Directives (`.agents/AGENTS.md`).
-  - **Level 3:** Progressive Skills Index (~60 tokens/skill metadata header).
-  - **Level 4:** Temporal Context Marker, Previous Session Continuity Digest (upon `/compact` or auto-compaction), and Current User Turn.
-- Separate initial turns (`ComposeResolvedTurnPrompt`) from continuation turns (`ComposeContinuationPrompt`) to eliminate redundant directive serialization on subsequent turns.
-- Compacted Continuity Digests **must always reside in Level 4** to preserve Level 0–3 prefix invariance across all agents and sessions.
+Add or change behavior in this order when all layers are involved:
 
-### 4.3. Workspace Isolation & Safe Process Execution
-- Subprocess executions must never pollute the product repository. Pass `--project outside-of-project --add-dir <workspaceDir>` when executing via the AGY harness.
-- On Windows, attach processes to Windows Kernel Job Objects (`CreateJobObject` / `SetInformationJobObject`) to ensure 100% termination of subprocess trees on timeout or cancellation. On Unix, assign a dedicated process group (`Setpgid: true`) and kill via negative PID.
+```text
+domain contract -> core-owned port -> core policy/orchestration
+                -> adapter implementation -> cmd wiring -> tests/docs
+```
 
-### 4.4. Structured Logging
-- Use standard `log/slog` for all daemon and adapter logging.
-- Structure log messages with key-value pairs (e.g. `slog.Info("executing turn", "session_key", key, "agent", agentName)`).
-- Never log sensitive API keys, bot tokens, or credentials in plain text.
+Do not create an interface beside its only adapter solely for symmetry. A port is
+justified when the core owns the contract or a test/implementation boundary needs
+it.
 
-### 4.5. Real-Time Steering & Safe Checkpoint Interruption
-- When `queue_mode: "append"` is enabled, in-flight turns must be gracefully interrupted via `runner.InterruptStream(sessionKey)` (streaming `{"event": "interrupt"}\n` over STDIN) to allow active atomic tool operations to complete safely (`state: "DONE"`) before exit.
-- Always apply `grace_timeout_seconds` (default 3.0s) watchdog fallback before triggering hard process tree termination.
-- Zero Context Leakage: Always clear active stream mappings via `defer h.activeStreams.Delete(sessionKey)`.
+## 6. Non-negotiable invariants
 
----
+### 6.1 Authorized execution and tenant identity
 
-## 5. Development & Verification Commands
+- All AGY turns must pass through `internal/core/execution.Service` unless a
+  documented bootstrap exception exists.
+- Authorization is fail-closed when the policy engine is absent.
+- Preserve the execution identity fields: principal, agent, workspace, project,
+  session key, user ID, conversation ID, and turn ID.
+- Preserve APIS-4D environment propagation:
+  `AGYENT_AGENT_WORKSPACE`, `AGYENT_AGENT_NAME`, `AGYENT_SESSION_KEY`, and
+  `AGYENT_USER_ID`. `AGYENT_TURN_ID` binds hook decisions to the active turn.
+- Never let a channel callback, plugin payload, or subagent choose a broader
+  resource scope than the authenticated principal owns.
+- Security hook/IPC failures remain fail-closed. Never weaken a preset as a
+  fallback.
+
+### 6.2 Workspace and subprocess isolation
+
+- AGY processes run with `--project outside-of-project`; pass `--add-dir` only for
+  the resolved workspace.
+- Validate and canonicalize paths before access. Account for symlinks and Windows
+  case/UNC/ADS behavior in security-sensitive code.
+- On POSIX, process trees use their own process group. On Windows, use Job Objects.
+- Graceful interruption precedes forced termination. Always remove active stream
+  registrations on every exit path.
+
+### 6.3 SQLite
+
+- Keep the project CGO-free. Use `modernc.org/sqlite`; never add
+  `github.com/mattn/go-sqlite3`.
+- Preserve WAL, `busy_timeout(5000)`, foreign keys, and the dual-pool design:
+  one writer connection and up to twenty reader connections.
+- Writes use the writer pool; reads use the reader pool.
+- Add schema changes as the next immutable `*.up.sql` migration. Do not edit an
+  already released migration. A down migration is preferred; a documented
+  irreversible security migration is permitted.
+- Persist timestamps as Unix milliseconds. Use `FlexTime` when scanning values
+  that may come from legacy integer or textual encodings.
+- Scope tenant-owned queries in SQL, not only after loading rows in Go.
+
+### 6.4 Prompt and context ordering
+
+The initial prompt prefix is ordered and deterministic:
+
+1. Level 0: system runtime foundation.
+2. Level 1: global `IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `AGENTS.md`.
+3. Level 2: workspace directives and active plugin rules.
+4. Level 3: sorted progressive skill index.
+5. Level 4: attachments, temporal marker, continuity digest, daily memory, user
+   message.
+
+Daily memory and continuity digests stay in Level 4. Continuation turns use
+`ComposeContinuationPrompt`; do not serialize the static prefix again. Any new
+map/slice added to the prefix must be sorted deterministically.
+
+### 6.5 Concurrency and lifecycle
+
+- Session work is serialized with the FIFO lock manager.
+- Command fast paths and append-mode steering must not create two active turns for
+  one session.
+- Queue/channel sends need an explicit bounded or cancellation behavior.
+- Goroutines started by a component must be owned by a context or stop method.
+- Avoid holding a lock during network I/O, channel delivery, or subprocess waits.
+- Event handlers must choose synchronous versus asynchronous delivery based on
+  whether failure must stop the caller. Do not move authorization to an
+  asynchronous event.
+
+### 6.6 Logging and secrets
+
+- Use `log/slog` with stable snake_case keys such as `session_key`, `agent_name`,
+  `turn_id`, and `error`.
+- Never log bot tokens, credentials, raw environment secrets, approval tokens, or
+  unredacted tool output.
+- Return errors with operation context and preserve causes using `%w`.
+
+## 7. Change playbooks
+
+### Add a channel
+
+Implement `ChannelPort`, normalize to `CanonicalMessage`, route output using
+`TargetContext`, add provider-aware principal mapping and tests, then wire it in
+the composition root. Authorization policy remains in core/auth and execution;
+channel filters are admission checks, not the final authority.
+
+### Add a slash or CLI command
+
+Keep parsing thin. Put reusable policy in a core service, apply RBAC before state
+changes, test aliases/error cases, and update generated/help documentation.
+
+### Add storage behavior
+
+Change domain/port contracts first, add the migration if needed, implement scoped
+queries on the correct pool, and cover fresh migration plus upgraded-schema paths.
+
+### Add an MCP plugin or skill
+
+Follow `docs/plugin-developer-and-isolation-standard.md` and
+`builtin/plugins/AGENTS.md`. Keep `SKILL.md` concise and route conditional detail
+to `references/`. Tool names and schemas must match `tools/list` exactly.
+
+### Change prompt assembly
+
+Update `bootstrap.go`, resolver ordering, and targeted prefix/continuation tests.
+Treat ordering changes as compatibility and cost-sensitive changes.
+
+## 8. Verification
+
+Use the narrowest meaningful checks during iteration, then run the repository gate
+before handoff:
 
 ```bash
-# Run all tests
-go test ./...
-
-# Run tests with verbose logs and race detector
-go test -v -race ./...
-
-# Format and lint code
-go fmt ./...
-go vet ./...
-
-# Build daemon binary
-go build -o bin/agyent ./cmd/agyent
-
-# Cross-compile for Linux/macOS/Windows
-make build-all
+make verify
 ```
 
----
+Useful focused commands:
 
-## 6. Self-Diagnostics & Troubleshooting for Agents
+```bash
+go test ./internal/core/engine/...
+go test ./internal/adapters/storage/sqlite/...
+go test ./internal/adapters/security/... ./internal/core/auth/... ./internal/core/execution/...
+go test ./internal/adapters/plugin/... ./internal/adapters/context/...
+go test ./...
+go test -race ./...
+go vet ./...
+```
 
-When debugging errors reported in the runtime environment:
-1. **Query Audit Logs:** Check SQLite `audit_logs` in `~/.agyent/agyent.db` for execution turn metrics, token usage, and exact error messages.
-2. **Inspect Subprocess Transcripts:** Check `.system_generated/logs/transcript.jsonl` in the conversation workspace for full tool invocation sequences and raw output logs.
-3. **Trace System Daemon Logs:** Run `agyent run --verbose` to observe debug-level structured logs from internal adapters.
+`make verify` checks documentation/skills, workflow graph integrity, architecture
+dependency direction, plugin syntax, and the short Go suite. Run
+`go test -race ./...` for concurrency, lifecycle, SQLite, EventBus, debouncer,
+scheduler, or streaming changes.
+
+## 9. Documentation maintenance
+
+- Every file under `docs/` declares a status from the taxonomy in
+  `docs/README.md`.
+- Canonical docs explain the current system. Normative docs define rules.
+  Reference docs explain implemented subsystems. Proposed docs describe unshipped
+  designs. Historical docs record completed planning work.
+- Use repository-relative links and exact package/file names.
+- Avoid volatile benchmark claims in normative instructions. Put measured results,
+  hardware, date, and command in a benchmark report.
+- Prefer links to migrations, structs, and tests over copying large code/schema
+  blocks that will drift.
+- Record cross-cutting or hard-to-reverse decisions using `docs/adr/README.md`.
+
+## 10. Runtime diagnostics
+
+Start with read-only evidence:
+
+```bash
+agyent doctor --skip-network
+go run ./scripts/debug_session.go --session '<session-key>'
+```
+
+Relevant state is in `~/.agyent/agyent.db`, structured daemon logs, and the AGY
+conversation transcript under
+`~/.gemini/antigravity/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`.
+Do not run `/force_unlock`, reset a conversation, change a security preset, or
+modify the database unless the user requested remediation and the evidence points
+to that action.

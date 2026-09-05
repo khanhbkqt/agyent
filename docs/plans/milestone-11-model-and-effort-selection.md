@@ -1,5 +1,9 @@
 # Milestone 11: Dynamic Model & Reasoning Effort Selection
 
+> **Document status:** Historical
+> **Code authority:** model domain, AGY parser, engine commands and current reference document
+> **Last verified:** 2026-09-05
+
 **Status:** Done (100%)  
 **Owner:** Principal Architect / Backend Agent  
 **Target Completion:** 2026-08-26  

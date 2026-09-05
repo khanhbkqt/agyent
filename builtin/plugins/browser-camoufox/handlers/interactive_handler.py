@@ -129,6 +129,244 @@ def handle_inspect_dom(
         }
 
 
+def _execute_act(
+    session: Any,
+    action_clean: str,
+    target_id: Optional[Union[str, int]],
+    value: Optional[str],
+    expects_popup: bool,
+) -> Optional[Dict[str, Any]]:
+    """Executes the specific action against the session. Returns error dict if validation fails, else None."""
+    page = session.page
+    if not page:
+        return {"error": "No active page available in session"}
+
+    if action_clean == "navigate":
+        if not value:
+            return {"error": "Missing URL 'value' for navigate action"}
+        page.goto(value, wait_until="domcontentloaded", timeout=30000)
+        dismiss_cookie_banners(page)
+
+    elif action_clean == "click":
+        # If expects_popup is enabled, wrap click in context.expect_page()
+        def do_click():
+            if target_id is not None and "," in str(target_id):
+                try:
+                    parts = str(target_id).split(",")
+                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
+                    human_click(page, cx, cy)
+                except Exception:
+                    human_click(page, 400, 300)
+            elif value is not None and "," in str(value):
+                try:
+                    parts = str(value).split(",")
+                    cx, cy = float(parts[0].strip()), float(parts[1].strip())
+                    human_click(page, cx, cy)
+                except Exception:
+                    human_click(page, 400, 300)
+            else:
+                locator = None
+                if target_id is not None:
+                    tid = str(target_id).strip()
+                    if tid.isdigit():
+                        locator = page.locator(f'[data-agy-id="{tid}"]')
+                    else:
+                        locator = page.locator(tid)
+
+                if locator and locator.count() > 0:
+                    box = locator.first.bounding_box()
+                    if box:
+                        cx = box["x"] + box["width"] / 2
+                        cy = box["y"] + box["height"] / 2
+                        human_click(page, cx, cy)
+                    else:
+                        locator.first.click()
+                else:
+                    human_click(page, 400, 300)
+
+        if expects_popup:
+            try:
+                with session.context.expect_page(timeout=8000) as new_page_info:
+                    do_click()
+                new_page = new_page_info.value
+                new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                session.touch()
+            except Exception:
+                do_click()
+        else:
+            do_click()
+
+        time.sleep(0.5)
+
+    elif action_clean == "type":
+        if value is None:
+            return {"error": "Missing 'value' text to type"}
+        locator = None
+        if target_id is not None:
+            tid = str(target_id).strip()
+            if tid.isdigit():
+                locator = page.locator(f'[data-agy-id="{tid}"]')
+            else:
+                locator = page.locator(tid)
+
+        if locator and locator.count() > 0:
+            box = locator.first.bounding_box()
+            if box:
+                cx = box["x"] + box["width"] / 2
+                cy = box["y"] + box["height"] / 2
+                human_click(page, cx, cy)
+            else:
+                locator.first.click()
+            human_type(locator.first, value)
+        else:
+            human_type(page, value)
+
+    elif action_clean == "hover":
+        locator = None
+        if target_id is not None:
+            tid = str(target_id).strip()
+            if tid.isdigit():
+                locator = page.locator(f'[data-agy-id="{tid}"]')
+            else:
+                locator = page.locator(tid)
+
+        if locator and locator.count() > 0:
+            box = locator.first.bounding_box()
+            if box:
+                cx = box["x"] + box["width"] / 2
+                cy = box["y"] + box["height"] / 2
+                human_move_mouse(page, cx, cy)
+            else:
+                locator.first.hover()
+
+    elif action_clean == "scroll":
+        delta_y = 500
+        if value:
+            try:
+                delta_y = int(value)
+            except ValueError:
+                pass
+        human_scroll(page, delta_y)
+
+    elif action_clean == "press_key":
+        key = value or "Enter"
+        page.keyboard.press(key)
+        time.sleep(0.3)
+
+    elif action_clean == "select_option":
+        locator = None
+        if target_id is not None:
+            tid = str(target_id).strip()
+            if tid.isdigit():
+                locator = page.locator(f'[data-agy-id="{tid}"]')
+            else:
+                locator = page.locator(tid)
+        if not locator or locator.count() == 0:
+            return {"error": f"Element '{target_id}' not found for select_option"}
+        locator.first.select_option(value or "")
+
+    elif action_clean in ("check", "uncheck"):
+        locator = None
+        if target_id is not None:
+            tid = str(target_id).strip()
+            if tid.isdigit():
+                locator = page.locator(f'[data-agy-id="{tid}"]')
+            else:
+                locator = page.locator(tid)
+        if not locator or locator.count() == 0:
+            return {"error": f"Element '{target_id}' not found for {action_clean}"}
+        if action_clean == "check":
+            locator.first.check()
+        else:
+            locator.first.uncheck()
+
+    elif action_clean == "upload_file":
+        if not value:
+            return {"error": "Missing file path 'value' for upload_file"}
+        locator = None
+        if target_id is not None:
+            tid = str(target_id).strip()
+            if tid.isdigit():
+                locator = page.locator(f'[data-agy-id="{tid}"]')
+            else:
+                locator = page.locator(tid)
+        if locator and locator.count() > 0:
+            locator.first.set_input_files(value)
+        else:
+            page.set_input_files('input[type="file"]', value)
+
+    elif action_clean == "go_back":
+        page.go_back(wait_until="domcontentloaded", timeout=15000)
+
+    elif action_clean == "go_forward":
+        page.go_forward(wait_until="domcontentloaded", timeout=15000)
+
+    elif action_clean == "reload":
+        page.reload(wait_until="domcontentloaded", timeout=20000)
+
+    elif action_clean == "switch_tab":
+        tab_idx = 0
+        if value:
+            try:
+                tab_idx = int(value)
+            except ValueError:
+                pass
+        success = session.set_active_page_index(tab_idx)
+        if not success:
+            return {"error": f"Tab index {tab_idx} is out of bounds (open tabs: {len(session.pages)})"}
+
+    elif action_clean == "new_tab":
+        new_p = session.context.new_page()
+        if value:
+            new_p.goto(value, wait_until="domcontentloaded", timeout=30000)
+        session.set_active_page_index(len(session.pages) - 1)
+
+    elif action_clean == "close_tab":
+        if len(session.pages) > 1:
+            page.close()
+            session.set_active_page_index(max(0, session.active_page_index - 1))
+        else:
+            return {"error": "Cannot close the only open tab. Use camoufox_session_close to terminate session."}
+
+    elif action_clean == "bring_to_front":
+        try:
+            page.bring_to_front()
+        except Exception as e:
+            return {"error": f"Failed to bring page to front: {str(e)}"}
+
+    elif action_clean == "wait_for_url":
+        if not target_id and not value:
+            return {"error": "Missing target URL pattern 'value' for wait_for_url"}
+        target_url = str(value or target_id)
+        wait_timeout = 30000
+        try:
+            page.wait_for_url(target_url, timeout=wait_timeout)
+        except Exception as e:
+            return {"error": f"Timeout waiting for URL '{target_url}': {str(e)}"}
+
+    elif action_clean == "wait_for_selector":
+        if not target_id and not value:
+            return {"error": "Missing selector for wait_for_selector"}
+        sel = str(target_id) if target_id else str(value)
+        page.wait_for_selector(sel, timeout=15000)
+
+    elif action_clean == "wait":
+        wait_ms = 2000
+        if value:
+            try:
+                val_num = float(value)
+                # If <= 300, treat as seconds (e.g. 10 -> 10000ms), else ms
+                wait_ms = int(val_num * 1000) if val_num <= 300 else int(val_num)
+            except ValueError:
+                pass
+        page.wait_for_timeout(wait_ms)
+
+    else:
+        return {"error": f"Unsupported action '{action_clean}'"}
+
+    return None
+
+
 def handle_act(
     session_id: Optional[str] = None,
     profile_name: Optional[str] = None,
@@ -154,259 +392,43 @@ def handle_act(
     action_clean = action.lower().strip()
 
     try:
-        with session.busy_guard():
+        with session.busy_guard(timeout_sec=60.0):
+            err_dict = _execute_act(session, action_clean, target_id, value, expects_popup)
+            if err_dict:
+                return err_dict
+
+            # Touch and update session metadata
             page = session.page
-        if action_clean == "navigate":
-            if not value:
-                return {"error": "Missing URL 'value' for navigate action"}
-            page.goto(value, wait_until="domcontentloaded", timeout=30000)
-            dismiss_cookie_banners(page)
+            session.touch()
+            session.sync_to_vault(mgr.profile_vault)
 
-        elif action_clean == "click":
-            # If expects_popup is enabled, wrap click in context.expect_page()
-            def do_click():
-                if target_id is not None and "," in str(target_id):
-                    try:
-                        parts = str(target_id).split(",")
-                        cx, cy = float(parts[0].strip()), float(parts[1].strip())
-                        human_click(page, cx, cy)
-                    except Exception:
-                        human_click(page, 400, 300)
-                elif value is not None and "," in str(value):
-                    try:
-                        parts = str(value).split(",")
-                        cx, cy = float(parts[0].strip()), float(parts[1].strip())
-                        human_click(page, cx, cy)
-                    except Exception:
-                        human_click(page, 400, 300)
-                else:
-                    locator = None
-                    if target_id is not None:
-                        tid = str(target_id).strip()
-                        if tid.isdigit():
-                            locator = page.locator(f'[data-agy-id="{tid}"]')
-                        else:
-                            locator = page.locator(tid)
-
-                    if locator and locator.count() > 0:
-                        box = locator.first.bounding_box()
-                        if box:
-                            cx = box["x"] + box["width"] / 2
-                            cy = box["y"] + box["height"] / 2
-                            human_click(page, cx, cy)
-                        else:
-                            locator.first.click()
-                    else:
-                        human_click(page, 400, 300)
-
-            if expects_popup:
-                try:
-                    with session.context.expect_page(timeout=8000) as new_page_info:
-                        do_click()
-                    new_page = new_page_info.value
-                    new_page.wait_for_load_state("domcontentloaded", timeout=15000)
-                    session.touch()
-                except Exception:
-                    do_click()
-            else:
-                do_click()
-
-            time.sleep(0.5)
-
-        elif action_clean == "type":
-            if value is None:
-                return {"error": "Missing 'value' text to type"}
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-
-            if locator and locator.count() > 0:
-                box = locator.first.bounding_box()
-                if box:
-                    cx = box["x"] + box["width"] / 2
-                    cy = box["y"] + box["height"] / 2
-                    human_click(page, cx, cy)
-                else:
-                    locator.first.click()
-                human_type(locator.first, value)
-            else:
-                human_type(page, value)
-
-        elif action_clean == "hover":
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-
-            if locator and locator.count() > 0:
-                box = locator.first.bounding_box()
-                if box:
-                    cx = box["x"] + box["width"] / 2
-                    cy = box["y"] + box["height"] / 2
-                    human_move_mouse(page, cx, cy)
-                else:
-                    locator.first.hover()
-
-        elif action_clean == "scroll":
-            delta_y = 500
-            if value:
-                try:
-                    delta_y = int(value)
-                except ValueError:
-                    pass
-            human_scroll(page, delta_y)
-
-        elif action_clean == "press_key":
-            key = value or "Enter"
-            page.keyboard.press(key)
-            time.sleep(0.3)
-
-        elif action_clean == "select_option":
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-            if not locator or locator.count() == 0:
-                return {"error": f"Element '{target_id}' not found for select_option"}
-            locator.first.select_option(value or "")
-
-        elif action_clean in ("check", "uncheck"):
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-            if not locator or locator.count() == 0:
-                return {"error": f"Element '{target_id}' not found for {action_clean}"}
-            if action_clean == "check":
-                locator.first.check()
-            else:
-                locator.first.uncheck()
-
-        elif action_clean == "upload_file":
-            if not value:
-                return {"error": "Missing file path 'value' for upload_file"}
-            locator = None
-            if target_id is not None:
-                tid = str(target_id).strip()
-                if tid.isdigit():
-                    locator = page.locator(f'[data-agy-id="{tid}"]')
-                else:
-                    locator = page.locator(tid)
-            if locator and locator.count() > 0:
-                locator.first.set_input_files(value)
-            else:
-                page.set_input_files('input[type="file"]', value)
-
-        elif action_clean == "go_back":
-            page.go_back(wait_until="domcontentloaded", timeout=15000)
-
-        elif action_clean == "go_forward":
-            page.go_forward(wait_until="domcontentloaded", timeout=15000)
-
-        elif action_clean == "reload":
-            page.reload(wait_until="domcontentloaded", timeout=20000)
-
-        elif action_clean == "switch_tab":
-            tab_idx = 0
-            if value:
-                try:
-                    tab_idx = int(value)
-                except ValueError:
-                    pass
-            success = session.set_active_page_index(tab_idx)
-            if not success:
-                return {"error": f"Tab index {tab_idx} is out of bounds (open tabs: {len(session.pages)})"}
-            page = session.page
-
-        elif action_clean == "new_tab":
-            new_p = session.context.new_page()
-            if value:
-                new_p.goto(value, wait_until="domcontentloaded", timeout=30000)
-            session.set_active_page_index(len(session.pages) - 1)
-            page = session.page
-
-        elif action_clean == "close_tab":
-            if len(session.pages) > 1:
-                page.close()
-                session.set_active_page_index(max(0, session.active_page_index - 1))
-                page = session.page
-            else:
-                return {"error": "Cannot close the only open tab. Use camoufox_session_close to terminate session."}
-
-        elif action_clean == "bring_to_front":
-            try:
-                page.bring_to_front()
-            except Exception as e:
-                return {"error": f"Failed to bring page to front: {str(e)}"}
-
-        elif action_clean == "wait_for_url":
-            if not target_id and not value:
-                return {"error": "Missing target URL pattern 'value' for wait_for_url"}
-            target_url = str(value or target_id)
-            wait_timeout = 30000
-            try:
-                page.wait_for_url(target_url, timeout=wait_timeout)
-            except Exception as e:
-                return {"error": f"Timeout waiting for URL '{target_url}': {str(e)}"}
-
-        elif action_clean == "wait_for_selector":
-            if not target_id and not value:
-                return {"error": "Missing selector for wait_for_selector"}
-            sel = str(target_id) if target_id else str(value)
-            page.wait_for_selector(sel, timeout=15000)
-
-        elif action_clean == "wait":
-            wait_ms = 2000
-            if value:
-                try:
-                    val_num = float(value)
-                    # If <= 300, treat as seconds (e.g. 10 -> 10000ms), else ms
-                    wait_ms = int(val_num * 1000) if val_num <= 300 else int(val_num)
-                except ValueError:
-                    pass
-            page.wait_for_timeout(wait_ms)
-
-        else:
-            return {"error": f"Unsupported action '{action}'"}
-
-        # Touch and update session metadata
-        session.touch()
-        session.sync_to_vault(mgr.profile_vault)
-
-        return {
-            "status": "ok",
-            "session_id": session.session_id,
-            "profile_name": session.profile_name,
-            "action": action_clean,
-            "target_id": target_id,
-            "active_tab_index": session.active_page_index,
-            "open_tabs_count": len(session.pages),
-            "page_title": page.title() if page else "",
-            "current_url": page.url if page else "",
-        }
+            return {
+                "status": "ok",
+                "session_id": session.session_id,
+                "profile_name": session.profile_name,
+                "action": action_clean,
+                "target_id": target_id,
+                "active_tab_index": session.active_page_index,
+                "open_tabs_count": len(session.pages),
+                "page_title": page.title() if page else "",
+                "current_url": page.url if page else "",
+            }
 
     except Exception as e:
+        if session and session.page:
+            try:
+                session.page.evaluate("window.stop()")
+            except Exception:
+                pass
+        curr_page = session.page if session else None
         return {
             "status": "error",
             "session_id": session.session_id if session else "",
             "profile_name": session.profile_name if session else "",
             "action": action_clean,
             "error": str(e),
-            "page_title": page.title() if page else "",
-            "current_url": page.url if page else "",
+            "page_title": curr_page.title() if curr_page else "",
+            "current_url": curr_page.url if curr_page else "",
         }
 
 

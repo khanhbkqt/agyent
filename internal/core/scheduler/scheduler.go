@@ -75,6 +75,15 @@ func (s *Scheduler) SetLocation(loc *time.Location) {
 	}
 }
 
+// SetExecutionService injects the execution service chokepoint into the scheduler executor.
+func (s *Scheduler) SetExecutionService(svc ports.ExecutionServicePort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executor != nil {
+		s.executor.SetExecutionService(svc)
+	}
+}
+
 // Start launches the background scheduler poller loop.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
@@ -208,8 +217,13 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 			s.logger.Debug("Task overlap: queueing for next run", "task_id", task.ID)
 			return
 		default: // domain.OverlapPolicySkip
-			s.logger.Warn("Task overlap: skipping concurrent execution", "task_id", task.ID)
-			nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+			nextRun, parseErr := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+			if parseErr != nil || !nextRun.After(now) {
+				s.logger.Error("Task overlap: cannot calculate valid next run, marking failed", "task_id", task.ID, "error", parseErr)
+				_ = s.storage.UpdateScheduleRun(s.ctx, task.ID, 0, "invalid schedule expression or next run calculation failed", domain.ScheduleStatusFailed)
+				return
+			}
+			s.logger.Warn("Task overlap: skipping concurrent execution", "task_id", task.ID, "next_run", nextRun)
 			_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextRun.UnixMilli())
 			return
 		}
@@ -218,8 +232,13 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 	// Misfire Policy Check: Did we miss the execution by a long duration (> 15m) due to downtime?
 	gracePeriod := 15 * time.Minute
 	if now.Sub(task.NextRunAt) > gracePeriod && task.MisfirePolicy == domain.MisfirePolicySkipToLatest && task.ScheduleType == domain.ScheduleTypeCron {
-		s.logger.Warn("Task misfired during downtime: skipping backlog to latest", "task_id", task.ID, "delay", now.Sub(task.NextRunAt))
-		nextRun, _ := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+		nextRun, parseErr := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone)
+		if parseErr != nil || !nextRun.After(now) {
+			s.logger.Error("Task misfired: cannot calculate valid next run, marking failed", "task_id", task.ID, "error", parseErr)
+			_ = s.storage.UpdateScheduleRun(s.ctx, task.ID, 0, "invalid schedule expression or next run calculation failed", domain.ScheduleStatusFailed)
+			return
+		}
+		s.logger.Warn("Task misfired during downtime: skipping backlog to latest", "task_id", task.ID, "delay", now.Sub(task.NextRunAt), "next_run", nextRun)
 		_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextRun.UnixMilli())
 		return
 	}
@@ -227,7 +246,7 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 	// For recurring cron tasks, advance next_run_at in DB immediately so that
 	// subsequent poller ticks do not repeatedly claim this execution while in-flight.
 	if task.ScheduleType == domain.ScheduleTypeCron {
-		if nextOccur, err := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone); err == nil {
+		if nextOccur, err := ParseNextRun(task.ScheduleType, task.ScheduleExpr, now, s.timezone); err == nil && nextOccur.After(now) {
 			_ = s.storage.AdvanceScheduleNextRun(s.ctx, task.ID, nextOccur.UnixMilli())
 		}
 	}
@@ -268,10 +287,14 @@ func (s *Scheduler) dispatchScheduleTask(task domain.ScheduleTask, now time.Time
 			// Recurring cron
 			var parseErr error
 			nextRunTime, parseErr = ParseNextRun(task.ScheduleType, task.ScheduleExpr, time.Now(), s.timezone)
-			if parseErr != nil {
+			if parseErr != nil || !nextRunTime.After(time.Now()) {
 				s.logger.Error("Failed to calculate next cron run", "task_id", task.ID, "error", parseErr)
 				nextStatus = domain.ScheduleStatusFailed
-				errMsg = parseErr.Error()
+				if parseErr != nil {
+					errMsg = parseErr.Error()
+				} else {
+					errMsg = "calculated next run time is in the past"
+				}
 			} else {
 				nextStatus = domain.ScheduleStatusActive
 			}

@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.28] - 2026-09-05
+
+### Fixed
+- **Camoufox Headless Linux Stabilization & Zombie Elimination:**
+  - **Media Freeze & Headless CPU Fix:** Added `image.animation_mode=none`, `media.autoplay.default=5`, and `layers.acceleration.disabled=true` preferences to eliminate 100% CPU lockups on headless Linux VPS environments.
+  - **Targeted Process Watchdog:** Profile-scoped process cleanup terminating orphan `camoufox-bin` instances upon profile unlock.
+  - **Busy Guard & Page Stop:** Wrapped browser actions in `busy_guard(60s)` with automatic `window.stop()` fallback.
+  - **Dedicated Worker Thread Affinity (`AgentWorkerManager`):** Enforced dedicated worker threads in Python daemon to maintain Playwright greenlet thread affinity and support multi-agent parallel browsing without lock contention.
+  - **Extended RPC Timeout:** Increased RPC client timeout to 70s to accommodate 60s browser execution deadlines.
+- **Scheduler Reliability & Session Starvation Prevention:**
+  - **Configurable Task Timeout:** Supported `DefaultTaskTimeoutSeconds` in scheduler config without hardcoded clamping.
+  - **ParseNextRun Guard:** Fixed error handling to prevent negative `next_run_at` busy-spin loops on invalid cron parsing.
+  - **Active Schedule Scope:** Refined `AcquireDueSchedules` query to only claim `ACTIVE` schedules, avoiding contention with paused or completed jobs.
+  - **Contextual Failure Diagnostics:** Emitted enriched diagnostic notifications on `EventScheduleFailed`.
+- **AGY Subprocess Timeout Forwarding:**
+  - Propagated resolved turn and subagent timeouts to `agy` CLI via `--print-timeout` flag, preventing premature 5-minute process termination on long-running tasks.
+
+---
+
+## [1.0.27] - 2026-09-05
+
+### Added
+- **Standardized Architecture & Engineering Workflows:**
+  - Introduced formal engineering workflow graphs (`debug.json`, `bugfix.json`, `change.json`, `new-feature.json`) in `.agents/workflows/`.
+  - Added automated repository verification gates (`check_workflows.py`, `check_docs.py`, `check_architecture.py`) wired into `make verify`.
+  - Standardized repository documentation taxonomy, ADR framework, and engineering contracts.
+
+### Fixed
+- **Telegram Zero-Drop Delivery Guarantee & Resilience:**
+  - **Extended Request Timeout:** Configured 30s request timeouts across all Telegram bot instances and operations.
+  - **Transient Drop Retry:** Implemented 3-attempt exponential backoff retry for transient network drops and upstream 5xx gateway errors.
+  - **Safe Chunking & Recursive Bisection:** Lowered markdown chunking threshold to `SafeTelegramMessageLimit = 3200` characters to prevent Telegram 400 "message is too long" errors, with automated recursive chunk bisection fallback.
+  - **Multi-Chunk Overflow Delivery:** Guaranteed sequential delivery of all intermediate chunks when streaming response spans $\ge 3$ chunks.
+  - **Forum Topic ThreadID Preservation:** Preserved `ThreadID` across deliveries and in-place edit fallbacks.
+  - **Edit Fallback:** Added graceful fallback from failed in-place message edits to sending fresh messages upon stream completion.
+  - **Detached Error Event Emission:** Emitted `EventStreamError` using detached background context to ensure errors are never dropped upon turn timeout or cancellation.
+  - **Instant Typing Indicator:** Dispatched immediate typing action upon message intake, guarded with `sync.Once` on session lock acquisition.
+  - **Regression Test Suites:** Added comprehensive test suites `TC-THR-12..17` and engine streaming timeout error tests.
+
+---
+
+## [1.0.26] - 2026-09-05
+
+### Added
+- **Security Architecture v3.1 Production Hardening & Defense-in-Depth:**
+  - **Centralized Policy Engine (`core/auth`):** Implemented centralized ABAC/RBAC engine with principal resolution (user ID, roles, bot affiliations, workspace permissions) and audit event emission.
+  - **Ingress Security & Default Agent Privacy:** Added SQLite migration `000011` making new agents private (`is_public = FALSE`) by default to prevent cross-tenant discovery; added constant-time secret token verification on Telegram webhooks.
+  - **Single Execution Chokepoint (`core/execution`):** Created a unified `ExecutionService` acting as the authoritative chokepoint before subprocess dispatch.
+  - **OS Peer Credential Verification:** Integrated socket-level caller verification via `SO_PEERCRED` (Linux) and `LOCAL_PEERCRED` (macOS) on local IPC connections.
+  - **Anti-IDOR Scoped Repositories:** Enforced parent session/tenant boundaries on all conversation and subagent task repository queries.
+  - **Atomic CAS Subagent State Machine:** Implemented Compare-And-Swap lifecycle transitions preventing race conditions during concurrent subagent task execution.
+  - **Dynamic MCP Isolation:** Configured per-agent and per-session tool mounting preventing context and tool leakage across workspaces.
+  - **Admission Barrier Debouncer & Safe Janitor:** Introduced early authorization checks in message debouncer and non-blocking lock checks in background janitor.
+  - **Per-Agent Security Presets & Host CLI (`agyent agent`):** Introduced host CLI management (`agyent agent create/list/edit/delete`) with configurable security presets (`strict`, `balanced`, `developer`, `unrestricted`) and defense-in-depth anti-self-escalation.
+- **Scheduler Outbound Media & Artifact Delivery:** Propagated `conversationID`, `workspaceDir`, and media artifacts generated during scheduled turns for seamless Telegram delivery.
+
+---
+
+## [1.0.25] - 2026-09-05
+
+### Added
+- **Generic Exponential Backoff with Jitter (`core/retry`):**
+  - **Zero-CGO Pure-Go Retry Package:** Implemented production-grade retry mechanics featuring Full, Equal, Decorrelated, and No Jitter algorithms.
+  - **Additive Jitter for Rate Limits:** Added additive jitter protection for server-instructed `RetryAfter` durations to prevent synchronized thundering herd spikes against Telegram and LLM APIs.
+  - **Generic Runners & Leak Prevention:** Provided generic `DoWithResult[T]` and `Do` functions with permanent error bailout, custom delay extractors, and timer leak prevention.
+
+### Fixed
+- **Multi-Bot Scheduled Outbound Delivery:** Routed scheduled task outputs and heartbeat proactive messages by `AgentName` to dedicated Telegram bot instances, with seamless fallback to primary bot token.
+- **Model Alias Canonicalization & Reasoning Effort Sanitization:**
+  - Standardized model aliases (`sonnet`, `opus`, `flash`, `pro`) in runner argument builders and domain models.
+  - Automatically stripped unsupported `--effort` flags on models without reasoning effort support (e.g. Gemini Flash models).
+  - Added self-healing retry in scheduled executor upon detecting CLI reasoning effort rejection errors.
+- **EventBus High-Concurrency Stress Test:** Sized async queue buffer to prevent dropped event assertions during high-volume parallel stress testing.
+
+---
+
 ## [1.0.24] - 2026-09-04
 
 ### Added

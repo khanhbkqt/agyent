@@ -1,5 +1,9 @@
 # Milestone 8: Multi-Conversation Management & Lifecycle GC
 
+> **Document status:** Historical
+> **Code authority:** conversation repository/commands/GC and current conversation reference
+> **Last verified:** 2026-09-05
+
 **Objective:** Build Flat Multi-Conversation Management, Isolated Ephemeral Turns (`/ask`), 1-Touch Adaptive Inline Keyboards, Zero-Memory Pinning, and Tiered Automated Lifecycle Garbage Collection (Lifecycle GC).
 
 ---

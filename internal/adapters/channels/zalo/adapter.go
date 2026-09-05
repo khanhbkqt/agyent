@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	_ ports.ChannelPort      = (*Adapter)(nil)
-	_ ports.HITLApprovalPort = (*Adapter)(nil)
+	_ ports.ChannelPort           = (*Adapter)(nil)
+	_ ports.HITLApprovalPort      = (*Adapter)(nil)
+	_ ports.AttachmentFetcherPort = (*Adapter)(nil)
 )
 
 type botInstance struct {
@@ -49,6 +50,7 @@ type Adapter struct {
 	wg         sync.WaitGroup
 	httpServer *http.Server
 	pollDone   chan struct{}
+	authorizer ports.InboundAuthorizer
 
 	mu sync.RWMutex
 }
@@ -94,17 +96,19 @@ func NewAdapter(cfg *config.Config, bus ports.EventBusPort) (*Adapter, error) {
 		if token == "" {
 			continue
 		}
-		c := NewClient(token, cfg.Zalo.APIURL)
-		inst := &botInstance{
-			client:    c,
-			config:    b,
-			bindAgent: b.BindAgent,
-		}
 		name := strings.ToLower(strings.TrimSpace(b.Name))
 		if name == "" {
 			name = "default"
 		}
+		c := NewClient(token, cfg.Zalo.APIURL)
+		inst := &botInstance{
+			client:    c,
+			config:    b,
+			botID:     name,
+			bindAgent: b.BindAgent,
+		}
 		adapter.bots[name] = inst
+		adapter.bots[fmt.Sprintf("%d", ParseNumericID(name))] = inst
 		if b.BindAgent != "" {
 			adapter.bindAgents[name] = b.BindAgent
 		}
@@ -123,6 +127,38 @@ func (a *Adapter) HITLCoordinator() *HITLCoordinator {
 	return a.hitl
 }
 
+// SetInboundAuthorizer injects the core-owned ingress admission evaluator.
+func (a *Adapter) SetInboundAuthorizer(authorizer ports.InboundAuthorizer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.authorizer = authorizer
+	if a.router != nil {
+		a.router.SetInboundAuthorizer(authorizer)
+	}
+}
+
+// SetURLSafetyEvaluator applies the gateway's network policy to lazy Zalo
+// media downloads.
+func (a *Adapter) SetURLSafetyEvaluator(evaluator ports.URLSafetyEvaluator) {
+	a.mu.RLock()
+	media := a.media
+	a.mu.RUnlock()
+	if media != nil {
+		media.SetURLSafetyEvaluator(evaluator)
+	}
+}
+
+// FetchAttachment lazily materializes a Zalo attachment after core admission.
+func (a *Adapter) FetchAttachment(ctx context.Context, ref domain.InboundAttachmentRef, targetDir string) (domain.Attachment, error) {
+	a.mu.RLock()
+	media := a.media
+	a.mu.RUnlock()
+	if media == nil {
+		return domain.Attachment{}, errors.New("zalo media manager not initialized")
+	}
+	return media.FetchAttachment(ctx, ref, targetDir)
+}
+
 // Start activates the Zalo channel (polling or webhook).
 func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMessage) error {
 	if !a.running.CompareAndSwap(false, true) {
@@ -130,10 +166,18 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	}
 
 	a.router = NewRouter(a.cfg, a.hitl, a.media, inbound)
+	a.mu.RLock()
+	authorizer := a.authorizer
+	a.mu.RUnlock()
+	a.router.SetInboundAuthorizer(authorizer)
 
 	mode := strings.ToLower(a.cfg.Zalo.Mode)
 	if mode == "webhook" {
-		return a.startWebhook(ctx)
+		if err := a.startWebhook(ctx); err != nil {
+			_ = a.Stop()
+			return err
+		}
+		return nil
 	}
 
 	// Default mode: Polling
@@ -167,6 +211,7 @@ func (a *Adapter) pollBotUpdates(ctx context.Context, botName string, inst *botI
 		inst.botID = user.ID
 		a.mu.Lock()
 		a.bots[user.ID] = inst
+		a.bots[fmt.Sprintf("%d", ParseNumericID(user.ID))] = inst
 		a.mu.Unlock()
 		slog.Info("Zalo bot authenticated", "bot_name", botName, "user_id", user.ID, "display_name", user.Name)
 	} else {

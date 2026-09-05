@@ -2,11 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
 
 func TestSQLiteStore_ConversationRepository(t *testing.T) {
@@ -249,5 +251,149 @@ func TestListRecentConversations_WildcardFilter(t *testing.T) {
 	}
 	if totalAgentB != 1 || len(byAgentB) != 1 || byAgentB[0].ID != "conv-wild-2" {
 		t.Errorf("expected 1 conversation for agent-b (conv-wild-2), got total=%d len=%d", totalAgentB, len(byAgentB))
+	}
+}
+
+func TestSQLiteStore_ScopedConversationAntiIDOR(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "test_anti_idor.db"))
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	// Seed agents and session
+	_ = store.SaveAgent(ctx, &domain.Agent{Name: "agent-a"})
+	_ = store.SaveAgent(ctx, &domain.Agent{Name: "agent-b"})
+	if _, err := store.GetOrCreateSession(ctx, "telegram:user1", "agent-a"); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	targetConvID := "conv-user1-secret"
+	validScope := domain.ConversationScope{
+		SessionKey:  "telegram:user1",
+		AgentName:   "agent-a",
+		ProjectName: "proj-alpha",
+	}
+
+	conv := &domain.Conversation{
+		ID:          targetConvID,
+		SessionKey:  validScope.SessionKey,
+		AgentName:   validScope.AgentName,
+		ProjectName: validScope.ProjectName,
+		Title:       "Secret Conversation",
+		TurnCount:   1,
+		IsPinned:    false,
+		IsArchived:  false,
+	}
+	if err := store.SaveConversation(ctx, conv); err != nil {
+		t.Fatalf("failed to save conversation: %v", err)
+	}
+
+	attackerScopes := []struct {
+		name  string
+		scope domain.ConversationScope
+	}{
+		{
+			name: "Attacker different SessionKey",
+			scope: domain.ConversationScope{
+				SessionKey:  "telegram:attacker",
+				AgentName:   "agent-a",
+				ProjectName: "proj-alpha",
+			},
+		},
+		{
+			name: "Attacker different AgentName",
+			scope: domain.ConversationScope{
+				SessionKey:  "telegram:user1",
+				AgentName:   "agent-b",
+				ProjectName: "proj-alpha",
+			},
+		},
+		{
+			name: "Attacker different ProjectName",
+			scope: domain.ConversationScope{
+				SessionKey:  "telegram:user1",
+				AgentName:   "agent-a",
+				ProjectName: "proj-beta",
+			},
+		},
+	}
+
+	for _, tc := range attackerScopes {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1. GetConversationScoped should reject
+			_, err := store.GetConversationScoped(ctx, tc.scope, targetConvID)
+			if !errors.Is(err, ports.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound for %s, got %v", tc.name, err)
+			}
+
+			// 2. SetConversationTitleScoped should reject and not mutate
+			err = store.SetConversationTitleScoped(ctx, tc.scope, targetConvID, "Hacked Title")
+			if !errors.Is(err, ports.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound on title update, got %v", err)
+			}
+
+			// 3. SetConversationPinnedScoped should reject
+			err = store.SetConversationPinnedScoped(ctx, tc.scope, targetConvID, true)
+			if !errors.Is(err, ports.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound on pin, got %v", err)
+			}
+
+			// 4. SetConversationArchivedScoped should reject
+			err = store.SetConversationArchivedScoped(ctx, tc.scope, targetConvID, true)
+			if !errors.Is(err, ports.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound on archive, got %v", err)
+			}
+
+			// 5. DeleteConversationScoped should reject
+			err = store.DeleteConversationScoped(ctx, tc.scope, targetConvID)
+			if !errors.Is(err, ports.ErrNotFound) {
+				t.Fatalf("expected ErrNotFound on delete, got %v", err)
+			}
+		})
+	}
+
+	// Verify original conversation was untouched
+	original, err := store.GetConversationScoped(ctx, validScope, targetConvID)
+	if err != nil {
+		t.Fatalf("expected original conversation to be intact: %v", err)
+	}
+	if original.Title != "Secret Conversation" {
+		t.Errorf("title was illegally mutated to %s", original.Title)
+	}
+	if original.IsPinned {
+		t.Errorf("conversation was illegally pinned")
+	}
+	if original.IsArchived {
+		t.Errorf("conversation was illegally archived")
+	}
+
+	// Verify legitimate owner mutations succeed
+	if err := store.SetConversationTitleScoped(ctx, validScope, targetConvID, "Legit Rename"); err != nil {
+		t.Fatalf("failed legitimate rename: %v", err)
+	}
+	if err := store.SetConversationPinnedScoped(ctx, validScope, targetConvID, true); err != nil {
+		t.Fatalf("failed legitimate pin: %v", err)
+	}
+	if err := store.SetConversationArchivedScoped(ctx, validScope, targetConvID, true); err != nil {
+		t.Fatalf("failed legitimate archive: %v", err)
+	}
+
+	updated, err := store.GetConversationScoped(ctx, validScope, targetConvID)
+	if err != nil {
+		t.Fatalf("failed to retrieve updated conv: %v", err)
+	}
+	if updated.Title != "Legit Rename" || !updated.IsPinned || !updated.IsArchived {
+		t.Errorf("legitimate updates did not reflect properly: %+v", updated)
+	}
+
+	// Legitimate delete succeeds
+	if err := store.DeleteConversationScoped(ctx, validScope, targetConvID); err != nil {
+		t.Fatalf("failed legitimate delete: %v", err)
+	}
+	_, err = store.GetConversationScoped(ctx, validScope, targetConvID)
+	if !errors.Is(err, ports.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after deletion, got %v", err)
 	}
 }

@@ -82,13 +82,18 @@ func (e *Engine) CompactSessionContext(
 	}
 
 	// 3. Archive Old Conversation and Update Title
-	_ = e.storage.SetConversationArchived(ctx, activeConvID, true)
+	scope := domain.ConversationScope{
+		SessionKey:  session.SessionKey,
+		AgentName:   session.ActiveAgent,
+		ProjectName: session.ActiveProject,
+	}
+	_ = e.storage.SetConversationArchivedScoped(ctx, scope, activeConvID, true)
 
-	oldConv, err := e.storage.GetConversation(ctx, activeConvID)
+	oldConv, err := e.storage.GetConversationScoped(ctx, scope, activeConvID)
 	if err == nil && oldConv != nil {
 		oldTitle := oldConv.Title
 		if !strings.HasPrefix(oldTitle, "[Compacted]") {
-			_ = e.storage.SetConversationTitle(ctx, activeConvID, "[Compacted] "+oldTitle)
+			_ = e.storage.SetConversationTitleScoped(ctx, scope, activeConvID, "[Compacted] "+oldTitle)
 		}
 	}
 
@@ -194,10 +199,23 @@ Scope: %s | Agent: %s%s`, session.ActiveAgent, session.ActiveProject, session.Ac
 		Model:                      resolvedModel,
 		Mode:                       "plan",
 		Effort:                     "low",
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: false,
 	}
 
-	execRes, err := e.runner.Execute(synthCtx, req)
+	var (
+		execRes *domain.ExecutionResult
+		err     error
+	)
+	if e.executionService != nil {
+		principal := domain.Principal{
+			Kind:      domain.PrincipalSystem,
+			Provider:  "internal",
+			SubjectID: "system:compactor",
+		}
+		execRes, err = e.executionService.ExecuteTurn(synthCtx, principal, req, session.SessionKey, false)
+	} else {
+		execRes, err = e.runner.Execute(synthCtx, req)
+	}
 	if err != nil || execRes == nil || !execRes.Success || strings.TrimSpace(execRes.ResponseText) == "" {
 		slog.DebugContext(ctx, "Semantic synthesis timed out or failed, using heuristic digest",
 			slog.Any("error", err),

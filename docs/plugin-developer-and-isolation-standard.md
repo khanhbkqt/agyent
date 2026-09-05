@@ -1,180 +1,135 @@
-# APIS-4D: Universal Plugin Multi-Tenant Isolation Standard
+# APIS-4D plugin developer and isolation standard
 
-## 1. Overview & Architecture
+> **Document status:** Normative
+> **Code authority:** `internal/core/domain/execution.go`, AGY harness, execution service, MCP syncer, plugin servers
+> **Last verified:** 2026-09-05
 
-The **Agyent Plugin Isolation Standard (APIS-4D)** defines the multi-tenant security, namespace partitioning, and execution context specification for all internal and third-party Model Context Protocol (MCP) plugins operating within the Agyent ecosystem.
+APIS-4D is the minimum isolation contract for every MCP plugin executed through
+`agyent`. It prevents one agent, workspace, session, or caller from borrowing
+another tenant's filesystem paths, browser state, database, or active process.
 
-When multiple autonomous agents (e.g. `coder_bot`, `auditor_agent`, `security_lead`, `subagent_worker`) execute tasks across different user sessions, projects, or threads, plugins must enforce strict multi-tenant boundaries to prevent cross-agent data leakage, profile contamination, and unauthorized filesystem traversal.
+## 1. Identity dimensions
 
-```mermaid
-graph TD
-    A[User / Telegram / Webhook] --> B[Agyent Core Engine]
-    B -->|Resolve Agent, Session, RBAC| C[ExecutionTurn]
-    C -->|Build Environment & Envelope| D[AGY Process Harness]
-    D -->|Inject 4D Envs| E[MCP Plugin Subprocess]
-    E -->|Daemon RPC Envelope 2.0| F[Camoufox / SQLite Plugin Daemon]
-    F -->|PathJail Guard| G[Workspace Filesystem Jail]
-    F -->|Agent Vault Namespace| H[Agent Isolated Profile Storage]
-```
+| Dimension | Environment | Envelope key | Required use |
+| --- | --- | --- | --- |
+| Workspace | `AGYENT_AGENT_WORKSPACE` | `context.workspace_dir` | Canonical filesystem root |
+| Agent | `AGYENT_AGENT_NAME` | `context.agent_name` | Persistent namespace and ownership |
+| Session | `AGYENT_SESSION_KEY` | `context.session_key` | Interactive task/session partition |
+| Caller | `AGYENT_USER_ID` | `context.user_id` | Authenticated principal/audit identity |
 
----
+`AGYENT_TURN_ID` is an additional execution binding used by the security hook
+plane. It connects a tool request to an active `TurnSecurityContext`; it does not
+replace any APIS-4D dimension.
 
-## 2. The 4 Dimensions of APIS-4D
+Missing identity is not permission. A plugin may use a deliberately scoped
+default only for public, stateless, read-only behavior. Filesystem access,
+persistent profiles, task mutation, or privileged operations must reject missing
+required identity.
 
-Every MCP tool execution in Agyent is governed by four core isolation dimensions:
+## 2. Propagation contract
 
-| Dimension | Environment Variable | Payload Key | Description |
-| :--- | :--- | :--- | :--- |
-| **D1: Workspace Jail** | `AGYENT_AGENT_WORKSPACE` | `context.workspace_dir` | The canonical root directory where file reads, writes, and database operations are strictly jailed. |
-| **D2: Agent Namespace** | `AGYENT_AGENT_NAME` | `context.agent_name` | The unique name of the calling agent (e.g. `admin_agent`, `dev_bot`, `subagent_123`). Partitions browser profiles and states. |
-| **D3: Session Key** | `AGYENT_SESSION_KEY` | `context.session_key` | The interactive chat/thread session key (e.g. `telegram:999001:888001`) guaranteeing turn context alignment. |
-| **D4: Caller Identity** | `AGYENT_USER_ID` | `context.user_id` | The authenticated user identifier initiating the execution, enabling RBAC verification within plugins. |
-
----
-
-## 3. Go Core & Harness Process Environment Injection
-
-### 3.1 Domain Model Definition
-
-The core domain `ExecutionRequest` structure carries the full isolation envelope:
-
-```go
-type ExecutionRequest struct {
-    Prompt                     string
-    WorkspaceDir               string
-    AgentName                  string
-    SessionKey                 string
-    UserID                     string
-    Env                        map[string]string
-    // ...
-}
-```
-
-### 3.2 Harness Child Process Injection
-
-The harness automatically injects the four dimensions into `cmd.Env` prior to launching the CLI runner or MCP child processes:
-
-```go
-func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []string {
-    baseEnv := os.Environ()
-    envMap := make(map[string]string, len(baseEnv))
-    for _, e := range baseEnv {
-        parts := strings.SplitN(e, "=", 2)
-        if len(parts) == 2 {
-            envMap[parts[0]] = parts[1]
-        }
-    }
-
-    if req.AgentName != "" {
-        envMap["AGYENT_AGENT_NAME"] = req.AgentName
-    }
-    if req.WorkspaceDir != "" {
-        envMap["AGYENT_AGENT_WORKSPACE"] = req.WorkspaceDir
-    }
-    if req.SessionKey != "" {
-        envMap["AGYENT_SESSION_KEY"] = req.SessionKey
-    }
-    if req.UserID != "" {
-        envMap["AGYENT_USER_ID"] = req.UserID
-    }
-
-    // Merge custom overrides
-    for k, v := range req.Env {
-        envMap[k] = v
-    }
-
-    result := make([]string, 0, len(envMap))
-    for k, v := range envMap {
-        result = append(result, fmt.Sprintf("%s=%s", k, v))
-    }
-    return result
-}
-```
-
----
-
-## 4. JSON-RPC Payload Envelope 2.0 Specification
-
-For long-lived background daemons or decoupled tool invocation, plugins utilize the **APIS-4D Payload Envelope 2.0**:
+`domain.ExecutionRequest` carries agent, workspace, session, user, project,
+conversation and turn fields. `execution.Service` authorizes the principal and
+registers the turn before the AGY harness starts. The harness injects APIS-4D
+environment values into the child process. Daemon-style plugins may additionally
+receive the same values in a JSON envelope:
 
 ```json
 {
   "context": {
-    "agent_name": "auditor_agent",
-    "workspace_dir": "C:\\Users\\user\\.agyent\\agents\\auditor_agent\\workspace",
-    "session_key": "telegram:123456:7890",
-    "user_id": "usr_998877"
+    "agent_name": "auditor",
+    "workspace_dir": "/srv/workspaces/auditor",
+    "session_key": "telegram:1001:2002",
+    "user_id": "3003"
   },
-  "name": "camoufox_session_start",
-  "args": {
-    "profile_name": "github_recon",
-    "headless": true
-  }
+  "name": "tool_name",
+  "args": {}
 }
 ```
 
-Daemons extract `context` and enforce tenant ownership before fulfilling tool actions.
+Do not accept envelope identity that widens or contradicts the trusted process
+environment/IPC context. When both are present, validate their consistency.
 
----
+## 3. Filesystem rules
 
-## 5. Plugin Implementation Reference
+Before every read, write, database open, download destination, profile import, or
+artifact export:
 
-### 5.1 Browser-Camoufox ProfileVault Namespace Partitioning
+1. Resolve the authorized workspace root to an absolute canonical path.
+2. Resolve the target path, including existing symlinks/ancestors where possible.
+3. Compare containment with platform-appropriate case handling.
+4. Reject traversal, alternate data streams, UNC/device paths, or symlink escapes
+   as applicable.
+5. Revalidate immediately before mutation when parent paths could change.
 
-Browser profiles, cookies, and local storage states are strictly partitioned per agent:
+String prefix checks are insufficient. Python plugins should use
+`os.path.realpath`, `os.path.abspath`, and `os.path.commonpath`; Go plugins should
+use the repository path-jail utilities where available.
 
-- **Workspace-scoped profiles**: `<workspace_dir>/.plugins/camoufox/profiles/<profile_name>/`
-- **Global agent profiles**: `~/.agyent/camoufox/agents/<agent_name>/profiles/<profile_name>/`
+The SQLite inspection plugin is read-only and must reject databases outside the
+authorized workspace. A user request to write does not grant a read-only plugin a
+new capability; such a feature requires a separate authorized tool contract.
 
-**Directory Traversal Defense:**
-```python
-def clean_agent_name(agent_name: Optional[str] = None) -> str:
-    if not agent_name:
-        return "default"
-    base = os.path.basename(str(agent_name).strip())
-    clean = "".join(c for c in base if c.isalnum() or c in ("-", "_")).strip()
-    return clean if clean else "default"
-```
+## 4. Stateful resource ownership
 
-**BrowserManager Multi-Tenant Ownership Guard:**
-Active sessions are keyed by `f"{agent_name}:{profile_name}"`. Unauthorized agents attempting to access or close sessions owned by another agent are rejected with `Access Denied`.
+Key caches, browser sessions, profile vaults, subprocesses, files and background
+jobs by at least agent identity plus the resource's local identifier. Include
+workspace/session when the resource is not intentionally reusable across those
+scopes.
 
-### 5.2 Database-Sqlite PathJail Guard
+Every lookup, update, close, cancel, export, and delete checks the stored owner.
+Knowledge of a session ID or task ID is not proof of ownership.
 
-Plugins accessing the local filesystem must validate paths using canonical path comparison with Windows case-folding:
+Sanitize identifiers before using them as paths or map keys. Preserve enough of
+the original trusted identity to prevent sanitized-name collisions from merging
+tenants.
 
-```python
-def is_safe_path(target_path: str, workspace_root: Optional[str] = None) -> bool:
-    if not target_path:
-        return False
-    if not workspace_root:
-        workspace_root = os.environ.get("AGYENT_AGENT_WORKSPACE") or os.getcwd()
-    try:
-        ws_real = os.path.realpath(os.path.abspath(workspace_root))
-        target_real = os.path.realpath(os.path.abspath(target_path))
-        if sys.platform == "win32":
-            ws_real = ws_real.lower()
-            target_real = target_real.lower()
-        common = os.path.commonpath([ws_real, target_real])
-        return common == ws_real
-    except Exception:
-        return False
-```
+## 5. Tool and process rules
 
-Attempts to execute queries outside `workspace_root` return:
-```json
-{
-  "error": "Security Violation: Database path '...' is outside the authorized workspace jail. Access denied under APIS-4D standard."
-}
-```
+- Publish exact JSON schemas in `tools/list`; reject unknown tool names and invalid
+  required arguments.
+- Do not expose an internal dispatcher, shell, or arbitrary module/function call
+  as a generic tool.
+- Use argument arrays rather than shell interpolation when spawning processes.
+- Set an explicit working directory, bounded timeout, output limit, and process
+  tree cleanup behavior.
+- Do not pass the entire parent environment when a narrower allowlist is
+  sufficient. Never echo secrets in errors or logs.
+- Writes and external side effects require the same authorization implied by the
+  tool contract; a rule or skill never grants permission by itself.
 
----
+## 6. Network and content rules
 
-## 6. Plugin Developer Compliance Checklist
+- Resolve and validate destinations against active network policy before requests.
+- Block cloud metadata and private networks when the preset requires it; account
+  for DNS rebinding and redirects.
+- Treat remote content as untrusted data, not instructions that can change the
+  user's goal or security scope.
+- Bound downloads and extracted content. Sanitize outbound content through the
+  configured DLP path.
 
-When developing or integrating plugins for Agyent:
-1. **Never hardcode default storage paths**; always check `os.environ.get("AGYENT_AGENT_WORKSPACE")` and `os.environ.get("AGYENT_AGENT_NAME")`.
-2. **Sanitize all identifiers** (`agent_name`, `profile_name`, `session_id`) using `os.path.basename` and regex whitelist to prevent directory traversal.
-3. **Verify PathJail containment** for all filesystem reads, writes, and database connections.
-4. **Implement ownership checks** on in-memory caches, background processes, and active sessions.
-5. **Support Payload Envelope 2.0** for all daemon RPC interfaces.
+## 7. Rules versus skills
+
+`rules/AGENTS.md` is injected whenever the plugin is active. It contains only
+always-on safety and routing constraints specific to that plugin.
+
+`SKILL.md` is loaded for matching tasks. It contains the useful workflow, tool
+selection criteria, stopping conditions, and links to conditional references.
+Neither file may promise permissions, bypass core policy, or force unrelated user
+requests through the plugin.
+
+## 8. Required negative tests
+
+Plugin tests should cover the applicable failures:
+
+- Missing or mismatched identity.
+- `..`, absolute-path, symlink and platform-specific path escapes.
+- Cross-agent/session access using a valid resource ID.
+- Unknown tool, invalid arguments and oversized input/output.
+- Timeout, cancellation, process crash and partial state.
+- Private/metadata/redirect network destinations.
+- Secret-bearing output and log redaction.
+- Restart cleanup of stale daemon/session state.
+
+Run the repository plugin gates in `docs/plugin-system-architecture.md` before
+handoff.

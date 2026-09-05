@@ -8,6 +8,7 @@ Zero-dependency implementation using Python standard library http.server.
 import http.server
 import json
 import os
+import queue
 import signal
 import sys
 import threading
@@ -264,6 +265,76 @@ def execute_tool(
         raise ValueError(f"Tool '{name}' not found")
 
 
+class AgentWorker:
+    """Dedicated single-threaded worker for an agent to maintain Playwright thread affinity."""
+
+    def __init__(self, agent_name: str):
+        self.agent_name = agent_name
+        self.q: queue.Queue = queue.Queue()
+        self.last_active = time.time()
+        self._thread = threading.Thread(target=self._run, name=f"CamoufoxWorker-{agent_name}", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            item = self.q.get()
+            if item is None:
+                break
+            fn, res_q = item
+            try:
+                res = fn()
+                res_q.put((True, res))
+            except Exception as e:
+                res_q.put((False, e))
+            finally:
+                self.last_active = time.time()
+
+    def run(self, fn: Any, timeout: float = 60.0) -> Any:
+        # If already executing on this worker thread, invoke directly to prevent deadlock
+        if threading.current_thread() == self._thread:
+            return fn()
+        res_q: queue.Queue = queue.Queue()
+        self.q.put((fn, res_q))
+        try:
+            ok, val = res_q.get(timeout=timeout)
+            if not ok:
+                raise val
+            return val
+        except queue.Empty:
+            raise TimeoutError(f"TOOL_DEADLINE_EXCEEDED: Tool execution timed out after {timeout}s on worker for agent '{self.agent_name}'")
+
+    def stop(self) -> None:
+        self.q.put(None)
+
+
+class AgentWorkerManager:
+    """Manages dedicated workers per agent to ensure thread affinity and parallel multi-agent execution."""
+
+    def __init__(self):
+        self.workers: Dict[str, AgentWorker] = {}
+        self.lock = threading.Lock()
+
+    def get_worker(self, agent_name: str) -> AgentWorker:
+        with self.lock:
+            worker = self.workers.get(agent_name)
+            if worker is None or not worker._thread.is_alive():
+                worker = AgentWorker(agent_name)
+                self.workers[agent_name] = worker
+            return worker
+
+    def stop_all(self) -> None:
+        with self.lock:
+            for w in self.workers.values():
+                try:
+                    w.stop()
+                except Exception:
+                    pass
+            self.workers.clear()
+
+
+WORKER_MGR = AgentWorkerManager()
+
+
 class DaemonHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Handles JSON-RPC HTTP requests strictly on localhost."""
 
@@ -309,7 +380,12 @@ class DaemonHTTPHandler(http.server.BaseHTTPRequestHandler):
                 workspace_dir = context.get("workspace_dir") or os.environ.get("AGYENT_AGENT_WORKSPACE")
                 log(f"Executing RPC tool: '{tool_name}' for agent: '{agent_name}'")
 
-                res = execute_tool(tool_name, args, agent_name=agent_name, workspace_dir=workspace_dir)
+                # Dispatch to agent-specific dedicated worker thread to preserve Playwright greenlet thread affinity
+                worker = WORKER_MGR.get_worker(agent_name)
+                res = worker.run(
+                    lambda: execute_tool(tool_name, args, agent_name=agent_name, workspace_dir=workspace_dir),
+                    timeout=60.0,
+                )
                 self._send_json_response(200, {"result": res, "error": None})
             except Exception as e:
                 log(f"RPC execution error: {e}\n{traceback.format_exc()}")
@@ -334,7 +410,7 @@ def periodic_idle_watchdog(interval_sec: float = 60.0, idle_timeout_sec: float =
         try:
             time.sleep(interval_sec)
             mgr = BrowserManager.get_instance()
-            reaped = mgr.reap_idle_sessions(idle_timeout_sec=idle_timeout_sec)
+            reaped = mgr.reap_idle_sessions(idle_timeout_sec=idle_timeout_sec, stuck_timeout_sec=180.0)
             if reaped > 0:
                 log(f"Watchdog reaped {reaped} idle session(s)")
         except Exception as e:
@@ -344,6 +420,11 @@ def periodic_idle_watchdog(interval_sec: float = 60.0, idle_timeout_sec: float =
 def cleanup_and_exit(*args: Any) -> None:
     """Closes all browsers, cleans lock/port files, and exits cleanly."""
     log("Shutting down Camoufox Daemon...")
+    try:
+        WORKER_MGR.stop_all()
+    except Exception as e:
+        log(f"Error stopping workers: {e}")
+
     try:
         mgr = BrowserManager.get_instance()
         mgr.close_all()
@@ -363,7 +444,7 @@ def cleanup_and_exit(*args: Any) -> None:
 
 
 def run_daemon() -> None:
-    """Binds to localhost and runs HTTP server."""
+    """Binds to localhost and runs multithreaded HTTP server."""
     # Register signal handlers
     try:
         signal.signal(signal.SIGINT, cleanup_and_exit)
@@ -377,10 +458,10 @@ def run_daemon() -> None:
     actual_port = preferred_port
 
     try:
-        server = http.server.HTTPServer(("127.0.0.1", preferred_port), DaemonHTTPHandler)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", preferred_port), DaemonHTTPHandler)
     except OSError:
         log(f"Port {preferred_port} in use. Binding to dynamic port (0)...")
-        server = http.server.HTTPServer(("127.0.0.1", 0), DaemonHTTPHandler)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DaemonHTTPHandler)
         actual_port = server.server_address[1]
 
     # Write port and PID files

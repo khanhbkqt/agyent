@@ -1,4 +1,8 @@
 # Master Architecture Plan: Camoufox Full Capabilities Engine
+
+> **Document status:** Historical
+> **Code authority:** current Camoufox plugin code, manifest, MCP schema and skill
+> **Last verified:** 2026-09-05
 **Universal Stealth Web & Autonomous Perception Architecture for `agyent`**
 
 * **Document Version**: 1.0.0

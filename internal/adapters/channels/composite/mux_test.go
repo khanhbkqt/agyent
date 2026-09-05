@@ -197,9 +197,11 @@ func TestCompositeChannelMux_StartPartialFailure(t *testing.T) {
 	err := mux.Start(context.Background(), inbound)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "channel adapter \"zalo\"")
+	assert.True(t, tg.stopped)
+	assert.True(t, zl.stopped)
 }
 
-func TestCompositeChannelMux_DeterministicHITLFallback(t *testing.T) {
+func TestCompositeChannelMux_HITLRequiresSessionChannel(t *testing.T) {
 	mux := composite.NewChannelMux()
 
 	tg := &mockHITLAdapter{mockAdapter: newMockAdapter("telegram")}
@@ -208,15 +210,17 @@ func TestCompositeChannelMux_DeterministicHITLFallback(t *testing.T) {
 	mux.Register(tg)
 	mux.Register(zl)
 
-	// An approval request without session key or channel should deterministically route to primary (or telegram)
+	// A security approval without provider-bound session context must fail closed;
+	// it must never be delivered to an unrelated primary channel.
 	decision, err := mux.RequestApproval(context.Background(), domain.ApprovalRequest{
 		RequestID: "req-fallback",
 	})
-	require.NoError(t, err)
-	assert.True(t, decision.Approved)
+	require.Error(t, err)
+	assert.False(t, decision.Approved)
+	assert.Equal(t, "denied_no_channel", decision.Action)
 
 	tg.mu.Lock()
-	assert.Equal(t, 1, tg.hitlCalls)
+	assert.Equal(t, 0, tg.hitlCalls)
 	tg.mu.Unlock()
 
 	zl.mu.Lock()

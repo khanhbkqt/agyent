@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"fmt"
 	"testing"
 
 	"agyent/internal/core/domain"
@@ -87,9 +88,41 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			expectedIsCustom: false,
 		},
 		{
+			name:             "Edge Case 2b-2: Alias 'sonnet' strips effort and maps to claude-sonnet-4-6",
+			rawModel:         "sonnet",
+			rawEffort:        "high",
+			expectedModel:    "claude-sonnet-4-6",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2b-3: Alias 'claude-sonnet' strips effort",
+			rawModel:         "claude-sonnet",
+			rawEffort:        "medium",
+			expectedModel:    "claude-sonnet-4-6",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
 			name:             "Edge Case 2c: claude-opus-4-6-thinking strips effort",
 			rawModel:         "claude-opus-4-6-thinking",
 			rawEffort:        "high",
+			expectedModel:    "claude-opus-4-6-thinking",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2c-2: Alias 'opus' strips effort and maps to claude-opus-4-6-thinking",
+			rawModel:         "opus",
+			rawEffort:        "high",
+			expectedModel:    "claude-opus-4-6-thinking",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2c-3: Alias 'claude-opus' strips effort",
+			rawModel:         "claude-opus",
+			rawEffort:        "low",
 			expectedModel:    "claude-opus-4-6-thinking",
 			expectedEffort:   "",
 			expectedIsCustom: false,
@@ -182,4 +215,57 @@ func TestModelCapability_ContextAndThresholds(t *testing.T) {
 	assert.Equal(t, 1048576, genericCap.EffectiveMaxContext())
 	assert.Equal(t, 65536, genericCap.EffectiveMaxOutput())
 	assert.Equal(t, 734003, genericCap.EffectiveCompactThreshold())
+}
+
+func TestIsEffortError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		result   *domain.ExecutionResult
+		expected bool
+	}{
+		{
+			name:     "AGY error: --effort is not supported for model flash",
+			err:      fmt.Errorf("exit status 1: invalid model selection (--model \"flash\" --effort \"high\"): --effort is not supported for model \"flash\""),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Result error: effort not supported",
+			err:      nil,
+			result:   &domain.ExecutionResult{Success: false, Error: "effort not supported for this model"},
+			expected: true,
+		},
+		{
+			name:     "Flag not defined: -effort",
+			err:      fmt.Errorf("flag provided but not defined: -effort"),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Unknown flag: --effort",
+			err:      fmt.Errorf("unknown flag: --effort"),
+			result:   nil,
+			expected: true,
+		},
+		{
+			name:     "Unrelated network error",
+			err:      fmt.Errorf("connection refused: dial tcp 127.0.0.1:80"),
+			result:   nil,
+			expected: false,
+		},
+		{
+			name:     "Successful execution",
+			err:      nil,
+			result:   &domain.ExecutionResult{Success: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := domain.IsEffortError(tt.err, tt.result)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
 }

@@ -9,6 +9,7 @@ import (
 // SenderUser represents the sender of an inbound message.
 type SenderUser struct {
 	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
 	Username string `json:"username,omitempty"`
 	FullName string `json:"full_name,omitempty"`
 }
@@ -32,22 +33,37 @@ type Attachment struct {
 	Caption  string `json:"caption,omitempty"`
 }
 
+// InboundAttachmentRef represents a lazy reference to an inbound media attachment.
+// It avoids downloading files to disk before authorization and execution admission.
+type InboundAttachmentRef struct {
+	Channel  string `json:"channel"` // Channel that owns SourceID and must materialize it.
+	ID       string `json:"id"`
+	FileName string `json:"file_name"`
+	MIMEType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+	Type     string `json:"type"` // "image", "document", "audio", "video", etc.
+	Caption  string `json:"caption,omitempty"`
+	BotID    int64  `json:"bot_id,omitempty"`
+	SourceID string `json:"source_id"` // Provider-specific ID (e.g. Telegram file_id)
+}
+
 // CanonicalMessage is the standardized representation of any inbound message across channels.
 type CanonicalMessage struct {
-	ID               string       `json:"id"`
-	Timestamp        time.Time    `json:"timestamp"`
-	Channel          string       `json:"channel"` // e.g. "telegram"
-	BotID            int64        `json:"bot_id,omitempty"`
-	BotUsername      string       `json:"bot_username,omitempty"`
-	BindAgent        string       `json:"bind_agent,omitempty"` // Dedicated bound agent for this bot
-	Sender           SenderUser   `json:"sender"`
-	Chat             ChatContext  `json:"chat"`
-	Text             string       `json:"text"`
-	RawText          string       `json:"raw_text"`
-	Attachments      []Attachment `json:"attachments,omitempty"`
-	IsMentioned      bool         `json:"is_mentioned"`
-	IsReplyToBot     bool         `json:"is_reply_to_bot"`
-	ReplyToMessageID string       `json:"reply_to_message_id,omitempty"`
+	ID               string                 `json:"id"`
+	Timestamp        time.Time              `json:"timestamp"`
+	Channel          string                 `json:"channel"` // e.g. "telegram"
+	BotID            int64                  `json:"bot_id,omitempty"`
+	BotUsername      string                 `json:"bot_username,omitempty"`
+	BindAgent        string                 `json:"bind_agent,omitempty"` // Dedicated bound agent for this bot
+	Sender           SenderUser             `json:"sender"`
+	Chat             ChatContext            `json:"chat"`
+	Text             string                 `json:"text"`
+	RawText          string                 `json:"raw_text"`
+	Attachments      []Attachment           `json:"attachments,omitempty"`
+	AttachmentRefs   []InboundAttachmentRef `json:"attachment_refs,omitempty"`
+	IsMentioned      bool                   `json:"is_mentioned"`
+	IsReplyToBot     bool                   `json:"is_reply_to_bot"`
+	ReplyToMessageID string                 `json:"reply_to_message_id,omitempty"`
 }
 
 // OutboundAttachment represents a file or artifact to send out.
@@ -57,6 +73,24 @@ type OutboundAttachment struct {
 	MIMEType string `json:"mime_type"`
 	Caption  string `json:"caption,omitempty"`
 	Type     string `json:"type"` // "image", "document", etc.
+}
+
+// ToOutboundAttachments converts domain.Attachment slice to domain.OutboundAttachment slice.
+func ToOutboundAttachments(atts []Attachment) []OutboundAttachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	res := make([]OutboundAttachment, len(atts))
+	for i, att := range atts {
+		res[i] = OutboundAttachment{
+			FilePath: att.FilePath,
+			FileName: att.FileName,
+			MIMEType: att.MIMEType,
+			Caption:  att.Caption,
+			Type:     att.Type,
+		}
+	}
+	return res
 }
 
 // InlineButton represents an interactive button in a messaging UI.
@@ -74,10 +108,11 @@ type InlineKeyboard []InlineKeyboardRow
 
 // TargetContext specifies the destination channel, bot, and chat context for message delivery.
 type TargetContext struct {
-	Channel  string `json:"channel"`             // e.g. "telegram", "zalo", "slack"
-	BotID    string `json:"bot_id,omitempty"`    // Unique platform-agnostic bot identifier
-	ChatID   string `json:"chat_id"`             // Target chat / conversation ID
-	ThreadID int64  `json:"thread_id,omitempty"` // Optional forum topic / message thread ID
+	Channel   string `json:"channel"`              // e.g. "telegram", "zalo", "slack"
+	BotID     string `json:"bot_id,omitempty"`     // Unique platform-agnostic bot identifier
+	AgentName string `json:"agent_name,omitempty"` // Dedicated target agent persona name (e.g. "wife_assistant")
+	ChatID    string `json:"chat_id"`              // Target chat / conversation ID
+	ThreadID  int64  `json:"thread_id,omitempty"`  // Optional forum topic / message thread ID
 }
 
 // OutboundMessage represents a standardized response to be sent to a channel.
@@ -86,6 +121,7 @@ type OutboundMessage struct {
 	SessionKey       string               `json:"session_key,omitempty"`
 	BotID            int64                `json:"bot_id,omitempty"`     // Originating bot ID for multi-bot outbound routing
 	BotIDStr         string               `json:"bot_id_str,omitempty"` // String representation of BotID
+	AgentName        string               `json:"agent_name,omitempty"` // Originating or target agent persona name for dedicated bot dispatch
 	ChatID           string               `json:"chat_id"`
 	ThreadID         int64                `json:"thread_id,omitempty"`
 	Text             string               `json:"text"`
@@ -104,10 +140,11 @@ func (o *OutboundMessage) TargetContext() TargetContext {
 		botID = strconv.FormatInt(o.BotID, 10)
 	}
 	return TargetContext{
-		Channel:  o.Channel,
-		BotID:    botID,
-		ChatID:   o.ChatID,
-		ThreadID: o.ThreadID,
+		Channel:   o.Channel,
+		BotID:     botID,
+		AgentName: o.AgentName,
+		ChatID:    o.ChatID,
+		ThreadID:  o.ThreadID,
 	}
 }
 
@@ -118,10 +155,11 @@ func (m *CanonicalMessage) TargetContext() TargetContext {
 		botID = strconv.FormatInt(m.BotID, 10)
 	}
 	return TargetContext{
-		Channel:  m.Channel,
-		BotID:    botID,
-		ChatID:   m.Chat.ID,
-		ThreadID: m.Chat.ThreadID,
+		Channel:   m.Channel,
+		BotID:     botID,
+		AgentName: m.BindAgent,
+		ChatID:    m.Chat.ID,
+		ThreadID:  m.Chat.ThreadID,
 	}
 }
 

@@ -4,9 +4,11 @@ GIT_COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE?=$(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
 LDFLAGS=-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)
 
-.PHONY: all build test test-short test-coverage lint-plugins cross-compile release clean
+.PHONY: all build build-all test test-short test-coverage lint-plugins docs-check workflow-check architecture-check verify cross-compile release clean
 
 all: build
+
+build-all: cross-compile
 
 build:
 	@echo "==> Building local binary..."
@@ -14,7 +16,24 @@ build:
 
 lint-plugins:
 	@echo "==> Verifying Python plugins syntax and typing integrity..."
-	@which python3 >/dev/null 2>&1 && python3 -m py_compile builtin/plugins/*/*.py builtin/plugins/*/*/*.py 2>/dev/null && echo "==> All Python plugin files verified cleanly!" || echo "==> Skipped local py_compile (python3 not found)"
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
+	@python3 -m py_compile builtin/plugins/*/*.py builtin/plugins/*/*/*.py
+	@echo "==> All Python plugin files verified cleanly!"
+
+docs-check:
+	@echo "==> Checking documentation, plugin manifests, and skills..."
+	python3 scripts/check_docs.py
+
+workflow-check:
+	@echo "==> Checking engineering workflow graphs..."
+	python3 scripts/check_workflows.py
+	python3 -m unittest scripts/check_workflows_test.py
+
+architecture-check:
+	@echo "==> Checking package boundaries and architecture invariants..."
+	python3 scripts/check_architecture.py
+
+verify: docs-check workflow-check architecture-check lint-plugins test-short
 
 test: lint-plugins
 	@echo "==> Running all unit & concurrency tests..."
@@ -28,6 +47,10 @@ test-coverage:
 	@echo "==> Running tests with coverage..."
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
+
+test-e2e: build
+	@echo "==> Running hermetic E2E tests with compiled binary..."
+	go test -v -tags e2e ./cmd/agyent/...
 
 cross-compile: clean
 	@echo "==> Cross-compiling zero-CGO static binaries for 6 target platforms..."

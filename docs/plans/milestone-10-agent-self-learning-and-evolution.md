@@ -1,5 +1,9 @@
 # Milestone 10: Autonomous Agent Self-Learning & Memory Evolution
 
+> **Document status:** Historical
+> **Code authority:** evolution adapter, engine integration and current reference document
+> **Last verified:** 2026-09-05
+
 Comprehensive technical specification and implementation plan for **Milestone 10: Agent Self-Learning, Reflection Engine, 4D Memory Conflict Resolution & Temporal Context Grounding** of the **`agyent`** system.
 
 ---

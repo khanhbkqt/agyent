@@ -1,5 +1,9 @@
 # Zalo Bot Platform Channel Adapter Architecture
 
+> **Document status:** Reference
+> **Code authority:** `internal/adapters/channels/zalo`, `internal/adapters/channels/composite`, `cmd/agyent/run.go`
+> **Last verified:** 2026-09-05
+
 This document specifies the technical design, architectural patterns, and integration specifications for the **Zalo Bot Platform Channel Adapter** in `agyent`.
 
 ---
@@ -39,10 +43,10 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
 ## 2. Core Capabilities
 
 ### 2.1 Multi-Channel Multiplexer (`composite.Mux`)
-- Implements `ports.ChannelPort` and `ports.HITLApprovalPort`.
+- Implements `ports.ChannelPort`, `ports.HITLApprovalPort`, and the lazy attachment-fetcher contract.
 - Registers multiple channel adapters simultaneously (e.g. `telegram`, `zalo`).
 - Dispatches outbound messages, typing indicators, and attachments to the matching channel adapter based on `msg.Channel` or `domain.ParseSessionKey(msg.SessionKey).Channel`.
-- Automatically routes Human-in-the-Loop (HITL) approval cards to the originator's channel.
+- Routes Human-in-the-Loop (HITL) approval cards only when the originating session resolves to a registered channel; missing or invalid routing is denied rather than falling back to another provider.
 
 ### 2.2 Multi-Bot Pool & Dedicated Agent Virtualization
 - Supports both single-bot and multi-bot configurations under `zalo.bots`:
@@ -61,7 +65,7 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
         bot_token: "ZALO_TOKEN_SECONDARY"
         bind_agent: "deep_coder"
   ```
-- Outbound responses and actions route to the exact originating bot instance via `msg.BotIDStr` or `target.BotID`.
+- Outbound responses and actions retain the originating channel, chat, thread, and normalized bot identity. Agent-bound bot selection remains available for scheduled delivery.
 
 ### 2.3 Resilient Networking & Exponential Backoff with Jitter
 - Integrated with `internal/core/retry`:

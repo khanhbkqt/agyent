@@ -8,9 +8,22 @@ import (
 	"agyent/internal/adapters/channels/zalo"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
 )
+
+type testInboundAuthorizer struct {
+	allowed bool
+	calls   int
+}
+
+var _ ports.InboundAuthorizer = (*testInboundAuthorizer)(nil)
+
+func (a *testInboundAuthorizer) AuthorizeInbound(context.Context, string, string, string) (bool, error) {
+	a.calls++
+	return a.allowed, nil
+}
 
 func TestZaloRouter_StandardRouting(t *testing.T) {
 	cfg := &config.Config{
@@ -103,6 +116,57 @@ func TestZaloRouter_GroupWhitelisting_Denied(t *testing.T) {
 
 	router.RouteUpdate(context.Background(), update)
 	assert.Empty(t, inboundChan, "unlisted groups must be ignored when AllowedGroupIDs is configured")
+}
+
+func TestZaloRouter_AuthorizesBeforeEmittingLazyAttachmentReference(t *testing.T) {
+	cfg := &config.Config{}
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	authorizer := &testInboundAuthorizer{allowed: true}
+	router.SetInboundAuthorizer(authorizer)
+
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{Message: &zalo.ZaloInboundMessage{
+		MessageID: "media-message",
+		From:      zalo.ZaloUser{ID: "user-1"},
+		Chat:      zalo.ZaloChat{ID: "chat-1", Type: "private"},
+		Attachments: []zalo.ZaloAttachment{{
+			Type:     "photo",
+			FileID:   "file-1",
+			FileName: "photo.jpg",
+			URL:      "https://cdn.zalo.example/photo.jpg",
+		}},
+	}})
+
+	select {
+	case message := <-inbound:
+		assert.Equal(t, 1, authorizer.calls)
+		assert.Empty(t, message.Attachments)
+		if assert.Len(t, message.AttachmentRefs, 1) {
+			assert.Equal(t, "zalo", message.AttachmentRefs[0].Channel)
+			assert.Equal(t, "https://cdn.zalo.example/photo.jpg", message.AttachmentRefs[0].SourceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected authorized Zalo message")
+	}
+}
+
+func TestZaloRouter_DeniesBeforeEmittingAttachmentReference(t *testing.T) {
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(&config.Config{}, nil, nil, inbound)
+	authorizer := &testInboundAuthorizer{allowed: false}
+	router.SetInboundAuthorizer(authorizer)
+
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{Message: &zalo.ZaloInboundMessage{
+		MessageID: "denied-media-message",
+		From:      zalo.ZaloUser{ID: "user-1"},
+		Chat:      zalo.ZaloChat{ID: "chat-1", Type: "private"},
+		Attachments: []zalo.ZaloAttachment{{
+			URL: "https://cdn.zalo.example/private.jpg",
+		}},
+	}})
+
+	assert.Equal(t, 1, authorizer.calls)
+	assert.Empty(t, inbound)
 }
 
 func TestZaloRouter_HITLSlashCommandIntercept(t *testing.T) {

@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,6 +10,9 @@ import (
 	"agyent/internal/adapters/storage/sqlite"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSubagentDispatcher_LifecycleAndQueue(t *testing.T) {
@@ -164,4 +168,45 @@ func TestSubagentDispatcher_SendTaskInput_StateCheck(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error on SendTaskInput for WAITING_FOR_INPUT task: %v", err)
 	}
+}
+
+func TestTaskExecutorWorkspaceIsolationAndFailClosedPolicy(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "subagent_workspace.db"))
+	require.NoError(t, err)
+	defer store.Close()
+
+	workspace := t.TempDir()
+	require.NoError(t, store.SaveAgent(ctx, &domain.Agent{
+		Name:           "researcher",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  workspace,
+		SecurityPreset: domain.PresetStrict,
+	}))
+
+	executor := newTaskExecutor("must-not-run", time.Second)
+	executor.storage = store
+	task := domain.SubagentTask{
+		ID:               "task-scratch-isolation",
+		ParentSessionKey: "telegram:123",
+		AgentName:        "researcher",
+		WorkspaceMode:    "scratch",
+		Prompt:           "test",
+	}
+
+	scratch, _, cleanup, err := executor.resolveWorkspace(ctx, task)
+	require.NoError(t, err)
+	assert.NotEqual(t, workspace, scratch)
+	info, err := os.Stat(scratch)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	cleanup()
+	_, err = os.Stat(scratch)
+	assert.True(t, os.IsNotExist(err))
+
+	tCtx := &taskRuntimeContext{task: task, startedAt: time.Now()}
+	res, err := executor.executeTurn(ctx, tCtx, task.Prompt, "", nil)
+	require.Error(t, err)
+	require.NotNil(t, res)
+	assert.Contains(t, err.Error(), "policy engine is not initialized")
 }

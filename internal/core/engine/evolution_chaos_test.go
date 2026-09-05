@@ -180,10 +180,10 @@ func TestEvolution_ScenarioE_ColdStart48hLookback(t *testing.T) {
 		t.Fatalf("unexpected resolve error: %v", err)
 	}
 
-	if !strings.Contains(resolved.GlobalDirectives, "<RECENT_ACTIVITY>") {
-		t.Errorf("expected <RECENT_ACTIVITY> tag for yesterday's memory fallback in:\n%s", resolved.GlobalDirectives)
+	if !strings.Contains(resolved.TodayMemory, "<RECENT_ACTIVITY>") {
+		t.Errorf("expected <RECENT_ACTIVITY> tag for yesterday's memory fallback in:\n%s", resolved.TodayMemory)
 	}
-	if !strings.Contains(resolved.GlobalDirectives, "Fixed WAL mode concurrency lock") {
+	if !strings.Contains(resolved.TodayMemory, "Fixed WAL mode concurrency lock") {
 		t.Errorf("expected yesterday's content to be loaded in cold-start")
 	}
 }

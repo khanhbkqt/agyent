@@ -1,5 +1,9 @@
 # Milestone 3: AGY Harness & Media Watcher
 
+> **Document status:** Historical
+> **Code authority:** AGY harness/watcher, Telegram media adapter and current references
+> **Last verified:** 2026-09-05
+
 > **Production-Grade Technical Specification & Evidence Dashboard (Audited by TechLead & QA/QC Lead & Real AGY Verification)**  
 > **Milestone ID:** 3  
 > **Milestone Name:** AGY Harness & Media Watcher  

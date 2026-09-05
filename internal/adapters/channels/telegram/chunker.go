@@ -5,6 +5,11 @@ import (
 	"unicode/utf8"
 )
 
+// SafeTelegramMessageLimit is the maximum raw markdown character length for a single chunk.
+// It leaves comfortable headroom for HTML tag inflation (<pre><code>, <b>, <i>), HTML entity escaping
+// (&lt;, &gt;, &amp;), and UTF-16 code units expansion to guarantee Telegram's hard limit of 4096 is never exceeded.
+const SafeTelegramMessageLimit = 3200
+
 // SplitMarkdownPreservingCodeBlocks splits a long text into chunks of at most maxLen runes,
 // ensuring that active code blocks (```<lang>) are cleanly closed in chunk N and reopened in chunk N+1.
 func SplitMarkdownPreservingCodeBlocks(text string, maxLen int) []string {
@@ -12,7 +17,7 @@ func SplitMarkdownPreservingCodeBlocks(text string, maxLen int) []string {
 		return []string{""}
 	}
 	if maxLen <= 0 {
-		maxLen = 4000
+		maxLen = SafeTelegramMessageLimit
 	}
 
 	runeCount := utf8.RuneCountInString(text)

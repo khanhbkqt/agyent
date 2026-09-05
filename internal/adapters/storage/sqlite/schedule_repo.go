@@ -276,7 +276,7 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 	checkQuery := `
 		SELECT COUNT(*)
 		FROM agent_schedules
-		WHERE (status = 'ACTIVE' OR (status = 'RUNNING' AND schedule_type = 'cron')) AND next_run_at <= ?
+		WHERE status = 'ACTIVE' AND next_run_at > 0 AND next_run_at <= ?
 	`
 	if err := s.reader().QueryRowContext(ctx, checkQuery, nowUnixMs).Scan(&count); err != nil {
 		return nil, fmt.Errorf("failed to check due schedules count: %w", err)
@@ -298,7 +298,7 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 		       next_run_at, last_run_at, run_count, max_runs,
 		       last_error, created_by, created_at, updated_at
 		FROM agent_schedules
-		WHERE (status = 'ACTIVE' OR (status = 'RUNNING' AND schedule_type = 'cron')) AND next_run_at <= ?
+		WHERE status = 'ACTIVE' AND next_run_at > 0 AND next_run_at <= ?
 		ORDER BY next_run_at ASC
 		LIMIT ?
 	`

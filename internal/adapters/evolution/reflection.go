@@ -44,16 +44,17 @@ Return ONLY a valid JSON object matching this schema without markdown fences:
 
 // ReflectionEngine handles root cause extraction with static prefix prompt caching.
 type ReflectionEngine struct {
-	runner    ports.RunnerPort
-	security  ports.SecurityGuardrailPort
-	extractor *DeltaExtractor
-	timeout   time.Duration
+	runner           ports.RunnerPort
+	executionService ports.ExecutionServicePort
+	security         ports.SecurityGuardrailPort
+	extractor        *DeltaExtractor
+	timeout          time.Duration
 }
 
-// NewReflectionEngine constructs a new ReflectionEngine instance.
+// NewReflectionEngine constructs a new reflection engine.
 func NewReflectionEngine(runner ports.RunnerPort, security ports.SecurityGuardrailPort, timeout time.Duration) *ReflectionEngine {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 45 * time.Second
 	}
 	if security == nil {
 		security = NewSecurityGuardrail()
@@ -64,6 +65,11 @@ func NewReflectionEngine(runner ports.RunnerPort, security ports.SecurityGuardra
 		extractor: NewDeltaExtractor(),
 		timeout:   timeout,
 	}
+}
+
+// SetExecutionService injects the execution service chokepoint into ReflectionEngine.
+func (r *ReflectionEngine) SetExecutionService(svc ports.ExecutionServicePort) {
+	r.executionService = svc
 }
 
 type reflectionOutput struct {
@@ -116,7 +122,7 @@ func (r *ReflectionEngine) Reflect(ctx context.Context, snapshot domain.Conversa
 		Timeout:                    r.timeout,
 		Effort:                     "medium",
 		Mode:                       "plan",
-		DangerouslySkipPermissions: true,
+		DangerouslySkipPermissions: false,
 	}
 
 	// Channel for runner completion
@@ -127,7 +133,20 @@ func (r *ReflectionEngine) Reflect(ctx context.Context, snapshot domain.Conversa
 	resChan := make(chan runnerResult, 1)
 
 	go func() {
-		res, err := r.runner.Execute(reflectCtx, req)
+		var (
+			res *domain.ExecutionResult
+			err error
+		)
+		if r.executionService != nil {
+			principal := domain.Principal{
+				Kind:      domain.PrincipalSystem,
+				Provider:  "internal",
+				SubjectID: "system:reflection",
+			}
+			res, err = r.executionService.ExecuteTurn(reflectCtx, principal, req, snapshot.SessionKey, false)
+		} else {
+			res, err = r.runner.Execute(reflectCtx, req)
+		}
 		resChan <- runnerResult{res: res, err: err}
 	}()
 

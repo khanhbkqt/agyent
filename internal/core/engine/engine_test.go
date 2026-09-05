@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,6 +168,9 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 			Mode:         "polling",
 			AdminUserIDs: []int64{123456},
 		},
+		Security: config.SecurityConfig{
+			AllowedProjectRoots: []string{"/tmp", os.TempDir()},
+		},
 		AGY: config.AGYConfig{
 			BinaryPath:                 "agy",
 			DefaultTimeoutSeconds:      10,
@@ -219,6 +223,7 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 	}, debouncerHandler)
 
 	cfg.Security = config.GetEffectiveSecurityPreset("balanced")
+	cfg.Security.AllowedProjectRoots = []string{"/tmp", os.TempDir()}
 	secMgr := securityAdapter.NewManager(cfg.Security, nil, nil)
 
 	eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
@@ -323,6 +328,101 @@ func TestEngine_StreamingTurnExecution(t *testing.T) {
 	sess, err := store.GetSession(ctx, msg.SessionKey())
 	require.NoError(t, err)
 	assert.Equal(t, "conv-stream-123", sess.GlobalConversationID)
+}
+
+func TestEngine_StreamingTurnExecution_EmitsStreamErrorOnFailure(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	eng.SetStreamingEnabled(true)
+	assert.True(t, eng.IsStreamingEnabled())
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	runner.mu.Lock()
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		return nil, fmt.Errorf("simulated stream failure: subprocess timed out")
+	}
+	runner.mu.Unlock()
+
+	var receivedErrEvent atomic.Pointer[domain.StreamErrorPayload]
+	unsub := eng.EventBus().SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamErrorPayload); ok {
+			receivedErrEvent.Store(&p)
+		}
+		return nil
+	})
+	defer unsub()
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-stream-err-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Stream this failing turn!",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "simulated stream failure")
+
+	require.Eventually(t, func() bool {
+		return receivedErrEvent.Load() != nil
+	}, 1*time.Second, 20*time.Millisecond)
+
+	payload := receivedErrEvent.Load()
+	require.NotNil(t, payload)
+	assert.Equal(t, msg.SessionKey(), payload.SessionKey)
+	assert.Contains(t, payload.Error, "simulated stream failure")
+}
+
+func TestEngine_StreamingTurnExecution_EmitsStreamErrorOnCancelledContext(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	eng.SetStreamingEnabled(true)
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	// Simulate context deadline exceeded during execution
+	runner.mu.Lock()
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		// Context times out during stream execution
+		return nil, fmt.Errorf("turn execution timed out: %w", context.DeadlineExceeded)
+	}
+	runner.mu.Unlock()
+
+	var receivedErrEvent atomic.Pointer[domain.StreamErrorPayload]
+	unsub := eng.EventBus().SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamErrorPayload); ok {
+			receivedErrEvent.Store(&p)
+		}
+		return nil
+	})
+	defer unsub()
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-stream-timeout-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Stream turn that will timeout!",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.Error(t, err)
+
+	require.Eventually(t, func() bool {
+		return receivedErrEvent.Load() != nil
+	}, 1*time.Second, 20*time.Millisecond)
+
+	payload := receivedErrEvent.Load()
+	require.NotNil(t, payload, "EventStreamError MUST be delivered to EventBus even when context is timed out/cancelled")
+	assert.Equal(t, msg.SessionKey(), payload.SessionKey)
+	assert.Contains(t, payload.Error, "context deadline exceeded")
 }
 
 func TestEngine_NewAgentBootstrapFlow(t *testing.T) {
@@ -657,6 +757,14 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 	chat1 := domain.ChatContext{ID: "111", Type: "private"}
 	chat2 := domain.ChatContext{ID: "222", Type: "private"}
 
+	// Self-service agent creation is intentionally scoped to an owner/admin of
+	// the current agent. Give Alice ownership of the fixture's default agent
+	// before exercising that flow.
+	baseAgent, err := store.GetAgent(ctx, "agyent")
+	require.NoError(t, err)
+	baseAgent.OwnerID = user1.ID
+	require.NoError(t, store.SaveAgent(ctx, baseAgent))
+
 	// 1. User 1 creates private agent 'alice_sec'
 	createMsg := domain.CanonicalMessage{
 		ID:        "msg-create-1",
@@ -666,7 +774,7 @@ func TestEngine_AgentOwnershipAndRBAC(t *testing.T) {
 		Chat:      chat1,
 		Text:      "/a new alice_sec Alice Private Security Agent",
 	}
-	err := eng.HandleDebouncedMessage(ctx, createMsg)
+	err = eng.HandleDebouncedMessage(ctx, createMsg)
 	require.NoError(t, err)
 
 	agent, err := store.GetAgent(ctx, "alice_sec")
@@ -944,7 +1052,7 @@ func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, eng.Start(ctx))
 
-	sender := domain.SenderUser{ID: "user-123", Username: "stevan"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 
 	// Case 1: Initialized Agent sends /new (proactive greeting without topic)
@@ -1175,7 +1283,7 @@ func TestEngine_InboundAttachmentRelocation(t *testing.T) {
 		ID:        "msg-att-1",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
-		Sender:    domain.SenderUser{ID: "111", Username: "stevan", FullName: "Stevan"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin", FullName: "Admin"},
 		Chat:      domain.ChatContext{ID: "chat-att-1", Type: "private"},
 		Text:      "Please read this uploaded spec",
 		Attachments: []domain.Attachment{
@@ -1245,10 +1353,10 @@ func TestEngine_EvolutionExplicitSwitchHooks(t *testing.T) {
 	mockEvo := &mockEngineEvolutionOrchestrator{}
 	eng.SetEvolutionOrchestrator(mockEvo)
 
-	sender := domain.SenderUser{ID: "998877", Username: "tester"}
-	chat := domain.ChatContext{ID: "998877", Type: "private"}
+	sender := domain.SenderUser{ID: "123456", Username: "tester"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
 
-	sessionKey := "telegram:998877"
+	sessionKey := "telegram:123456"
 	sess, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
 	require.NoError(t, err)
 
@@ -1460,7 +1568,7 @@ func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {
 	eng.SetStreamingEnabled(true)
 
 	ctx := context.Background()
-	sender := domain.SenderUser{ID: "user-123", Username: "steve"}
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "chat-123", Type: "private"}
 	sessionKey := "telegram:chat-123"
 
@@ -1538,8 +1646,8 @@ func TestEngine_ModeSlashCommand(t *testing.T) {
 		Timestamp: time.Now(),
 		Channel:   "telegram",
 		Text:      "/mode",
-		Sender:    domain.SenderUser{ID: "123", Username: "user"},
-		Chat:      domain.ChatContext{ID: "123", Type: "private"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
 	}
 
 	// 1. Query current mode
@@ -1625,4 +1733,59 @@ func TestEngine_Commands_ChannelAgnosticMarkdown(t *testing.T) {
 			assert.NoError(t, xmlErr, "Command %s produced malformed Telegram HTML: %s", cmd, telegramHTML)
 		})
 	}
+}
+
+func TestEngine_SchedulerEvents_PropagatesMediaContext(t *testing.T) {
+	eng, _, channel, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	err := eng.Start(ctx)
+	require.NoError(t, err)
+
+	expectedConvID := "conv-sched-9cf7c252"
+	expectedWS := "/Users/test/workspace"
+	expectedArtifacts := []domain.Attachment{
+		{
+			FileName: "be_na_photo.png",
+			FilePath: "/Users/test/workspace/be_na_photo.png",
+			Type:     "image",
+		},
+	}
+
+	task := domain.ScheduleTask{
+		ID:        "sched-9cf7c252",
+		AgentName: "agyent",
+		Title:     "Send Photo Task",
+		Prompt:    "Take a cute photo and send it",
+		ChatID:    "12345678",
+		Channel:   "telegram",
+	}
+
+	// 1. Trigger EventScheduleCompleted
+	eng.EventBus().AsyncEmit(ctx, domain.NewEvent(domain.EventScheduleCompleted, domain.ScheduleEventPayload{
+		Task:           task,
+		Response:       "Dạ em gửi anh ảnh nè!",
+		ConversationID: expectedConvID,
+		WorkspaceDir:   expectedWS,
+		Artifacts:      expectedArtifacts,
+	}))
+
+	// Wait for event handler to call channel.Send
+	require.Eventually(t, func() bool {
+		channel.mu.Lock()
+		defer channel.mu.Unlock()
+		return len(channel.sent) >= 1
+	}, 1*time.Second, 20*time.Millisecond)
+
+	channel.mu.Lock()
+	sentMsg := channel.sent[len(channel.sent)-1]
+	channel.mu.Unlock()
+
+	assert.Equal(t, expectedConvID, sentMsg.ConversationID, "OutboundMessage must contain ConversationID")
+	assert.Equal(t, expectedWS, sentMsg.WorkspaceDir, "OutboundMessage must contain WorkspaceDir")
+	require.Len(t, sentMsg.Attachments, 1, "OutboundMessage must contain Attachments")
+	assert.Equal(t, "be_na_photo.png", sentMsg.Attachments[0].FileName)
+	assert.Equal(t, "agyent", sentMsg.AgentName)
+	assert.Equal(t, "12345678", sentMsg.ChatID)
 }

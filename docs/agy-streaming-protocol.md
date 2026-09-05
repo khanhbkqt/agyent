@@ -1,5 +1,9 @@
 # AGY Streaming Protocol Specification & Real-Time Interaction Architecture
 
+> **Document status:** Reference
+> **Code authority:** AGY stream parser, EventBus, Telegram delivery throttler
+> **Last verified:** 2026-09-05
+
 This document provides a comprehensive technical specification of the **Bidirectional NDJSON Stream-JSON Protocol** in the Antigravity CLI (`agy`), event-driven stream parsing, and real-time delivery architecture for **`agyent`**.
 
 ---
@@ -267,7 +271,7 @@ In `internal/adapters/harness/agy/`:
 ```go
 package agy
 
-import "github.com/khanhbkqt/agyent/internal/core/domain"
+import "agyent/internal/core/domain"
 
 // StreamEvent represents a single NDJSON line from the AGY CLI
 type StreamEvent struct {
@@ -368,4 +372,3 @@ Rather than applying a fixed static deadline from turn initiation (which would p
    - Tool execution start/completion (`step_type: "tool"` or `state: "DONE"`)
    - Final turn result (`event: "result"`)
 3. **Loop & Stall Protection:** Minor `agent_response` text deltas do not reset the watchdog. If an agent process stalls or hangs on a single step without reaching a milestone for `timeout` duration, the watchdog fires, terminates the OS process tree, and returns `context.DeadlineExceeded`.
-
