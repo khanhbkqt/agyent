@@ -125,7 +125,7 @@ func generateSmartAliases(modelID string) []string {
 		aliases = append(aliases, "lite", "flash-lite")
 	}
 	if strings.Contains(idLower, "sonnet") {
-		aliases = append(aliases, "claude", "sonnet")
+		aliases = append(aliases, "claude", "sonnet", "claude-sonnet")
 	}
 	if strings.Contains(idLower, "opus") {
 		aliases = append(aliases, "opus", "claude-opus")
