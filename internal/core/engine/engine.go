@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -669,6 +670,26 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			}
 		}
 
+		// Ensure deterministic KV-cache prefix ordering for skills and MCP servers
+		if resolved != nil {
+			if len(resolved.SkillHeaders) > 1 {
+				sort.Slice(resolved.SkillHeaders, func(i, j int) bool {
+					if resolved.SkillHeaders[i].Scope != resolved.SkillHeaders[j].Scope {
+						return resolved.SkillHeaders[i].Scope < resolved.SkillHeaders[j].Scope
+					}
+					if resolved.SkillHeaders[i].Name != resolved.SkillHeaders[j].Name {
+						return resolved.SkillHeaders[i].Name < resolved.SkillHeaders[j].Name
+					}
+					return resolved.SkillHeaders[i].FilePath < resolved.SkillHeaders[j].FilePath
+				})
+			}
+			if len(resolved.ActiveMCPServers) > 1 {
+				sort.Slice(resolved.ActiveMCPServers, func(i, j int) bool {
+					return resolved.ActiveMCPServers[i].ServerName < resolved.ActiveMCPServers[j].ServerName
+				})
+			}
+		}
+
 		// Compute Temporal Gap Marker (~6 tokens) using resolved user location
 		var temporalTag string
 		if e.temporal != nil && !session.UpdatedAt.IsZero() {
@@ -795,7 +816,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 					slog.String("model", req.Model),
 					slog.String("effort", req.Effort),
 				)
-				req.Effort = ""
+				req.Effort = domain.EffortNone
+				req.DisableEffort = true
 				resolvedEffort = ""
 				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
 			}
@@ -863,7 +885,8 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 					slog.String("model", req.Model),
 					slog.String("effort", req.Effort),
 				)
-				req.Effort = ""
+				req.Effort = domain.EffortNone
+				req.DisableEffort = true
 				resolvedEffort = ""
 				continue
 			}

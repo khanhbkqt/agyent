@@ -2,6 +2,9 @@ package domain
 
 import "time"
 
+// EffortNone indicates that reasoning effort flag must not be passed to CLI.
+const EffortNone = "none"
+
 // ExecutionRequest specifies arguments needed to run an AGY session/command.
 type ExecutionRequest struct {
 	Prompt                     string            `json:"prompt"`
@@ -13,6 +16,7 @@ type ExecutionRequest struct {
 	Model                      string            `json:"model,omitempty"`
 	Mode                       string            `json:"mode,omitempty"`   // e.g. "accept-edits", "plan"
 	Effort                     string            `json:"effort,omitempty"` // e.g. "low", "medium", "high"
+	DisableEffort              bool              `json:"disable_effort,omitempty"`
 	Timeout                    time.Duration     `json:"timeout"`
 	DangerouslySkipPermissions bool              `json:"dangerously_skip_permissions"`
 	AgentName                  string            `json:"agent_name,omitempty"`

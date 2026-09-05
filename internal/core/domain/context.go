@@ -41,6 +41,7 @@ type ResolvedContext struct {
 	GlobalDirectives    string            `json:"global_directives,omitempty"`
 	WorkspaceDirectives string            `json:"workspace_directives,omitempty"`
 	CombinedDirectives  string            `json:"combined_directives"`
+	TodayMemory         string            `json:"today_memory,omitempty"`
 	SkillHeaders        []SkillHeader     `json:"skill_headers,omitempty"`
 	ActiveMCPServers    []MCPServerConfig `json:"active_mcp_servers,omitempty"`
 	ActivePlugins       []Plugin          `json:"active_plugins,omitempty"`

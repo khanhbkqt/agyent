@@ -4,9 +4,11 @@ GIT_COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE?=$(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
 LDFLAGS=-s -w -X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)
 
-.PHONY: all build test test-short test-coverage lint-plugins cross-compile release clean
+.PHONY: all build build-all test test-short test-coverage lint-plugins cross-compile release clean
 
 all: build
+
+build-all: cross-compile
 
 build:
 	@echo "==> Building local binary..."

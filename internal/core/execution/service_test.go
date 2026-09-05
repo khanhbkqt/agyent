@@ -260,9 +260,9 @@ func TestExecuteTurn_EffortErrorFallback(t *testing.T) {
 	require.NotNil(t, res)
 	assert.True(t, res.Success)
 	assert.Equal(t, 2, attempts)
-	require.Len(t, runner.executeCalls, 2)
 	assert.Equal(t, "high", runner.executeCalls[0].Effort)
-	assert.Equal(t, "", runner.executeCalls[1].Effort, "Effort flag should be stripped on retry")
+	assert.Equal(t, domain.EffortNone, runner.executeCalls[1].Effort, "Effort flag should be set to EffortNone on retry")
+	assert.True(t, runner.executeCalls[1].DisableEffort, "DisableEffort must be true on retry")
 }
 
 func TestExecuteTurn_StreamingAndCleanup(t *testing.T) {

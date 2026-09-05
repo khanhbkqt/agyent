@@ -187,7 +187,8 @@ func (s *Service) ExecuteTurn(
 				"model", req.Model,
 				"effort", req.Effort,
 			)
-			req.Effort = ""
+			req.Effort = domain.EffortNone
+			req.DisableEffort = true
 			res, execErr = s.runner.ExecuteStream(ctx, req, sessionKey)
 		}
 	} else {
@@ -198,7 +199,8 @@ func (s *Service) ExecuteTurn(
 				"model", req.Model,
 				"effort", req.Effort,
 			)
-			req.Effort = ""
+			req.Effort = domain.EffortNone
+			req.DisableEffort = true
 			res, execErr = s.runner.Execute(ctx, req)
 		}
 	}

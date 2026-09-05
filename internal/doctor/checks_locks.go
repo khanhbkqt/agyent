@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // StaleLockRecord represents an orphaned lock file detected on disk.
@@ -54,6 +55,7 @@ func findStaleLockFiles() []StaleLockRecord {
 	}
 
 	// 1. Antigravity Presence Locks (~/.gemini/antigravity-cli/presence/*.lock & ~/.gemini/antigravity/presence/*.lock)
+	// Janitor Safe Rule: Only purge locks older than 24 hours to prevent disrupting active CLI processes.
 	presenceDirs := []string{
 		filepath.Join(homeDir, ".gemini", "antigravity-cli", "presence"),
 		filepath.Join(homeDir, ".gemini", "antigravity", "presence"),
@@ -67,11 +69,12 @@ func findStaleLockFiles() []StaleLockRecord {
 					fullPath := filepath.Join(pDir, e.Name())
 					info, err := e.Info()
 					if err == nil {
-						// Stale if 0 bytes or not modified recently
-						stale = append(stale, StaleLockRecord{
-							Path:        fullPath,
-							Description: fmt.Sprintf("AGY CLI Presence Lock (%d bytes)", info.Size()),
-						})
+						if time.Since(info.ModTime()) > 24*time.Hour {
+							stale = append(stale, StaleLockRecord{
+								Path:        fullPath,
+								Description: fmt.Sprintf("AGY CLI Presence Lock (%d bytes, >24h old)", info.Size()),
+							})
+						}
 					}
 				}
 			}
@@ -79,6 +82,7 @@ func findStaleLockFiles() []StaleLockRecord {
 	}
 
 	// 2. Browser Camoufox Profile Locks (~/.agyent/camoufox/profiles/*/data_dir/parent.lock)
+	// Janitor Safe Rule: Only purge profile locks older than 24 hours.
 	camoufoxProfilesDir := filepath.Join(homeDir, ".agyent", "camoufox", "profiles")
 	profEntries, err := os.ReadDir(camoufoxProfilesDir)
 	if err == nil {
@@ -90,11 +94,13 @@ func findStaleLockFiles() []StaleLockRecord {
 					filepath.Join(camoufoxProfilesDir, pe.Name(), "data_dir", "lock"),
 				}
 				for _, lc := range lockCandidates {
-					if _, err := os.Stat(lc); err == nil {
-						stale = append(stale, StaleLockRecord{
-							Path:        lc,
-							Description: fmt.Sprintf("Camoufox Profile Lock (%s)", pe.Name()),
-						})
+					if fi, err := os.Stat(lc); err == nil {
+						if time.Since(fi.ModTime()) > 24*time.Hour {
+							stale = append(stale, StaleLockRecord{
+								Path:        lc,
+								Description: fmt.Sprintf("Camoufox Profile Lock (%s, >24h old)", pe.Name()),
+							})
+						}
 					}
 				}
 			}
