@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.28] - 2026-09-05
+
+### Fixed
+- **Camoufox Headless Linux Stabilization & Zombie Elimination:**
+  - **Media Freeze & Headless CPU Fix:** Added `image.animation_mode=none`, `media.autoplay.default=5`, and `layers.acceleration.disabled=true` preferences to eliminate 100% CPU lockups on headless Linux VPS environments.
+  - **Targeted Process Watchdog:** Profile-scoped process cleanup terminating orphan `camoufox-bin` instances upon profile unlock.
+  - **Busy Guard & Page Stop:** Wrapped browser actions in `busy_guard(60s)` with automatic `window.stop()` fallback.
+  - **Dedicated Worker Thread Affinity (`AgentWorkerManager`):** Enforced dedicated worker threads in Python daemon to maintain Playwright greenlet thread affinity and support multi-agent parallel browsing without lock contention.
+  - **Extended RPC Timeout:** Increased RPC client timeout to 70s to accommodate 60s browser execution deadlines.
+- **Scheduler Reliability & Session Starvation Prevention:**
+  - **Configurable Task Timeout:** Supported `DefaultTaskTimeoutSeconds` in scheduler config without hardcoded clamping.
+  - **ParseNextRun Guard:** Fixed error handling to prevent negative `next_run_at` busy-spin loops on invalid cron parsing.
+  - **Active Schedule Scope:** Refined `AcquireDueSchedules` query to only claim `ACTIVE` schedules, avoiding contention with paused or completed jobs.
+  - **Contextual Failure Diagnostics:** Emitted enriched diagnostic notifications on `EventScheduleFailed`.
+- **AGY Subprocess Timeout Forwarding:**
+  - Propagated resolved turn and subagent timeouts to `agy` CLI via `--print-timeout` flag, preventing premature 5-minute process termination on long-running tasks.
+
+---
+
 ## [1.0.27] - 2026-09-05
 
 ### Added
