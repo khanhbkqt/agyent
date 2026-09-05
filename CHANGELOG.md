@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.25] - 2026-09-05
+
+### Added
+- **Generic Exponential Backoff with Jitter (`core/retry`):**
+  - **Zero-CGO Pure-Go Retry Package:** Implemented production-grade retry mechanics featuring Full, Equal, Decorrelated, and No Jitter algorithms.
+  - **Additive Jitter for Rate Limits:** Added additive jitter protection for server-instructed `RetryAfter` durations to prevent synchronized thundering herd spikes against Telegram and LLM APIs.
+  - **Generic Runners & Leak Prevention:** Provided generic `DoWithResult[T]` and `Do` functions with permanent error bailout, custom delay extractors, and timer leak prevention.
+
+### Fixed
+- **Multi-Bot Scheduled Outbound Delivery:** Routed scheduled task outputs and heartbeat proactive messages by `AgentName` to dedicated Telegram bot instances, with seamless fallback to primary bot token.
+- **Model Alias Canonicalization & Reasoning Effort Sanitization:**
+  - Standardized model aliases (`sonnet`, `opus`, `flash`, `pro`) in runner argument builders and domain models.
+  - Automatically stripped unsupported `--effort` flags on models without reasoning effort support (e.g. Gemini Flash models).
+  - Added self-healing retry in scheduled executor upon detecting CLI reasoning effort rejection errors.
+- **EventBus High-Concurrency Stress Test:** Sized async queue buffer to prevent dropped event assertions during high-volume parallel stress testing.
+
+---
+
 ## [1.0.24] - 2026-09-04
 
 ### Added
