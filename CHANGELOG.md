@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.27] - 2026-09-05
+
+### Added
+- **Standardized Architecture & Engineering Workflows:**
+  - Introduced formal engineering workflow graphs (`debug.json`, `bugfix.json`, `change.json`, `new-feature.json`) in `.agents/workflows/`.
+  - Added automated repository verification gates (`check_workflows.py`, `check_docs.py`, `check_architecture.py`) wired into `make verify`.
+  - Standardized repository documentation taxonomy, ADR framework, and engineering contracts.
+
+### Fixed
+- **Telegram Zero-Drop Delivery Guarantee & Resilience:**
+  - **Extended Request Timeout:** Configured 30s request timeouts across all Telegram bot instances and operations.
+  - **Transient Drop Retry:** Implemented 3-attempt exponential backoff retry for transient network drops and upstream 5xx gateway errors.
+  - **Safe Chunking & Recursive Bisection:** Lowered markdown chunking threshold to `SafeTelegramMessageLimit = 3200` characters to prevent Telegram 400 "message is too long" errors, with automated recursive chunk bisection fallback.
+  - **Multi-Chunk Overflow Delivery:** Guaranteed sequential delivery of all intermediate chunks when streaming response spans $\ge 3$ chunks.
+  - **Forum Topic ThreadID Preservation:** Preserved `ThreadID` across deliveries and in-place edit fallbacks.
+  - **Edit Fallback:** Added graceful fallback from failed in-place message edits to sending fresh messages upon stream completion.
+  - **Detached Error Event Emission:** Emitted `EventStreamError` using detached background context to ensure errors are never dropped upon turn timeout or cancellation.
+  - **Instant Typing Indicator:** Dispatched immediate typing action upon message intake, guarded with `sync.Once` on session lock acquisition.
+  - **Regression Test Suites:** Added comprehensive test suites `TC-THR-12..17` and engine streaming timeout error tests.
+
+---
+
 ## [1.0.26] - 2026-09-05
 
 ### Added
