@@ -29,6 +29,10 @@ test-coverage:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
+test-e2e: build
+	@echo "==> Running hermetic E2E tests with compiled binary..."
+	go test -v -tags e2e ./cmd/agyent/...
+
 cross-compile: clean
 	@echo "==> Cross-compiling zero-CGO static binaries for 6 target platforms..."
 	mkdir -p dist/agyent-linux-amd64 dist/agyent-linux-arm64 dist/agyent-darwin-amd64 dist/agyent-darwin-arm64 dist/agyent-windows-amd64 dist/agyent-windows-arm64
