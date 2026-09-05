@@ -225,3 +225,139 @@ func TestAdapter_MultiBotPoolInitialization(t *testing.T) {
 	assert.Equal(t, "dev_architect", adapter.bindAgents[bot1.Id])
 	assert.Equal(t, "wife_assistant", adapter.bindAgents[bot2.Id])
 }
+
+// TC-LFC-04: Multi-Bot Outbound Routing via AgentName (Scheduled Tasks / Crons)
+func TestAdapter_MultiBot_RoutingByAgentName(t *testing.T) {
+	mockServer1 := NewMockTelegramServer("token_bot_1", 1001)
+	defer mockServer1.Close()
+
+	mockServer2 := NewMockTelegramServer("token_bot_2", 2002)
+	defer mockServer2.Close()
+
+	bot1, err := mockServer1.NewBot()
+	require.NoError(t, err)
+
+	bot2, err := mockServer2.NewBot()
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	cfg.Telegram.Bots = []config.BotConfig{
+		{
+			Name:      "main_bot",
+			BotToken:  "token_bot_1",
+			BindAgent: "agyent",
+		},
+		{
+			Name:      "wife_bot",
+			BotToken:  "token_bot_2",
+			BindAgent: "wife_assistant",
+		},
+	}
+	cfg.Telegram.AdminUserIDs = []int64{12345}
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	adapter := NewAdapter(cfg, bus, WithBots(bot1, bot2))
+	inbound := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = adapter.Start(ctx, inbound)
+	require.NoError(t, err)
+	defer adapter.Stop()
+
+	// 1. Send scheduled task output for wife_assistant (BotID is 0, pure AgentName routing)
+	msgWife := domain.OutboundMessage{
+		AgentName: "wife_assistant",
+		ChatID:    "8544450322",
+		Text:      "⏰ Scheduled report for wife!",
+	}
+	err = adapter.Send(context.Background(), msgWife)
+	require.NoError(t, err)
+
+	// 2. Send scheduled task output for agyent (BotID is 0, pure AgentName routing)
+	msgMain := domain.OutboundMessage{
+		AgentName: "agyent",
+		ChatID:    "8544450322",
+		Text:      "⏰ Scheduled report for agyent!",
+	}
+	err = adapter.Send(context.Background(), msgMain)
+	require.NoError(t, err)
+
+	// Verify that mockServer2 (wife_bot) received the wife report
+	mockServer2.mu.Lock()
+	require.Equal(t, 1, len(mockServer2.SentMessages))
+	assert.Contains(t, mockServer2.SentMessages[0].Text, "report for wife")
+	assert.Equal(t, int64(8544450322), mockServer2.SentMessages[0].ChatID)
+	mockServer2.mu.Unlock()
+
+	// Verify that mockServer1 (main_bot) received the main report
+	mockServer1.mu.Lock()
+	require.Equal(t, 1, len(mockServer1.SentMessages))
+	assert.Contains(t, mockServer1.SentMessages[0].Text, "report for agyent")
+	assert.Equal(t, int64(8544450322), mockServer1.SentMessages[0].ChatID)
+	mockServer1.mu.Unlock()
+}
+
+// TC-LFC-05: Multi-Bot Fallback to Primary Bot when Agent Bot Fails (e.g. 403 Forbidden)
+func TestAdapter_MultiBot_FallbackToPrimaryBotWhenAgentBotFails(t *testing.T) {
+	mockServer1 := NewMockTelegramServer("token_bot_1", 1001)
+	defer mockServer1.Close()
+
+	mockServer2 := NewMockTelegramServer("token_bot_2", 2002)
+	defer mockServer2.Close()
+
+	bot1, err := mockServer1.NewBot()
+	require.NoError(t, err)
+
+	bot2, err := mockServer2.NewBot()
+	require.NoError(t, err)
+
+	cfg := config.DefaultConfig()
+	cfg.Telegram.Bots = []config.BotConfig{
+		{
+			Name:      "main_bot",
+			BotToken:  "token_bot_1",
+			BindAgent: "agyent",
+		},
+		{
+			Name:      "wife_bot",
+			BotToken:  "token_bot_2",
+			BindAgent: "wife_assistant",
+		},
+	}
+	cfg.Telegram.AdminUserIDs = []int64{12345}
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	adapter := NewAdapter(cfg, bus, WithBots(bot1, bot2))
+	inbound := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = adapter.Start(ctx, inbound)
+	require.NoError(t, err)
+	defer adapter.Stop()
+
+	// Simulate wife_bot failing with 403 Forbidden on sendMessage (e.g. user hasn't /started wife_bot yet)
+	mockServer2.SimulateSendErrorStatus = 403
+	mockServer2.SimulateSendErrorBody = `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}`
+
+	// Send message for wife_assistant
+	msgWife := domain.OutboundMessage{
+		AgentName: "wife_assistant",
+		ChatID:    "8544450322",
+		Text:      "⏰ Urgent notification for wife!",
+	}
+	err = adapter.Send(context.Background(), msgWife)
+	require.NoError(t, err, "Send must succeed via fallback to primary bot")
+
+	// Verify that mockServer1 (main_bot) received the message due to fallback
+	mockServer1.mu.Lock()
+	require.Equal(t, 1, len(mockServer1.SentMessages))
+	assert.Contains(t, mockServer1.SentMessages[0].Text, "Urgent notification for wife")
+	assert.Equal(t, int64(8544450322), mockServer1.SentMessages[0].ChatID)
+	mockServer1.mu.Unlock()
+}

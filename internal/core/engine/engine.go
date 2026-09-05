@@ -1298,6 +1298,13 @@ func (e *Engine) subscribeSchedulerEvents() {
 			channel = "telegram"
 		}
 
+		var botID int64
+		if task.TargetSessionKey != "" {
+			if parsed, err := domain.ParseSessionKey(task.TargetSessionKey); err == nil {
+				botID = parsed.BotID
+			}
+		}
+
 		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
 
 		body := strings.TrimSpace(payload.Response)
@@ -1311,6 +1318,8 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
 			Channel:   channel,
+			BotID:     botID,
+			AgentName: task.AgentName,
 			ChatID:    task.ChatID,
 			ThreadID:  threadID,
 			Text:      msgText,
@@ -1334,6 +1343,13 @@ func (e *Engine) subscribeSchedulerEvents() {
 			channel = "telegram"
 		}
 
+		var botID int64
+		if task.TargetSessionKey != "" {
+			if parsed, err := domain.ParseSessionKey(task.TargetSessionKey); err == nil {
+				botID = parsed.BotID
+			}
+		}
+
 		threadID, _ := strconv.ParseInt(task.ThreadID, 10, 64)
 
 		errMsg := strings.TrimSpace(payload.Error)
@@ -1346,6 +1362,8 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
 			Channel:   channel,
+			BotID:     botID,
+			AgentName: task.AgentName,
 			ChatID:    task.ChatID,
 			ThreadID:  threadID,
 			Text:      fmt.Sprintf("⚠️ **Scheduled Task #%s Failed:** %s\n🤖 **Agent:** `@%s`\n❌ **Error:** %s", task.ID, task.Title, task.AgentName, errMsg),
@@ -1369,6 +1387,13 @@ func (e *Engine) subscribeSchedulerEvents() {
 			channel = "telegram"
 		}
 
+		var botID int64
+		if hb.TargetSessionKey != "" {
+			if parsed, err := domain.ParseSessionKey(hb.TargetSessionKey); err == nil {
+				botID = parsed.BotID
+			}
+		}
+
 		respText := strings.TrimSpace(payload.Response)
 		if respText == "" {
 			respText = "No findings to report. All checks completed successfully."
@@ -1378,6 +1403,8 @@ func (e *Engine) subscribeSchedulerEvents() {
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
 			Channel:   channel,
+			BotID:     botID,
+			AgentName: hb.AgentName,
 			ChatID:    hb.ChatID,
 			ThreadID:  threadID,
 			Text:      fmt.Sprintf("💓 **Heartbeat Report (@%s):**\n\n%s", hb.AgentName, respText),
@@ -1401,12 +1428,21 @@ func (e *Engine) subscribeSchedulerEvents() {
 			channel = "telegram"
 		}
 
+		var botID int64
+		if hb.TargetSessionKey != "" {
+			if parsed, err := domain.ParseSessionKey(hb.TargetSessionKey); err == nil {
+				botID = parsed.BotID
+			}
+		}
+
 		threadID, _ := strconv.ParseInt(hb.ThreadID, 10, 64)
 
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:  channel,
-			ChatID:   hb.ChatID,
-			ThreadID: threadID,
+			Channel:   channel,
+			BotID:     botID,
+			AgentName: hb.AgentName,
+			ChatID:    hb.ChatID,
+			ThreadID:  threadID,
 			Text: fmt.Sprintf("💔 **Heartbeat Failed (@%s):**\n⚠️ %s",
 				hb.AgentName, payload.Error),
 			ParseMode: "Markdown",

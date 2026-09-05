@@ -74,10 +74,11 @@ type InlineKeyboard []InlineKeyboardRow
 
 // TargetContext specifies the destination channel, bot, and chat context for message delivery.
 type TargetContext struct {
-	Channel  string `json:"channel"`             // e.g. "telegram", "zalo", "slack"
-	BotID    string `json:"bot_id,omitempty"`    // Unique platform-agnostic bot identifier
-	ChatID   string `json:"chat_id"`             // Target chat / conversation ID
-	ThreadID int64  `json:"thread_id,omitempty"` // Optional forum topic / message thread ID
+	Channel   string `json:"channel"`              // e.g. "telegram", "zalo", "slack"
+	BotID     string `json:"bot_id,omitempty"`     // Unique platform-agnostic bot identifier
+	AgentName string `json:"agent_name,omitempty"` // Dedicated target agent persona name (e.g. "wife_assistant")
+	ChatID    string `json:"chat_id"`              // Target chat / conversation ID
+	ThreadID  int64  `json:"thread_id,omitempty"`  // Optional forum topic / message thread ID
 }
 
 // OutboundMessage represents a standardized response to be sent to a channel.
@@ -85,6 +86,7 @@ type OutboundMessage struct {
 	Channel          string               `json:"channel,omitempty"`    // Originating channel identifier (e.g. "telegram", "zalo")
 	BotID            int64                `json:"bot_id,omitempty"`     // Originating bot ID for multi-bot outbound routing
 	BotIDStr         string               `json:"bot_id_str,omitempty"` // String representation of BotID
+	AgentName        string               `json:"agent_name,omitempty"` // Originating or target agent persona name for dedicated bot dispatch
 	ChatID           string               `json:"chat_id"`
 	ThreadID         int64                `json:"thread_id,omitempty"`
 	Text             string               `json:"text"`
@@ -103,10 +105,11 @@ func (o *OutboundMessage) TargetContext() TargetContext {
 		botID = strconv.FormatInt(o.BotID, 10)
 	}
 	return TargetContext{
-		Channel:  o.Channel,
-		BotID:    botID,
-		ChatID:   o.ChatID,
-		ThreadID: o.ThreadID,
+		Channel:   o.Channel,
+		BotID:     botID,
+		AgentName: o.AgentName,
+		ChatID:    o.ChatID,
+		ThreadID:  o.ThreadID,
 	}
 }
 
@@ -117,10 +120,11 @@ func (m *CanonicalMessage) TargetContext() TargetContext {
 		botID = strconv.FormatInt(m.BotID, 10)
 	}
 	return TargetContext{
-		Channel:  m.Channel,
-		BotID:    botID,
-		ChatID:   m.Chat.ID,
-		ThreadID: m.Chat.ThreadID,
+		Channel:   m.Channel,
+		BotID:     botID,
+		AgentName: m.BindAgent,
+		ChatID:    m.Chat.ID,
+		ThreadID:  m.Chat.ThreadID,
 	}
 }
 

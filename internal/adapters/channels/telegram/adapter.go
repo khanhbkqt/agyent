@@ -143,13 +143,43 @@ func (a *Adapter) getBotByAgent(agentName string) *gotgbot.Bot {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	cleanTarget := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(agentName)), "@")
+	if cleanTarget == "" {
+		return a.bot
+	}
+
+	// 1. Check explicit agent bindings (bindAgents)
 	for botID, name := range a.bindAgents {
-		if strings.EqualFold(name, agentName) {
+		cleanName := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(name)), "@")
+		if cleanName == cleanTarget {
 			if b, exists := a.bots[botID]; exists {
 				return b
 			}
 		}
 	}
+
+	// 2. Check bot configs (BindAgent or Name)
+	for botID, bCfg := range a.botConfigs {
+		cleanBind := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(bCfg.BindAgent)), "@")
+		cleanCfgName := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(bCfg.Name)), "@")
+		if cleanBind == cleanTarget || cleanCfgName == cleanTarget {
+			if b, exists := a.bots[botID]; exists {
+				return b
+			}
+		}
+	}
+
+	// 3. Check bot usernames (e.g. wife_assistant_bot matching wife_assistant)
+	for _, b := range a.bots {
+		if b == nil {
+			continue
+		}
+		cleanUser := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(b.Username)), "@")
+		if cleanUser == cleanTarget || cleanUser == cleanTarget+"_bot" || cleanUser == cleanTarget+"bot" {
+			return b
+		}
+	}
+
 	return a.bot
 }
 
@@ -174,15 +204,19 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 						break
 					}
 				}
+				agentBinding := bCfg.BindAgent
+				if agentBinding == "" && bCfg.Name != "" && bCfg.Name != "default" {
+					agentBinding = bCfg.Name
+				}
 				if matchedBot != nil {
 					a.botConfigs[matchedBot.Id] = bCfg
-					if bCfg.BindAgent != "" {
-						a.bindAgents[matchedBot.Id] = bCfg.BindAgent
+					if agentBinding != "" {
+						a.bindAgents[matchedBot.Id] = agentBinding
 					}
 				} else if i == 0 && a.bot != nil {
 					a.botConfigs[a.bot.Id] = bCfg
-					if bCfg.BindAgent != "" {
-						a.bindAgents[a.bot.Id] = bCfg.BindAgent
+					if agentBinding != "" {
+						a.bindAgents[a.bot.Id] = agentBinding
 					}
 				}
 			}
@@ -199,8 +233,12 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 
 				a.bots[bot.Id] = bot
 				a.botConfigs[bot.Id] = bCfg
-				if bCfg.BindAgent != "" {
-					a.bindAgents[bot.Id] = bCfg.BindAgent
+				agentBinding := bCfg.BindAgent
+				if agentBinding == "" && bCfg.Name != "" && bCfg.Name != "default" {
+					agentBinding = bCfg.Name
+				}
+				if agentBinding != "" {
+					a.bindAgents[bot.Id] = agentBinding
 				}
 				if a.bot == nil {
 					a.bot = bot
@@ -415,11 +453,33 @@ func (a *Adapter) parseBotID(botIDStr string) int64 {
 
 // Send dispatches an outbound text message to the target chat/thread.
 func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
-	botID := msg.BotID
-	if botID == 0 && msg.BotIDStr != "" {
-		botID = a.parseBotID(msg.BotIDStr)
+	var bot *gotgbot.Bot
+
+	// 1. If an explicit AgentName is provided, prefer the dedicated bot bound to that agent.
+	// This ensures scheduled tasks, heartbeats, and agent-specific notifications
+	// are always delivered by the agent's own bot.
+	if msg.AgentName != "" {
+		if agentBot := a.getBotByAgent(msg.AgentName); agentBot != nil && (agentBot != a.bot || len(a.bots) == 1) {
+			bot = agentBot
+		}
 	}
-	bot := a.getBot(botID)
+
+	// 2. If no agent-specific bot was resolved, use explicit BotID if present.
+	if bot == nil {
+		botID := msg.BotID
+		if botID == 0 && msg.BotIDStr != "" {
+			botID = a.parseBotID(msg.BotIDStr)
+		}
+		if botID > 0 {
+			bot = a.getBot(botID)
+		}
+	}
+
+	// 3. Fallback to default bot
+	if bot == nil {
+		bot = a.getBot(0)
+	}
+
 	a.mu.RLock()
 	mediaMgr := a.mediaMgr
 	a.mu.RUnlock()
@@ -538,6 +598,14 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 				}
 				_, err = bot.SendMessage(chatID, fallbackText, opts)
 			}
+			if err != nil && a.bot != nil && bot != a.bot {
+				slog.WarnContext(ctx, "Failed to send message via agent-specific bot, falling back to primary bot",
+					slog.String("agent", msg.AgentName),
+					slog.String("chat_id", msg.ChatID),
+					slog.String("error", err.Error()),
+				)
+				_, err = a.bot.SendMessage(chatID, formatted, opts)
+			}
 			if err != nil {
 				slog.ErrorContext(ctx, "Failed to send telegram message",
 					slog.String("chat_id", msg.ChatID),
@@ -559,8 +627,21 @@ func (a *Adapter) SendTyping(ctx context.Context, target domain.TargetContext) e
 
 // SendChatAction broadcasts a specific action indicator.
 func (a *Adapter) SendChatAction(ctx context.Context, target domain.TargetContext, action string) error {
-	botID := a.parseBotID(target.BotID)
-	bot := a.getBot(botID)
+	var bot *gotgbot.Bot
+	if target.AgentName != "" {
+		if agentBot := a.getBotByAgent(target.AgentName); agentBot != nil && (agentBot != a.bot || len(a.bots) == 1) {
+			bot = agentBot
+		}
+	}
+	if bot == nil {
+		botID := a.parseBotID(target.BotID)
+		if botID > 0 {
+			bot = a.getBot(botID)
+		}
+	}
+	if bot == nil {
+		bot = a.getBot(0)
+	}
 	if bot == nil {
 		return errors.New("bot client not initialized")
 	}
@@ -576,13 +657,29 @@ func (a *Adapter) SendChatAction(ctx context.Context, target domain.TargetContex
 	}
 
 	_, err = bot.SendChatAction(chatIDInt, action, opts)
+	if err != nil && a.bot != nil && bot != a.bot {
+		_, err = a.bot.SendChatAction(chatIDInt, action, opts)
+	}
 	return err
 }
 
 // SendFile uploads and sends a file attachment to the chat/thread.
 func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, filePath string, caption string) error {
-	botID := a.parseBotID(target.BotID)
-	bot := a.getBot(botID)
+	var bot *gotgbot.Bot
+	if target.AgentName != "" {
+		if agentBot := a.getBotByAgent(target.AgentName); agentBot != nil && (agentBot != a.bot || len(a.bots) == 1) {
+			bot = agentBot
+		}
+	}
+	if bot == nil {
+		botID := a.parseBotID(target.BotID)
+		if botID > 0 {
+			bot = a.getBot(botID)
+		}
+	}
+	if bot == nil {
+		bot = a.getBot(0)
+	}
 	if bot == nil {
 		return errors.New("bot client not initialized")
 	}
@@ -609,6 +706,13 @@ func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, fil
 			opts.MessageThreadId = target.ThreadID
 		}
 		_, err = bot.SendPhoto(chatIDInt, inputFile, opts)
+		if err != nil && a.bot != nil && bot != a.bot {
+			if fileFallback, oErr := os.Open(filePath); oErr == nil {
+				defer fileFallback.Close()
+				inputFileFallback := &gotgbot.FileReader{Name: filepath.Base(filePath), Data: fileFallback}
+				_, err = a.bot.SendPhoto(chatIDInt, inputFileFallback, opts)
+			}
+		}
 		return err
 	}
 
@@ -619,6 +723,13 @@ func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, fil
 		opts.MessageThreadId = target.ThreadID
 	}
 	_, err = bot.SendDocument(chatIDInt, inputFile, opts)
+	if err != nil && a.bot != nil && bot != a.bot {
+		if fileFallback, oErr := os.Open(filePath); oErr == nil {
+			defer fileFallback.Close()
+			inputFileFallback := &gotgbot.FileReader{Name: filepath.Base(filePath), Data: fileFallback}
+			_, err = a.bot.SendDocument(chatIDInt, inputFileFallback, opts)
+		}
+	}
 	return err
 }
 
