@@ -124,10 +124,17 @@ To ensure rock-solid rendering, the gateway implements **Telegram HTML Mode (`Pa
    - Blockquotes (`> quote`) $\rightarrow$ `<blockquote>...</blockquote>`
    - Links, Spoilers, Strikethrough $\rightarrow$ `<a href="...">`, `<tg-spoiler>`, `<s>`
 2. **Streaming Auto-Closing (LIFO Tag Stack):** Detects and temporarily closes unclosed opening tags in outbound streaming payloads without altering internal text buffers.
-3. **Smart Chunking for Messages Exceeding 4000 Characters:**
-   - Finds safe break points at line/paragraph boundaries.
-   - Preserves code blocks (`<pre><code>`) and formatting tags across message chunks (closing tags at end of Chunk 1 and reopening them at start of Chunk 2).
-4. **Resilient Plain-Text Fallback:** If Telegram returns an entity parse error 400, the formatter automatically strips all HTML tags using `StripHTMLTags` and delivers clean plain text.
+3. **Safe Chunking & Smart Code-Block Preservation (`SafeTelegramMessageLimit = 3200`):**
+   - Splits long messages at safe paragraph/line boundaries into chunks of at most 3200 runes, leaving ample headroom (>800 characters) for HTML formatting tags (`<pre><code class="...">`, `<b>`, `<i>`), entity escapes (`&lt;`, `&gt;`, `&amp;`), and UTF-16 code units so payloads never exceed Telegram's hard 4096-character limit.
+   - Preserves code blocks (`<pre><code>`) across message chunks (closing tags cleanly in Chunk N and reopening them in Chunk N+1).
+   - **Recursive Chunk Splitting:** If Telegram rejects a payload with `400 Bad Request: message is too long`, the delivery layer automatically and recursively splits the message in half and delivers all parts sequentially without message loss.
+4. **Reliable Network Delivery & Edit Fallback:**
+   - Enforces a 30-second HTTP timeout on Telegram API operations (defending against network drops on long transmissions).
+   - Automatically retries transient network errors (`context deadline exceeded`, `connection reset by peer`, `EOF`) and HTTP `5xx` with exponential backoff (up to 3 attempts: 500ms, 1500ms, 3000ms).
+   - Honors HTTP `429 Too Many Requests` backoff by respecting the `retry_after` parameter.
+   - If an in-place message edit (`editMessageText`) fails due to expiration or deletion, automatically falls back to sending a fresh message (`sendMessage`) to ensure AI responses are never dropped.
+   - Emits `EventStreamError` synchronously on execution failures so users receive immediate, clear feedback.
+5. **Resilient Plain-Text Fallback:** If Telegram returns an entity parse error 400, the formatter automatically strips all HTML tags using `StripHTMLTags` and delivers clean plain text.
 
 ---
 

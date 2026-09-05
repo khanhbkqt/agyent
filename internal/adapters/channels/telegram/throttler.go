@@ -543,6 +543,7 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 	text := sess.Buffer.String()
 	msgID := sess.CurrentMsgID
 	chatID := sess.ChatID
+	threadID := sess.ThreadID
 	sess.Mu.Unlock()
 
 	if msgID == 0 {
@@ -550,14 +551,14 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 		return
 	}
 
-	// Check for Multi-Message Overflow (>4000 characters during streaming)
+	// Check for Multi-Message Overflow (>SafeTelegramMessageLimit characters during streaming)
 	runeCount := len([]rune(text))
-	if runeCount > 4000 {
+	if runeCount > SafeTelegramMessageLimit {
 		dt.handleMultiMessageOverflow(sess, text)
 		return
 	}
 
-	dt.editMessageWithFallback(bot, chatID, msgID, text)
+	dt.editMessageWithFallback(bot, chatID, threadID, msgID, text, false)
 
 	sess.Mu.Lock()
 	sess.LastSentText = text
@@ -571,22 +572,28 @@ func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, ful
 	if bot == nil {
 		return
 	}
-	chunks := SplitMarkdownPreservingCodeBlocks(fullText, 4000)
+	chunks := SplitMarkdownPreservingCodeBlocks(fullText, SafeTelegramMessageLimit)
 	if len(chunks) < 2 {
 		return
 	}
 
 	// 1. Finalize Chunk 0 on current message
-	dt.editMessageWithFallback(bot, sess.ChatID, sess.CurrentMsgID, chunks[0])
+	dt.editMessageWithFallback(bot, sess.ChatID, sess.ThreadID, sess.CurrentMsgID, chunks[0], true)
 
-	// 2. Spawn Chunk 1 on new message
-	newMsg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, chunks[1])
+	// 2. Deliver all intermediate chunks (chunks 1 to len-2)
+	for i := 1; i < len(chunks)-1; i++ {
+		dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, chunks[i])
+	}
+
+	// 3. Spawn the last chunk on new active streaming message
+	lastChunk := chunks[len(chunks)-1]
+	newMsg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, lastChunk)
 	if newMsg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = newMsg.MessageId
 		sess.Buffer.Reset()
-		sess.Buffer.WriteString(chunks[1])
-		sess.LastSentText = chunks[1]
+		sess.Buffer.WriteString(lastChunk)
+		sess.LastSentText = lastChunk
 		sess.Dirty = false
 		sess.LastEditTime = time.Now()
 		sess.Mu.Unlock()
@@ -609,7 +616,7 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	sess.Mu.Unlock()
 
 	if strings.TrimSpace(text) == "" {
-		return
+		text = "⚠️ [Lượt xử lý hoàn tất nhưng không có nội dung phản hồi. Hãy thử gửi lại câu hỏi hoặc yêu cầu khác.]"
 	}
 
 	wsDir := sess.WorkspaceDir
@@ -639,7 +646,7 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 		}(bot, chatID, threadID, unuploadedMedia)
 	}
 
-	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, 4000)
+	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, SafeTelegramMessageLimit)
 	if len(chunks) == 0 {
 		return
 	}
@@ -653,15 +660,15 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	}
 
 	// Case 2: Edit first chunk into existing message
-	dt.editMessageWithFallback(bot, chatID, msgID, chunks[0])
+	dt.editMessageWithFallback(bot, chatID, threadID, msgID, chunks[0], true)
 
-	// Case 3: Send any subsequent overflow chunks (>4000 chars total) as new messages
+	// Case 3: Send any subsequent overflow chunks (>SafeTelegramMessageLimit chars total) as new messages
 	for i := 1; i < len(chunks); i++ {
 		dt.sendMessageWithFallback(bot, chatID, threadID, chunks[i])
 	}
 }
 
-func (dt *DeliveryThrottler) editMessageWithFallback(bot *gotgbot.Bot, chatID, msgID int64, text string) {
+func (dt *DeliveryThrottler) editMessageWithFallback(bot *gotgbot.Bot, chatID, threadID, msgID int64, text string, isFinal bool) {
 	if bot == nil || strings.TrimSpace(text) == "" {
 		return
 	}
@@ -671,31 +678,79 @@ func (dt *DeliveryThrottler) editMessageWithFallback(bot *gotgbot.Bot, chatID, m
 		MessageId: msgID,
 		Text:      formatted,
 		ParseMode: "HTML",
+		RequestOpts: &gotgbot.RequestOpts{
+			Timeout: 30 * time.Second,
+		},
 	}
 	if _, _, err := bot.EditMessageText(opts); err != nil {
 		var tgErr *gotgbot.TelegramError
 		if errors.As(err, &tgErr) {
+			// Benign: exact same content was already displayed
+			if strings.Contains(strings.ToLower(tgErr.Description), "message is not modified") {
+				return
+			}
+
 			if tgErr.Code == 400 {
+				// If message too long, edit first chunk and send remainder as new message
+				if strings.Contains(strings.ToLower(tgErr.Description), "too long") || len([]rune(formatted)) > 4000 {
+					chunks := SplitMarkdownPreservingCodeBlocks(text, SafeTelegramMessageLimit)
+					if len(chunks) < 2 {
+						half := len([]rune(text)) / 2
+						if half > 0 {
+							chunks = SplitMarkdownPreservingCodeBlocks(text, half)
+						}
+					}
+					if len(chunks) >= 2 {
+						dt.editMessageWithFallback(bot, chatID, threadID, msgID, chunks[0], isFinal)
+						for i := 1; i < len(chunks); i++ {
+							dt.sendMessageWithFallback(bot, chatID, threadID, chunks[i])
+						}
+						return
+					}
+				}
+
 				opts.ParseMode = ""
 				opts.Text = StripHTMLTags(formatted)
-				if _, _, retryErr := bot.EditMessageText(opts); retryErr != nil {
-					slog.Warn("Telegram editMessageText plain text fallback failed", "chat_id", chatID, "msg_id", msgID, "error", retryErr)
+				if _, _, retryErr := bot.EditMessageText(opts); retryErr == nil {
+					return
 				}
+				slog.Warn("Telegram editMessageText plain text fallback failed", "chat_id", chatID, "thread_id", threadID, "msg_id", msgID, "error", err)
 			} else if tgErr.Code == 429 {
 				retrySec := 1
 				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
 					retrySec = int(tgErr.ResponseParams.RetryAfter)
 				}
 				time.Sleep(time.Duration(retrySec) * time.Second)
-				if _, _, retryErr := bot.EditMessageText(opts); retryErr != nil {
-					slog.Warn("Telegram editMessageText rate limit retry failed", "chat_id", chatID, "msg_id", msgID, "error", retryErr)
+				if _, _, retryErr := bot.EditMessageText(opts); retryErr == nil {
+					return
 				}
 			} else {
-				slog.Warn("Telegram editMessageText failed", "chat_id", chatID, "msg_id", msgID, "error", err)
+				slog.Warn("Telegram editMessageText failed", "chat_id", chatID, "thread_id", threadID, "msg_id", msgID, "error", err)
 			}
 		} else {
-			slog.Warn("Telegram editMessageText network error", "chat_id", chatID, "msg_id", msgID, "error", err)
+			slog.Warn("Telegram editMessageText network error", "chat_id", chatID, "thread_id", threadID, "msg_id", msgID, "error", err)
 		}
+
+		// Check if message to edit was permanently lost or deleted (400 "not found" / "can't be edited")
+		var isPermanentNotFound bool
+		var tgErr2 *gotgbot.TelegramError
+		if errors.As(err, &tgErr2) && tgErr2.Code == 400 {
+			desc := strings.ToLower(tgErr2.Description)
+			if strings.Contains(desc, "not found") || strings.Contains(desc, "can't be edited") || strings.Contains(desc, "cannot be edited") {
+				isPermanentNotFound = true
+			}
+		}
+
+		// If intermediate edit and not permanently deleted, do not spam new partial messages into the chat;
+		// the next 1.5s ticker will retry editing the latest accumulated buffer.
+		if !isFinal && !isPermanentNotFound {
+			return
+		}
+
+		// Edit failed permanently or on final flush: fallback to sending fresh message so user response is NEVER swallowed.
+		slog.Warn("Telegram edit failed; falling back to sending fresh message to prevent message drop",
+			"chat_id", chatID, "thread_id", threadID, "msg_id", msgID, "is_final", isFinal)
+		dt.sendMessageWithFallback(bot, chatID, threadID, text)
 	}
 }
 
@@ -703,43 +758,125 @@ func (dt *DeliveryThrottler) sendMessageWithFallback(bot *gotgbot.Bot, chatID, t
 	if bot == nil || strings.TrimSpace(text) == "" {
 		return nil
 	}
+
+	msg := dt.doSendWithRetry(bot, chatID, threadID, text)
+	if msg == nil && dt.bot != nil && bot != dt.bot {
+		slog.Warn("Dedicated bot failed to deliver message, retrying with primary bot",
+			"chat_id", chatID,
+			"thread_id", threadID,
+		)
+		msg = dt.doSendWithRetry(dt.bot, chatID, threadID, text)
+	}
+	return msg
+}
+
+func (dt *DeliveryThrottler) doSendWithRetry(bot *gotgbot.Bot, chatID, threadID int64, text string) *gotgbot.Message {
+	if bot == nil || strings.TrimSpace(text) == "" {
+		return nil
+	}
+
 	formatted := FormatMarkdownToTelegramHTML(text)
 	opts := &gotgbot.SendMessageOpts{
 		ParseMode: "HTML",
+		RequestOpts: &gotgbot.RequestOpts{
+			Timeout: 30 * time.Second,
+		},
 	}
 	if threadID != 0 {
 		opts.MessageThreadId = threadID
 	}
-	msg, err := bot.SendMessage(chatID, formatted, opts)
-	if err != nil {
+
+	maxAttempts := 3
+	backoffs := []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 3000 * time.Millisecond}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		msg, err := bot.SendMessage(chatID, formatted, opts)
+		if err == nil {
+			return msg
+		}
+
 		var tgErr *gotgbot.TelegramError
 		if errors.As(err, &tgErr) {
+			// Case A: Message too long (>4096 characters / UTF-16 code units)
+			isTooLong := tgErr.Code == 400 && (strings.Contains(strings.ToLower(tgErr.Description), "too long") || len([]rune(formatted)) > 4000)
+			if isTooLong {
+				slog.Warn("Telegram message exceeds character limit, recursively splitting into smaller chunks",
+					"chat_id", chatID, "thread_id", threadID, "length", len([]rune(formatted)))
+				splitRunes := []rune(text)
+				if len(splitRunes) > 1 {
+					half := len(splitRunes) / 2
+					chunks := SplitMarkdownPreservingCodeBlocks(text, half)
+					if len(chunks) >= 2 {
+						var lastMsg *gotgbot.Message
+						for _, c := range chunks {
+							if m := dt.sendMessageWithFallback(bot, chatID, threadID, c); m != nil {
+								lastMsg = m
+							}
+						}
+						return lastMsg
+					}
+				}
+			}
+
+			// Case B: HTML formatting / entity parse error
 			if tgErr.Code == 400 {
 				opts.ParseMode = ""
-				var retryErr error
-				msg, retryErr = bot.SendMessage(chatID, StripHTMLTags(formatted), opts)
-				if retryErr != nil {
-					slog.Error("Telegram SendMessage plain text fallback failed", "chat_id", chatID, "thread_id", threadID, "error", retryErr)
+				plainText := StripHTMLTags(formatted)
+				if len([]rune(plainText)) > 4000 {
+					half := len([]rune(plainText)) / 2
+					chunks := SplitMarkdownPreservingCodeBlocks(plainText, half)
+					var lastMsg *gotgbot.Message
+					for _, c := range chunks {
+						if m := dt.sendMessageWithFallback(bot, chatID, threadID, c); m != nil {
+							lastMsg = m
+						}
+					}
+					return lastMsg
 				}
-			} else if tgErr.Code == 429 {
+				msg, retryErr := bot.SendMessage(chatID, plainText, opts)
+				if retryErr == nil {
+					return msg
+				}
+				slog.Error("Telegram SendMessage plain text fallback failed", "chat_id", chatID, "thread_id", threadID, "error", retryErr)
+				return nil
+			}
+
+			// Case C: Rate limit (429)
+			if tgErr.Code == 429 {
 				retrySec := 1
 				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
 					retrySec = int(tgErr.ResponseParams.RetryAfter)
 				}
+				slog.Warn("Telegram SendMessage rate limited, waiting to retry", "chat_id", chatID, "retry_sec", retrySec, "attempt", attempt+1)
 				time.Sleep(time.Duration(retrySec) * time.Second)
-				var retryErr error
-				msg, retryErr = bot.SendMessage(chatID, formatted, opts)
-				if retryErr != nil {
-					slog.Error("Telegram SendMessage rate limit retry failed", "chat_id", chatID, "thread_id", threadID, "error", retryErr)
-				}
-			} else {
-				slog.Error("Telegram SendMessage failed", "chat_id", chatID, "thread_id", threadID, "error", err)
+				continue
 			}
-		} else {
-			slog.Error("Telegram SendMessage network error", "chat_id", chatID, "thread_id", threadID, "error", err)
+
+			// Case D: Server 5xx error
+			if tgErr.Code >= 500 && tgErr.Code <= 599 {
+				slog.Warn("Telegram server 5xx error, retrying with backoff", "code", tgErr.Code, "attempt", attempt+1)
+				if attempt < maxAttempts-1 {
+					time.Sleep(backoffs[attempt])
+					continue
+				}
+				return nil
+			}
+
+			slog.Error("Telegram SendMessage client error", "chat_id", chatID, "thread_id", threadID, "code", tgErr.Code, "error", err)
+			return nil
 		}
+
+		// Network error (e.g. context deadline exceeded, connection reset by peer, EOF)
+		slog.Warn("Telegram SendMessage network error, retrying with backoff",
+			"chat_id", chatID, "thread_id", threadID, "attempt", attempt+1, "error", err)
+		if attempt < maxAttempts-1 {
+			time.Sleep(backoffs[attempt])
+			continue
+		}
+		slog.Error("Telegram SendMessage network retries exhausted", "chat_id", chatID, "thread_id", threadID, "error", err)
 	}
-	return msg
+
+	return nil
 }
 
 // Stop drains all active streaming sessions.

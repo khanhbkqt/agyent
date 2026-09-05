@@ -61,6 +61,9 @@ type MockTelegramServer struct {
 	SimulateSendErrorBody   string
 	Simulate429Once         bool
 	Simulate400Once         bool
+	SimulateTooLongOnce     bool
+	SimulateEditErrorStatus int
+	SimulateEditErrorBody   string
 	SimulatePhotoFailOnce   bool
 	SimulatePhoto429Once    bool
 	RetryAfterSec           int
@@ -309,6 +312,18 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 			return
 		}
 
+		if m.SimulateTooLongOnce {
+			m.SimulateTooLongOnce = false
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  400,
+				"description": "Bad Request: message is too long",
+			})
+			return
+		}
+
 		parseMode, _ := params["parse_mode"].(string)
 		if m.Simulate400Once && parseMode != "" {
 			m.Simulate400Once = false
@@ -353,6 +368,25 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		})
 
 	case "editMessageText":
+		if m.SimulateEditErrorStatus != 0 {
+			code := m.SimulateEditErrorStatus
+			body := m.SimulateEditErrorBody
+			m.SimulateEditErrorStatus = 0
+			m.SimulateEditErrorBody = ""
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			if body != "" {
+				w.Write([]byte(body))
+			} else {
+				json.NewEncoder(w).Encode(map[string]any{
+					"ok":          false,
+					"error_code":  code,
+					"description": "Bad Request: message to edit not found",
+				})
+			}
+			return
+		}
+
 		if m.Simulate429Once {
 			m.Simulate429Once = false
 			w.Header().Set("Content-Type", "application/json")

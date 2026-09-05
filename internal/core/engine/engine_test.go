@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,6 +328,101 @@ func TestEngine_StreamingTurnExecution(t *testing.T) {
 	sess, err := store.GetSession(ctx, msg.SessionKey())
 	require.NoError(t, err)
 	assert.Equal(t, "conv-stream-123", sess.GlobalConversationID)
+}
+
+func TestEngine_StreamingTurnExecution_EmitsStreamErrorOnFailure(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	eng.SetStreamingEnabled(true)
+	assert.True(t, eng.IsStreamingEnabled())
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	runner.mu.Lock()
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		return nil, fmt.Errorf("simulated stream failure: subprocess timed out")
+	}
+	runner.mu.Unlock()
+
+	var receivedErrEvent atomic.Pointer[domain.StreamErrorPayload]
+	unsub := eng.EventBus().SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamErrorPayload); ok {
+			receivedErrEvent.Store(&p)
+		}
+		return nil
+	})
+	defer unsub()
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-stream-err-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Stream this failing turn!",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "simulated stream failure")
+
+	require.Eventually(t, func() bool {
+		return receivedErrEvent.Load() != nil
+	}, 1*time.Second, 20*time.Millisecond)
+
+	payload := receivedErrEvent.Load()
+	require.NotNil(t, payload)
+	assert.Equal(t, msg.SessionKey(), payload.SessionKey)
+	assert.Contains(t, payload.Error, "simulated stream failure")
+}
+
+func TestEngine_StreamingTurnExecution_EmitsStreamErrorOnCancelledContext(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	eng.SetStreamingEnabled(true)
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	// Simulate context deadline exceeded during execution
+	runner.mu.Lock()
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		// Context times out during stream execution
+		return nil, fmt.Errorf("turn execution timed out: %w", context.DeadlineExceeded)
+	}
+	runner.mu.Unlock()
+
+	var receivedErrEvent atomic.Pointer[domain.StreamErrorPayload]
+	unsub := eng.EventBus().SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamErrorPayload); ok {
+			receivedErrEvent.Store(&p)
+		}
+		return nil
+	})
+	defer unsub()
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-stream-timeout-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Stream turn that will timeout!",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.Error(t, err)
+
+	require.Eventually(t, func() bool {
+		return receivedErrEvent.Load() != nil
+	}, 1*time.Second, 20*time.Millisecond)
+
+	payload := receivedErrEvent.Load()
+	require.NotNil(t, payload, "EventStreamError MUST be delivered to EventBus even when context is timed out/cancelled")
+	assert.Equal(t, msg.SessionKey(), payload.SessionKey)
+	assert.Contains(t, payload.Error, "context deadline exceeded")
 }
 
 func TestEngine_NewAgentBootstrapFlow(t *testing.T) {

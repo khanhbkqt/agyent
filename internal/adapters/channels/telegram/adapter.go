@@ -250,7 +250,25 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 			}
 		} else {
 			for _, bCfg := range normalizedBots {
-				bot, err := gotgbot.NewBot(bCfg.BotToken, a.botOpts)
+				effectiveBotOpts := a.botOpts
+				if effectiveBotOpts == nil {
+					effectiveBotOpts = &gotgbot.BotOpts{
+						BotClient: &gotgbot.BaseBotClient{
+							Client: http.Client{},
+							DefaultRequestOpts: &gotgbot.RequestOpts{
+								Timeout: 30 * time.Second,
+							},
+						},
+					}
+				} else if effectiveBotOpts.BotClient == nil {
+					effectiveBotOpts.BotClient = &gotgbot.BaseBotClient{
+						Client: http.Client{},
+						DefaultRequestOpts: &gotgbot.RequestOpts{
+							Timeout: 30 * time.Second,
+						},
+					}
+				}
+				bot, err := gotgbot.NewBot(bCfg.BotToken, effectiveBotOpts)
 				if err != nil {
 					slog.ErrorContext(ctx, "Failed to initialize telegram bot token",
 						slog.String("name", bCfg.Name),
@@ -671,7 +689,7 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 		return nil
 	}
 
-	chunks := SplitMarkdownPreservingCodeBlocks(textToSend, 4000)
+	chunks := SplitMarkdownPreservingCodeBlocks(textToSend, SafeTelegramMessageLimit)
 	for i, chunk := range chunks {
 		targetParseMode := "HTML"
 		formatted := chunk
@@ -704,6 +722,9 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 		opts := &gotgbot.SendMessageOpts{
 			ParseMode:   targetParseMode,
 			ReplyMarkup: markup,
+			RequestOpts: &gotgbot.RequestOpts{
+				Timeout: 30 * time.Second,
+			},
 		}
 		if msg.ThreadID != 0 {
 			opts.MessageThreadId = msg.ThreadID
@@ -714,42 +735,131 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 			}
 		}
 
-		_, err := bot.SendMessage(chatID, formatted, opts)
+		err := a.sendChunkWithRetry(ctx, bot, chatID, chunk, formatted, opts, targetParseMode)
+		if err != nil && a.bot != nil && bot != a.bot {
+			slog.WarnContext(ctx, "Failed to send message via agent-specific bot, falling back to primary bot",
+				slog.String("agent", msg.AgentName),
+				slog.String("chat_id", msg.ChatID),
+				slog.String("error", err.Error()),
+			)
+			err = a.sendChunkWithRetry(ctx, a.bot, chatID, chunk, formatted, opts, targetParseMode)
+		}
 		if err != nil {
-			// Fallback to plain text on parse error
-			var tgErr *gotgbot.TelegramError
-			if errors.As(err, &tgErr) && tgErr.Code == 400 {
-				slog.WarnContext(ctx, "Telegram HTML format error, retrying as plain text",
-					slog.String("chat_id", msg.ChatID),
-					slog.String("error", err.Error()),
-				)
+			slog.ErrorContext(ctx, "Failed to send telegram message",
+				slog.String("chat_id", msg.ChatID),
+				slog.Int64("thread_id", msg.ThreadID),
+				slog.String("error", err.Error()),
+			)
+			return fmt.Errorf("failed to send telegram message: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (a *Adapter) sendChunkWithRetry(ctx context.Context, bot *gotgbot.Bot, chatID int64, chunk, formatted string, opts *gotgbot.SendMessageOpts, targetParseMode string) error {
+	maxAttempts := 3
+	backoffs := []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 3000 * time.Millisecond}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		_, err := bot.SendMessage(chatID, formatted, opts)
+		if err == nil {
+			return nil
+		}
+
+		var tgErr *gotgbot.TelegramError
+		if errors.As(err, &tgErr) {
+			// Check if message is too long (Code 400 with "too long" or length > 4000)
+			isTooLong := tgErr.Code == 400 && (strings.Contains(strings.ToLower(tgErr.Description), "too long") || len([]rune(formatted)) > 4000)
+			if isTooLong {
+				splitRunes := []rune(chunk)
+				if len(splitRunes) > 1 {
+					half := len(splitRunes) / 2
+					subChunks := SplitMarkdownPreservingCodeBlocks(chunk, half)
+					if len(subChunks) >= 2 {
+						for _, sc := range subChunks {
+							subFormatted := sc
+							if targetParseMode == "HTML" {
+								subFormatted = FormatMarkdownToTelegramHTML(sc)
+							} else if targetParseMode == "MarkdownV2" {
+								subFormatted = AutoCloseMarkdown(sc)
+							}
+							if subErr := a.sendChunkWithRetry(ctx, bot, chatID, sc, subFormatted, opts, targetParseMode); subErr != nil {
+								return subErr
+							}
+						}
+						return nil
+					}
+				}
+			}
+
+			if tgErr.Code == 400 {
 				opts.ParseMode = ""
 				fallbackText := chunk
 				if targetParseMode == "HTML" {
 					fallbackText = StripHTMLTags(formatted)
 				}
+				if len([]rune(fallbackText)) > 4000 {
+					half := len([]rune(fallbackText)) / 2
+					subChunks := SplitMarkdownPreservingCodeBlocks(fallbackText, half)
+					for _, sc := range subChunks {
+						if _, subErr := bot.SendMessage(chatID, sc, opts); subErr != nil {
+							return subErr
+						}
+					}
+					return nil
+				}
 				_, err = bot.SendMessage(chatID, fallbackText, opts)
+				if err == nil {
+					return nil
+				}
+				return err
 			}
-			if err != nil && a.bot != nil && bot != a.bot {
-				slog.WarnContext(ctx, "Failed to send message via agent-specific bot, falling back to primary bot",
-					slog.String("agent", msg.AgentName),
-					slog.String("chat_id", msg.ChatID),
-					slog.String("error", err.Error()),
-				)
-				_, err = a.bot.SendMessage(chatID, formatted, opts)
-			}
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to send telegram message",
-					slog.String("chat_id", msg.ChatID),
-					slog.Int64("thread_id", msg.ThreadID),
-					slog.String("error", err.Error()),
-				)
-				return fmt.Errorf("failed to send telegram message: %w", err)
-			}
-		}
-	}
 
-	return nil
+			if tgErr.Code == 429 {
+				retrySec := 1
+				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
+					retrySec = int(tgErr.ResponseParams.RetryAfter)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(retrySec) * time.Second):
+				}
+				continue
+			}
+
+			if tgErr.Code >= 500 && tgErr.Code <= 599 {
+				if attempt < maxAttempts-1 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(backoffs[attempt]):
+					}
+					continue
+				}
+				return err
+			}
+
+			return err
+		}
+
+		// Transient network error (context deadline exceeded, connection reset, etc.)
+		if attempt < maxAttempts-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoffs[attempt]):
+			}
+			continue
+		}
+		return err
+	}
+	return errors.New("send retries exhausted")
 }
 
 // SendTyping broadcasts a typing indicator.

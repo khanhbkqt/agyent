@@ -523,21 +523,52 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		slog.Bool("is_ephemeral", isEphemeral),
 	)
 
-	// 1. Acquire Per-Session FIFO Lock
+	// 1. Acquire Per-Session FIFO Lock (maintain typing while queued)
+	queueTypingStop := make(chan struct{})
+	var closeOnce sync.Once
+	stopQueueTyping := func() {
+		closeOnce.Do(func() {
+			close(queueTypingStop)
+		})
+	}
+	defer stopQueueTyping()
+
+	concurrency.SafeGo(func() {
+		if e.channel != nil {
+			_ = e.channel.SendTyping(ctx, msg.TargetContext())
+		}
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-queueTypingStop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if e.channel != nil {
+					_ = e.channel.SendTyping(ctx, msg.TargetContext())
+				}
+			}
+		}
+	})
 	unlock, err := e.lockManager.Acquire(ctx, sessionKey, timeout)
+	stopQueueTyping()
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to acquire session lock",
 			slog.String("session_key", sessionKey),
 			slog.String("error", err.Error()),
 		)
-		_ = e.channel.Send(ctx, domain.OutboundMessage{
-			Channel:          msg.Channel,
-			BotID:            msg.BotID,
-			ChatID:           msg.Chat.ID,
-			ThreadID:         msg.Chat.ThreadID,
-			Text:             fmt.Sprintf("⚠️ Could not acquire session lock: %v. Please try again or use `/force_unlock`.", err),
-			ReplyToMessageID: msg.ID,
-		})
+		if e.channel != nil {
+			_ = e.channel.Send(ctx, domain.OutboundMessage{
+				Channel:          msg.Channel,
+				BotID:            msg.BotID,
+				ChatID:           msg.Chat.ID,
+				ThreadID:         msg.Chat.ThreadID,
+				Text:             fmt.Sprintf("⚠️ Could not acquire session lock: %v. Please try again or use `/force_unlock`.", err),
+				ReplyToMessageID: msg.ID,
+			})
+		}
 		return fmt.Errorf("failed to acquire session lock: %w", err)
 	}
 	defer unlock()
@@ -833,6 +864,16 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx)
 		if err != nil {
 			slog.ErrorContext(turnCtx, "MCP turn lease failed; refusing execution", "session_key", sessionKey, "error", err)
+			if e.channel != nil {
+				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					Channel:          msg.Channel,
+					BotID:            msg.BotID,
+					ChatID:           msg.Chat.ID,
+					ThreadID:         msg.Chat.ThreadID,
+					Text:             fmt.Sprintf("⚠️ Resource busy: %v. Please try again in a moment.", err),
+					ReplyToMessageID: msg.ID,
+				})
+			}
 			return fmt.Errorf("acquire MCP turn lease: %w", err)
 		}
 		defer releaseMCPLease()
@@ -856,6 +897,16 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 		if err := e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers); err != nil {
 			slog.ErrorContext(turnCtx, "MCP mount failed; refusing execution", "session_key", sessionKey, "error", err)
+			if e.channel != nil {
+				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+					Channel:          msg.Channel,
+					BotID:            msg.BotID,
+					ChatID:           msg.Chat.ID,
+					ThreadID:         msg.Chat.ThreadID,
+					Text:             fmt.Sprintf("⚠️ Plugin setup error: %v. The turn was not executed.", err),
+					ReplyToMessageID: msg.ID,
+				})
+			}
 			return fmt.Errorf("mount MCP servers: %w", err)
 		}
 		defer func() {
@@ -1183,24 +1234,49 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
+	hasFailed := execErr != nil || (execResult != nil && !execResult.Success)
 	if e.eventBus != nil {
-		if execErr != nil {
-			_ = e.eventBus.SyncEmit(turnCtx, domain.NewEvent(domain.EventErrorOccurred, execErr.Error()))
+		emitCtx, emitCancel := context.WithTimeout(context.WithoutCancel(turnCtx), 5*time.Second)
+		defer emitCancel()
+
+		if hasFailed {
+			errMsg := ""
+			if execErr != nil {
+				errMsg = execErr.Error()
+			} else if execResult != nil && execResult.Error != "" {
+				errMsg = execResult.Error
+			} else {
+				errMsg = "turn execution failed without specific error message"
+			}
+
+			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventErrorOccurred, errMsg))
+			if isStream {
+				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+					SessionKey:     sessionKey,
+					ConversationID: session.GetActiveConversationID(),
+					TurnID:         turnID,
+					Error:          errMsg,
+				}))
+			}
 		} else {
-			_ = e.eventBus.SyncEmit(turnCtx, domain.NewEvent(domain.EventPostExecution, execResult))
+			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventPostExecution, execResult))
 		}
 	}
 
 	if execErr != nil {
 		if !isStream && !isInterrupted {
-			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				Channel:          msg.Channel,
-				BotID:            msg.BotID,
-				ChatID:           msg.Chat.ID,
-				ThreadID:         msg.Chat.ThreadID,
-				Text:             fmt.Sprintf("⚠️ Execution failed: %v", execErr),
-				ReplyToMessageID: msg.ID,
-			})
+			if e.channel != nil {
+				outCtx, outCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer outCancel()
+				_ = e.channel.Send(outCtx, domain.OutboundMessage{
+					Channel:          msg.Channel,
+					BotID:            msg.BotID,
+					ChatID:           msg.Chat.ID,
+					ThreadID:         msg.Chat.ThreadID,
+					Text:             fmt.Sprintf("⚠️ Execution failed: %v", execErr),
+					ReplyToMessageID: msg.ID,
+				})
+			}
 		}
 		return execErr
 	}
