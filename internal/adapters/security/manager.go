@@ -614,13 +614,23 @@ func (m *Manager) UnregisterActiveTurn(convID string, workspaceDir string) {
 	}
 }
 
-// UnregisterTurnByID removes the active turn association by its unique TurnID.
+// UnregisterTurnByID removes the active turn association by its unique TurnID,
+// cleaning up all associated conversationID and workspaceDir mappings.
 func (m *Manager) UnregisterTurnByID(turnID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if turnID != "" {
+	if turnID == "" {
+		return
+	}
+	if turn, ok := m.activeTurns[turnID]; ok {
 		delete(m.activeTurns, turnID)
+		if turn.ConversationID != "" {
+			delete(m.activeTurns, turn.ConversationID)
+		}
+		if turn.WorkspaceDir != "" {
+			delete(m.activeWorkspaces, canonicalizeWorkspacePath(turn.WorkspaceDir))
+		}
 	}
 }
 

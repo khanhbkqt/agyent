@@ -187,37 +187,73 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		secToken := s.secretToken
 		s.mu.RUnlock()
 
-		if secToken != "" {
-			reqToken, _ := raw["token"].(string)
-			if reqToken == "" {
-				if p, ok := raw["params"].(map[string]interface{}); ok {
-					reqToken, _ = p["token"].(string)
-				}
+		reqToken, _ := raw["token"].(string)
+		if reqToken == "" {
+			if p, ok := raw["params"].(map[string]interface{}); ok {
+				reqToken, _ = p["token"].(string)
 			}
-			turnID, _ := raw["turn_id"].(string)
-			if turnID == "" {
-				if p, ok := raw["params"].(map[string]interface{}); ok {
-					turnID, _ = p["turn_id"].(string)
-				}
+		}
+		turnID, _ := raw["turn_id"].(string)
+		if turnID == "" {
+			if p, ok := raw["params"].(map[string]interface{}); ok {
+				turnID, _ = p["turn_id"].(string)
 			}
-			authorized := false
-			if reqToken == secToken {
+		}
+		authorized := false
+		var callerTurn domain.TurnSecurityContext
+		if secToken != "" && reqToken != "" && reqToken == secToken {
+			authorized = true
+		}
+		if turnID != "" && s.manager != nil {
+			if tCtx, ok := s.manager.ResolveTurnByID(turnID); ok {
 				authorized = true
-			} else if turnID != "" && s.manager != nil {
-				if _, ok := s.manager.ResolveTurnByID(turnID); ok {
-					authorized = true
-				}
+				callerTurn = tCtx
 			}
-			if !authorized {
-				s.logger.Warn("Unauthorized IPC action attempt", "action", action)
+		}
+		if !authorized {
+			s.logger.Warn("Unauthorized IPC action attempt", "action", action)
+			respMap := map[string]interface{}{
+				"success": false,
+				"error":   "unauthorized: missing or invalid secret token / turn ID",
+			}
+			respBytes, _ := json.Marshal(respMap)
+			_, _ = conn.Write(append(respBytes, '\n'))
+			return
+		}
+
+		// Enforce action and resource scope when authorized via turn_id
+		if callerTurn.TurnID != "" {
+			params, _ := raw["params"].(map[string]interface{})
+			if params == nil {
+				params = raw
+			}
+			if sessionKey, ok := params["parent_session_key"].(string); ok && sessionKey != "" && sessionKey != callerTurn.SessionKey {
+				s.logger.Warn("IPC action session mismatch", "action", action, "caller_session", callerTurn.SessionKey, "target_session", sessionKey)
 				respMap := map[string]interface{}{
 					"success": false,
-					"error":   "unauthorized: missing or invalid secret token / turn ID",
+					"error":   "forbidden: action outside caller session scope",
 				}
 				respBytes, _ := json.Marshal(respMap)
 				_, _ = conn.Write(append(respBytes, '\n'))
 				return
 			}
+			if agentName, ok := params["agent_name"].(string); ok && agentName != "" && callerTurn.AgentName != "" && agentName != callerTurn.AgentName {
+				s.logger.Warn("IPC action agent mismatch", "action", action, "caller_agent", callerTurn.AgentName, "target_agent", agentName)
+				respMap := map[string]interface{}{
+					"success": false,
+					"error":   "forbidden: action outside caller agent scope",
+				}
+				respBytes, _ := json.Marshal(respMap)
+				_, _ = conn.Write(append(respBytes, '\n'))
+				return
+			}
+			if params["parent_session_key"] == nil || params["parent_session_key"] == "" {
+				params["parent_session_key"] = callerTurn.SessionKey
+			}
+			if params["agent_name"] == nil || params["agent_name"] == "" {
+				params["agent_name"] = callerTurn.AgentName
+			}
+			raw["params"] = params
 		}
 
 		s.handleAction(ctx, conn, action, raw)
@@ -556,22 +592,25 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 
 	switch req.HookType {
 	case "pre", "":
-		var ws string
-		if len(req.WorkspacePaths) > 0 {
+		if req.TurnID == "" {
+			return HookResponse{
+				Decision: string(domain.DecisionDeny),
+				Reason:   "Missing TurnID: unauthenticated hook execution",
+			}, nil
+		}
+		turnCtx, ok := s.manager.ResolveTurnByID(req.TurnID)
+		if !ok {
+			return HookResponse{
+				Decision: string(domain.DecisionDeny),
+				Reason:   "Invalid or expired TurnID",
+			}, nil
+		}
+		ws := turnCtx.WorkspaceDir
+		if len(req.WorkspacePaths) > 0 && req.WorkspacePaths[0] != "" {
 			ws = req.WorkspacePaths[0]
 		}
-		var sessionKey string
-		if req.TurnID != "" {
-			if turnCtx, ok := s.manager.ResolveTurnByID(req.TurnID); ok {
-				sessionKey = turnCtx.SessionKey
-				if ws == "" {
-					ws = turnCtx.WorkspaceDir
-				}
-			}
-		}
-		if sessionKey == "" {
-			sessionKey = s.manager.ResolveSessionKey(req.ConversationID, ws)
-		}
+		sessionKey := turnCtx.SessionKey
+
 		evalReq := domain.ToolEvaluationRequest{
 			ToolName:       req.ToolCall.Name,
 			Args:           req.ToolCall.Args,
@@ -596,6 +635,19 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 		}, nil
 
 	case "post":
+		if req.TurnID == "" {
+			return HookResponse{
+				Decision: string(domain.DecisionDeny),
+				Reason:   "Missing TurnID: unauthenticated hook execution",
+			}, nil
+		}
+		if _, ok := s.manager.ResolveTurnByID(req.TurnID); !ok {
+			return HookResponse{
+				Decision: string(domain.DecisionDeny),
+				Reason:   "Invalid or expired TurnID",
+			}, nil
+		}
+
 		// Handle PostToolUse output sanitization and return overwritten output
 		if req.ToolCall.Name != "" && req.ToolCall.Args != nil {
 			if out, ok := req.ToolCall.Args["output"].(string); ok && out != "" {
@@ -692,7 +744,18 @@ func (s *Server) handleGetSubagentTask(ctx context.Context, p map[string]interfa
 		return nil, fmt.Errorf("task_id is required")
 	}
 
-	task, err := sub.GetTask(ctx, taskID)
+	sessionKey, _ := p["parent_session_key"].(string)
+	if sessionKey == "" {
+		sessionKey, _ = p["session_key"].(string)
+	}
+
+	var task *domain.SubagentTask
+	var err error
+	if sessionKey != "" {
+		task, err = sub.GetTaskScoped(ctx, sessionKey, taskID)
+	} else {
+		task, err = sub.GetTask(ctx, taskID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -712,8 +775,19 @@ func (s *Server) handleCancelSubagentTask(ctx context.Context, p map[string]inte
 		return nil, fmt.Errorf("task_id is required")
 	}
 
-	if err := sub.CancelTask(ctx, taskID); err != nil {
-		return nil, err
+	sessionKey, _ := p["parent_session_key"].(string)
+	if sessionKey == "" {
+		sessionKey, _ = p["session_key"].(string)
+	}
+
+	if sessionKey != "" {
+		if err := sub.CancelTaskScoped(ctx, sessionKey, taskID); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := sub.CancelTask(ctx, taskID); err != nil {
+			return nil, err
+		}
 	}
 
 	return map[string]interface{}{
@@ -731,7 +805,10 @@ func (s *Server) handleListSubagents(ctx context.Context, p map[string]interface
 		return nil, fmt.Errorf("subagent dispatcher is not initialized")
 	}
 
-	sessionKey, _ := p["session_key"].(string)
+	sessionKey, _ := p["parent_session_key"].(string)
+	if sessionKey == "" {
+		sessionKey, _ = p["session_key"].(string)
+	}
 	limit := 10
 	if l, ok := p["limit"].(float64); ok && int(l) > 0 {
 		limit = int(l)
@@ -747,4 +824,3 @@ func (s *Server) handleListSubagents(ctx context.Context, p map[string]interface
 		"count": total,
 	}, nil
 }
-

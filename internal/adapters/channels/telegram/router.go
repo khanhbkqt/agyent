@@ -21,8 +21,14 @@ type Router struct {
 	inbound         chan<- domain.CanonicalMessage
 	mediaMgr        *MediaManager
 	hitlCoordinator *HITLCoordinator
+	authorizer      InboundAuthorizer
 	bindAgents      map[int64]string
 	mu              sync.RWMutex
+}
+
+// InboundAuthorizer evaluates whether an inbound message sender has permission to interact.
+type InboundAuthorizer interface {
+	AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error)
 }
 
 // NewRouter creates a new update Router.
@@ -38,6 +44,13 @@ func NewRouter(cfg *config.Config, bot *gotgbot.Bot, inbound chan<- domain.Canon
 		r.hitlCoordinator = hitlCoord[0]
 	}
 	return r
+}
+
+// SetInboundAuthorizer injects the inbound authorization evaluator.
+func (r *Router) SetInboundAuthorizer(a InboundAuthorizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authorizer = a
 }
 
 // SetBotBindings updates the mapping of bot IDs to dedicated bound agent personas.
@@ -76,8 +89,21 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 	// 1. Authorization & Group Routing
 	var isMentioned, isReplyToBot bool
 	if msg.Chat.Type == "private" {
-		// In Hexagonal & Multi-Bot RBAC, 1-1 private interactions are forwarded
-		// to Core Engine for centralized access evaluation (CheckAccess).
+		r.mu.RLock()
+		auth := r.authorizer
+		var bindAgent string
+		if r.bindAgents != nil && botID > 0 {
+			bindAgent = r.bindAgents[botID]
+		}
+		r.mu.RUnlock()
+
+		if auth != nil {
+			allowed, err := auth.AuthorizeInbound(ctx, strconv.FormatInt(msg.From.Id, 10), bindAgent, "private")
+			if err != nil || !allowed {
+				// Unauthorized private message: drop with zero side-effects
+				return nil
+			}
+		}
 	} else if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" {
 		if !IsGroupAllowed(r.cfg, msg.Chat.Id) {
 			// Unauthorized group: silently drop

@@ -451,6 +451,7 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 
 	// Register 2 live turns for distinct agents
 	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		TurnID:         "turn-ipc-unres",
 		ConversationID: "conv-ipc-unres",
 		SessionKey:     "session-admin",
 		WorkspaceDir:   "/tmp/ws_admin",
@@ -458,6 +459,7 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 		AgentName:      "admin_bot",
 	})
 	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		TurnID:         "turn-ipc-strict",
 		ConversationID: "conv-ipc-strict",
 		SessionKey:     "session-auditor",
 		WorkspaceDir:   "/tmp/ws_audit",
@@ -469,6 +471,7 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 
 	// 1. Real TCP IPC Request for Unrestricted Agent
 	resp1, err := client.SendHookRequest(ipc.HookRequest{
+		TurnID:         "turn-ipc-unres",
 		HookType:       "pre",
 		ConversationID: "conv-ipc-unres",
 		WorkspacePaths: []string{"/tmp/ws_admin"},
@@ -483,6 +486,7 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 
 	// 2. Real TCP IPC Request for Strict Agent (Unwhitelisted command)
 	resp2, err := client.SendHookRequest(ipc.HookRequest{
+		TurnID:         "turn-ipc-strict",
 		HookType:       "pre",
 		ConversationID: "conv-ipc-strict",
 		WorkspacePaths: []string{"/tmp/ws_audit"},
@@ -498,6 +502,7 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 
 	// 3. Real TCP IPC Request for Strict Agent (Whitelisted command)
 	resp3, err := client.SendHookRequest(ipc.HookRequest{
+		TurnID:         "turn-ipc-strict",
 		HookType:       "pre",
 		ConversationID: "conv-ipc-strict",
 		WorkspacePaths: []string{"/tmp/ws_audit"},

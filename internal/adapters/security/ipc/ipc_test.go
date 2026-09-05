@@ -58,6 +58,9 @@ func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir str
 	return domain.TurnSecurityContext{}, false
 }
 func (m *mockSecurityManager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	if turnID != "" {
+		return domain.TurnSecurityContext{TurnID: turnID, SessionKey: "telegram:12345", AgentName: "agyent"}, true
+	}
 	return domain.TurnSecurityContext{}, false
 }
 func (m *mockSecurityManager) UnregisterTurnByID(turnID string)          {}
@@ -94,6 +97,7 @@ func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 
 	// Test 1: Denied command
 	respDeny, err := client.SendHookRequest(HookRequest{
+		TurnID:   "turn-test-123",
 		HookType: "pre",
 		ToolCall: HookToolCall{
 			Name: "run_command",
@@ -109,6 +113,7 @@ func TestIPCServerAndClient_PreToolUse(t *testing.T) {
 
 	// Test 2: Allowed command
 	respAllow, err := client.SendHookRequest(HookRequest{
+		TurnID:   "turn-test-123",
 		HookType: "pre",
 		ToolCall: HookToolCall{
 			Name: "run_command",
@@ -193,6 +198,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	mockSched := &mockScheduler{}
 
 	server := NewServer(mockMgr, addr, nil)
+	server.SetSecretToken("test-ipc-secret")
 	server.SetScheduler(mockSched)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,6 +211,7 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	client := NewClient(addr)
+	client.SetSecretToken("test-ipc-secret")
 
 	// 1. Test schedule_task
 	schedResp, err := client.SendAction("schedule_task", map[string]interface{}{
@@ -275,6 +282,10 @@ func (m *mockSubagentDispatcher) GetTask(ctx context.Context, taskID string) (*d
 	return &domain.SubagentTask{ID: taskID, Status: domain.TaskStatusRunning, Title: "Mock Running Task"}, nil
 }
 
+func (m *mockSubagentDispatcher) GetTaskScoped(ctx context.Context, sessionKey, taskID string) (*domain.SubagentTask, error) {
+	return m.GetTask(ctx, taskID)
+}
+
 func (m *mockSubagentDispatcher) ListActiveTasks(ctx context.Context, sessionKey string) ([]domain.SubagentTask, error) {
 	return nil, nil
 }
@@ -290,11 +301,19 @@ func (m *mockSubagentDispatcher) SendTaskInput(ctx context.Context, taskID strin
 	return nil
 }
 
+func (m *mockSubagentDispatcher) SendTaskInputScoped(ctx context.Context, sessionKey, taskID, input string) error {
+	return m.SendTaskInput(ctx, taskID, input)
+}
+
 func (m *mockSubagentDispatcher) CancelTask(ctx context.Context, taskID string) error {
 	if m.cancelTaskFn != nil {
 		return m.cancelTaskFn(ctx, taskID)
 	}
 	return nil
+}
+
+func (m *mockSubagentDispatcher) CancelTaskScoped(ctx context.Context, sessionKey, taskID string) error {
+	return m.CancelTask(ctx, taskID)
 }
 
 func (m *mockSubagentDispatcher) Start(ctx context.Context) error { return nil }
@@ -322,6 +341,7 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 	}
 
 	server := NewServer(mockMgr, addr, nil)
+	server.SetSecretToken("test-ipc-secret")
 	server.SetSubagents(mockSub)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -333,6 +353,7 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 	client := NewClient(addr)
+	client.SetSecretToken("test-ipc-secret")
 
 	// 1. Test dispatch_subagent
 	dispResp, err := client.SendAction("dispatch_subagent", map[string]interface{}{
@@ -409,4 +430,3 @@ func TestIPC_ActionSecretTokenAuthAndHookValidation(t *testing.T) {
 	assert.Equal(t, string(domain.DecisionDeny), hookResp.Decision)
 	assert.Contains(t, hookResp.Reason, "Unsupported or unauthorized hook type")
 }
-

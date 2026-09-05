@@ -51,7 +51,7 @@ func TestMCPSyncer_MountAndUnmount(t *testing.T) {
 	// Verify file content after mount
 	content, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "__agyent_ephemeral_camoufox-test")
+	assert.Contains(t, string(content), "__agyent_ephemeral_session-_camoufox-test")
 	assert.Contains(t, string(content), "permanent-tool")
 
 	// Unmount
@@ -61,7 +61,7 @@ func TestMCPSyncer_MountAndUnmount(t *testing.T) {
 	// Verify ephemeral tool removed and permanent preserved
 	content, err = os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(content), "__agyent_ephemeral_camoufox-test")
+	assert.NotContains(t, string(content), "__agyent_ephemeral_session-_camoufox-test")
 	assert.Contains(t, string(content), "permanent-tool")
 }
 

@@ -1,10 +1,10 @@
 -- 1. Set all legacy unowned public agents to private to prevent unauthorized external access
-UPDATE agents 
+UPDATE agents
 SET is_public = 0, updated_at = (CAST((julianday('now') - 2440587.5)*86400000 AS INTEGER))
 WHERE is_public = 1 AND (owner_id IS NULL OR owner_id = '');
 
 -- 2. Ensure default agent 'agyent' is strictly private if unowned
-UPDATE agents 
+UPDATE agents
 SET is_public = 0, updated_at = (CAST((julianday('now') - 2440587.5)*86400000 AS INTEGER))
 WHERE name = 'agyent' AND (owner_id IS NULL OR owner_id = '');
 

@@ -138,6 +138,10 @@ func (e *Engine) authorizeSystemPrincipal(principal domain.Principal, action dom
 		if action == domain.ActionTurnExecute || action == domain.ActionConvoInspect {
 			return nil
 		}
+	case "system:subagent":
+		if action == domain.ActionTurnExecute || action == domain.ActionTaskDispatch {
+			return nil
+		}
 	}
 	return fmt.Errorf("%w: system principal %s not permitted for action %s", ports.ErrAccessDenied, principal.SubjectID, action)
 }

@@ -51,11 +51,12 @@ if [ -d "/root/.gemini" ] && [ ! -d "$TARGET_HOME/.gemini" ]; then
     cp -a /root/.gemini "$TARGET_HOME/.gemini"
 fi
 
-# 5. Fix permissions on migrated directories
+# 5. Fix permissions on migrated directories (preserving executable bit on binaries/scripts)
 echo "[+] Enforcing 0700 / 0600 permissions on $TARGET_HOME"
 chown -R "$TARGET_USER:$TARGET_GROUP" "$TARGET_HOME"
 find "$TARGET_HOME" -type d -exec chmod 0700 {} +
-find "$TARGET_HOME" -type f -exec chmod 0600 {} +
+find "$TARGET_HOME" -type f -perm /111 -exec chmod 0700 {} +
+find "$TARGET_HOME" -type f ! -perm /111 -exec chmod 0600 {} +
 
 # 6. Update systemd service file if deployed
 SERVICE_FILE="/etc/systemd/system/agyent.service"
@@ -64,7 +65,7 @@ if [ -f "$SERVICE_FILE" ]; then
     sed -i 's/^User=root/User=agyent/' "$SERVICE_FILE"
     sed -i 's|^WorkingDirectory=/root|WorkingDirectory=/home/agyent|' "$SERVICE_FILE"
     sed -i 's|/root/\.agyent|/home/agyent/.agyent|g' "$SERVICE_FILE"
-    
+
     echo "[+] Reloading systemd daemon"
     systemctl daemon-reload
     if systemctl is-active --quiet agyent; then

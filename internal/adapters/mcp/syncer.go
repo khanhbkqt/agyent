@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,7 +132,7 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 		if serverName == "" {
 			continue
 		}
-		key := formatEphemeralKey(serverName)
+		key := formatEphemeralKey(serverName, sessionKey)
 		s.activeMounts[key]++
 
 		// Ensure fallback environment variables for multi-tenant isolation
@@ -190,7 +191,7 @@ func (s *MCPSyncer) UnmountServers(ctx context.Context, sessionKey string, serve
 		if serverName == "" {
 			continue
 		}
-		key := formatEphemeralKey(serverName)
+		key := formatEphemeralKey(serverName, sessionKey)
 		if count, exists := s.activeMounts[key]; exists {
 			if count <= 1 {
 				delete(s.activeMounts, key)
@@ -221,13 +222,13 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 
 	for _, target := range targets {
 		dir := filepath.Dir(target)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			continue
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 
 		tmpFile := fmt.Sprintf("%s.tmp.%d.%d", target, os.Getpid(), time.Now().UnixNano())
-		if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-			continue
+		if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+			return fmt.Errorf("failed to write tmp mcp config %s: %w", tmpFile, err)
 		}
 
 		if f, err := os.Open(tmpFile); err == nil {
@@ -237,6 +238,7 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 
 		if err := os.Rename(tmpFile, target); err != nil {
 			_ = os.Remove(tmpFile)
+			return fmt.Errorf("failed to atomically replace %s: %w", target, err)
 		}
 	}
 
@@ -258,10 +260,17 @@ func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 	return &cfg, nil
 }
 
-func formatEphemeralKey(name string) string {
+func formatEphemeralKey(name string, scope ...string) string {
+	if len(scope) > 0 && scope[0] != "" {
+		s := scope[0]
+		if len(s) > 8 {
+			s = s[:8]
+		}
+		return fmt.Sprintf("__agyent_ephemeral_%s_%s", s, name)
+	}
 	return "__agyent_ephemeral_" + name
 }
 
 func isEphemeralServer(name string) bool {
-	return len(name) > 19 && name[:19] == "__agyent_ephemeral_"
+	return strings.HasPrefix(name, "__agyent_ephemeral_")
 }

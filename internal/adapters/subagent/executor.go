@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"agyent/internal/adapters/harness/agy"
+	"agyent/internal/config"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
 )
@@ -34,6 +36,10 @@ type taskExecutor struct {
 	binaryPath      string
 	defaultTimeout  time.Duration
 	securityManager ports.SecurityManagerPort
+	policy          ports.PolicyEngine
+	storage         ports.StoragePort
+	config          *config.Config
+	ipcSecret       string
 }
 
 func newTaskExecutor(binaryPath string, defaultTimeout time.Duration) *taskExecutor {
@@ -70,12 +76,59 @@ func (e *taskExecutor) executeTurn(
 
 	workspaceDir := ""
 	if task.WorkspaceMode == "share" && task.ProjectName != "" {
-		if fi, err := os.Stat(task.ProjectName); err == nil && fi.IsDir() {
-			workspaceDir = task.ProjectName
+		if e.storage != nil {
+			if proj, err := e.storage.GetProject(parentCtx, task.ProjectName); err == nil && proj != nil && proj.ProjectPath != "" {
+				if fi, err := os.Stat(proj.ProjectPath); err == nil && fi.IsDir() {
+					workspaceDir = proj.ProjectPath
+				}
+			}
+		}
+		if workspaceDir == "" {
+			if fi, err := os.Stat(task.ProjectName); err == nil && fi.IsDir() {
+				workspaceDir = task.ProjectName
+			}
+		}
+	}
+	if workspaceDir == "" && e.config != nil && task.AgentName != "" {
+		if agCfg, ok := e.config.Agents[task.AgentName]; ok && agCfg.WorkspacePath != "" {
+			if fi, err := os.Stat(agCfg.WorkspacePath); err == nil && fi.IsDir() {
+				workspaceDir = agCfg.WorkspacePath
+			}
 		}
 	}
 	if workspaceDir != "" {
 		args = append(args, "--add-dir", workspaceDir)
+	}
+
+	// Policy authorization check for system:subagent principal
+	principal := domain.Principal{
+		Kind:      domain.PrincipalSystem,
+		Provider:  "internal",
+		SubjectID: "system:subagent",
+	}
+	if e.policy != nil {
+		res := domain.Resource{
+			Kind:        domain.ResourceKindAgent,
+			ID:          task.AgentName,
+			AgentName:   task.AgentName,
+			SessionKey:  task.ParentSessionKey,
+			ProjectName: task.ProjectName,
+		}
+		if e.storage != nil {
+			if ag, err := e.storage.GetAgent(parentCtx, task.AgentName); err == nil && ag != nil {
+				res.OwnerID = ag.OwnerID
+				res.IsPublic = ag.IsPublic
+			}
+		}
+		if err := e.policy.Authorize(parentCtx, principal, domain.ActionTaskDispatch, res); err != nil {
+			errMsg := fmt.Sprintf("unauthorized: policy denied subagent execution: %v", err)
+			return &TurnResult{
+				ConversationID:  convID,
+				Status:          domain.TaskStatusFailed,
+				ErrorMessage:    errMsg,
+				DurationSeconds: 0,
+			}, errors.New(errMsg)
+		}
 	}
 
 	modelInput := task.Model
@@ -123,15 +176,11 @@ func (e *taskExecutor) executeTurn(
 			TurnID:         turnID,
 			ConversationID: convID,
 			SessionKey:     task.ParentSessionKey,
-			Principal: domain.Principal{
-				Kind:      domain.PrincipalSystem,
-				Provider:  "internal",
-				SubjectID: "system:subagent",
-			},
-			Action:       domain.ActionTaskDispatch,
-			WorkspaceDir: workspaceDir,
-			AgentName:    task.AgentName,
-			CreatedAt:    time.Now(),
+			Principal:      principal,
+			Action:         domain.ActionTaskDispatch,
+			WorkspaceDir:   workspaceDir,
+			AgentName:      task.AgentName,
+			CreatedAt:      time.Now(),
 		})
 		defer e.securityManager.UnregisterTurnByID(turnID)
 	}
@@ -140,7 +189,17 @@ func (e *taskExecutor) executeTurn(
 	if workspaceDir != "" {
 		cmd.Dir = workspaceDir
 	}
-	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TERM=dumb", "AGYENT_TURN_ID="+turnID)
+	env := append(os.Environ(),
+		"NO_COLOR=1",
+		"TERM=dumb",
+		"AGYENT_TURN_ID="+turnID,
+		"AGYENT_SESSION_KEY="+task.ParentSessionKey,
+		"AGYENT_AGENT_NAME="+task.AgentName,
+	)
+	if e.ipcSecret != "" {
+		env = append(env, "AGYENT_IPC_TOKEN="+e.ipcSecret)
+	}
+	cmd.Env = env
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
 
 	stdoutPipe, err := cmd.StdoutPipe()

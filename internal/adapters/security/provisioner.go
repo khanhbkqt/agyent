@@ -1,14 +1,17 @@
 package security
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"agyent/internal/config"
+	"agyent/internal/core/concurrency/oslock"
 )
 
 // HookEntry represents a single hook handler object in Antigravity.
@@ -41,7 +44,8 @@ func FormatHookCommand(binPath, subcmd string) string {
 }
 
 // EnsureWorkspaceHooksProvisioned guarantees that <workspaceDir>/.agents/hooks.json is properly configured.
-// This scopes security hooks strictly to agyent's subprocess workspaces without affecting the global Antigravity IDE or CLI.
+// It acquires an OS file lock on hooks.json.lock, merges agyent-security-gate into existing hooks without destroying
+// existing user configurations, and writes atomically with 0600 permissions.
 func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, logger *slog.Logger) (string, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -52,11 +56,18 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 	}
 
 	agentsDir := filepath.Join(workspaceDir, ".agents")
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create workspace .agents directory %s: %w", agentsDir, err)
 	}
 
 	hookFilePath := filepath.Join(agentsDir, "hooks.json")
+	lockFilePath := filepath.Join(agentsDir, "hooks.json.lock")
+
+	unlock, err := oslock.AcquireOSFileLock(context.Background(), lockFilePath, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire hooks lock %s: %w", lockFilePath, err)
+	}
+	defer unlock()
 
 	if agyentBinPath == "" {
 		if exe, err := os.Executable(); err == nil && exe != "" {
@@ -69,43 +80,63 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 	preCmd := FormatHookCommand(agyentBinPath, "pre")
 	postCmd := FormatHookCommand(agyentBinPath, "post")
 
-	hookPayload := map[string]NamedHookConfig{
-		"agyent-security-gate": {
-			Enabled: true,
-			PreToolUse: []HookGroup{
-				{
-					Matcher: "*",
-					Hooks: []HookEntry{
-						{
-							Type:    "command",
-							Command: preCmd,
-							Timeout: 65,
-						},
+	gateConfig := NamedHookConfig{
+		Enabled: true,
+		PreToolUse: []HookGroup{
+			{
+				Matcher: "*",
+				Hooks: []HookEntry{
+					{
+						Type:    "command",
+						Command: preCmd,
+						Timeout: 65,
 					},
 				},
 			},
-			PostToolUse: []HookGroup{
-				{
-					Matcher: "run_command|view_file|read_url_content|call_mcp_tool|write_to_file",
-					Hooks: []HookEntry{
-						{
-							Type:    "command",
-							Command: postCmd,
-							Timeout: 15,
-						},
+		},
+		PostToolUse: []HookGroup{
+			{
+				Matcher: "run_command|view_file|read_url_content|call_mcp_tool|write_to_file",
+				Hooks: []HookEntry{
+					{
+						Type:    "command",
+						Command: postCmd,
+						Timeout: 15,
 					},
 				},
 			},
 		},
 	}
 
-	data, err := json.MarshalIndent(hookPayload, "", "  ")
+	allHooks := make(map[string]json.RawMessage)
+	if existingData, err := os.ReadFile(hookFilePath); err == nil {
+		_ = json.Unmarshal(existingData, &allHooks)
+	}
+
+	gateData, err := json.Marshal(gateConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal gate config: %w", err)
+	}
+	allHooks["agyent-security-gate"] = gateData
+
+	data, err := json.MarshalIndent(allHooks, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal hooks.json: %w", err)
 	}
 
-	if err := os.WriteFile(hookFilePath, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write %s: %w", hookFilePath, err)
+	tmpFile := fmt.Sprintf("%s.tmp.%d.%d", hookFilePath, os.Getpid(), time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+		return "", fmt.Errorf("failed to write tmp %s: %w", tmpFile, err)
+	}
+
+	if f, err := os.Open(tmpFile); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+
+	if err := os.Rename(tmpFile, hookFilePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", fmt.Errorf("failed to atomically replace %s: %w", hookFilePath, err)
 	}
 
 	logger.Debug("Provisioned workspace-scoped Antigravity hooks", "path", hookFilePath, "workspace", workspaceDir)
@@ -145,7 +176,10 @@ func RemoveGlobalHooks(logger *slog.Logger) error {
 			logger.Info("Removed stale agyent-security-gate from global hooks", "path", hookFilePath)
 		} else {
 			updated, _ := json.MarshalIndent(hooks, "", "  ")
-			_ = os.WriteFile(hookFilePath, updated, 0644)
+			tmpFile := fmt.Sprintf("%s.tmp.%d.%d", hookFilePath, os.Getpid(), time.Now().UnixNano())
+			if err := os.WriteFile(tmpFile, updated, 0600); err == nil {
+				_ = os.Rename(tmpFile, hookFilePath)
+			}
 			logger.Info("Cleaned agyent-security-gate from global hooks", "path", hookFilePath)
 		}
 	}

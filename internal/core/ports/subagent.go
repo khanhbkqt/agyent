@@ -9,6 +9,7 @@ import (
 // SubagentRepository defines persistence operations for asynchronous subagent tasks in SQLite.
 type SubagentRepository interface {
 	GetSubagentTask(ctx context.Context, id string) (*domain.SubagentTask, error)
+	GetSubagentTaskScoped(ctx context.Context, sessionKey, id string) (*domain.SubagentTask, error)
 	ListSubagentTasks(ctx context.Context, parentSessionKey string, limit, offset int) ([]domain.SubagentTask, int, error)
 	ListActiveSubagentTasks(ctx context.Context, parentSessionKey string) ([]domain.SubagentTask, error)
 	ListPendingSubagentTasks(ctx context.Context, limit int) ([]domain.SubagentTask, error)
@@ -19,7 +20,9 @@ type SubagentRepository interface {
 	UpdateSubagentTaskFailed(ctx context.Context, id string, errMsg string, durationSec float64) error
 	UpdateSubagentTaskCancelled(ctx context.Context, id string) error
 	TransitionTaskToCancelling(ctx context.Context, id string) (bool, error)
+	TransitionTaskToCancellingScoped(ctx context.Context, sessionKey, id string) (bool, error)
 	TransitionTaskToCancelled(ctx context.Context, id string) error
+	TransitionTaskStatus(ctx context.Context, id string, fromStatus, toStatus domain.SubagentTaskStatus) (bool, error)
 	ReconcileStaleCancellingTasks(ctx context.Context) (int64, error)
 	PurgeSubagentTasks(ctx context.Context, olderThanDays int) (int64, error)
 }
@@ -32,6 +35,9 @@ type SubagentDispatcherPort interface {
 	// GetTask queries current task state and live progress metadata.
 	GetTask(ctx context.Context, taskID string) (*domain.SubagentTask, error)
 
+	// GetTaskScoped queries task state ensuring it matches sessionKey.
+	GetTaskScoped(ctx context.Context, sessionKey, taskID string) (*domain.SubagentTask, error)
+
 	// ListActiveTasks returns all in-flight tasks for a given session.
 	ListActiveTasks(ctx context.Context, sessionKey string) ([]domain.SubagentTask, error)
 
@@ -41,8 +47,14 @@ type SubagentDispatcherPort interface {
 	// SendTaskInput resumes a sub-agent waiting for clarification (WAITING_FOR_INPUT).
 	SendTaskInput(ctx context.Context, taskID string, input string) error
 
+	// SendTaskInputScoped resumes a sub-agent scoped by sessionKey.
+	SendTaskInputScoped(ctx context.Context, sessionKey, taskID, input string) error
+
 	// CancelTask forcefully halts a running task and tears down the associated process tree.
 	CancelTask(ctx context.Context, taskID string) error
+
+	// CancelTaskScoped halts a running task scoped by sessionKey.
+	CancelTaskScoped(ctx context.Context, sessionKey, taskID string) error
 
 	// Start initializes background worker pool consumers.
 	Start(ctx context.Context) error

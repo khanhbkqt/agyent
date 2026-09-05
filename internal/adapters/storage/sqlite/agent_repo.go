@@ -402,3 +402,78 @@ func (s *SQLiteStore) ClaimAgent(ctx context.Context, name string, newOwnerID st
 	return rows == 1, nil
 }
 
+// ClaimAgentWithAudit atomically claims an unowned agent profile and inserts the audit log in a single transaction.
+func (s *SQLiteStore) ClaimAgentWithAudit(ctx context.Context, name string, newOwnerID string, log domain.AuditLog) (bool, error) {
+	if name == "" || newOwnerID == "" {
+		return false, errors.New("agent name and owner ID cannot be empty")
+	}
+
+	tx, err := s.writer().BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `
+		UPDATE agents
+		SET owner_id = ?, updated_at = ?
+		WHERE name = ? AND (owner_id IS NULL OR owner_id = '');
+	`
+	res, err := tx.ExecContext(ctx, query, newOwnerID, time.Now().UnixMilli(), name)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim agent %s: %w", name, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows != 1 {
+		return false, nil
+	}
+
+	createdAt := log.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	status := log.Status
+	if status == "" {
+		status = "SUCCESS"
+	}
+
+	auditQuery := `
+		INSERT INTO audit_logs (
+			session_key, agent_name, project_name, conversation_id,
+			model, effort,
+			prompt_length, response_length, duration_seconds,
+			input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens,
+			status, error_message, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	if _, err := tx.ExecContext(ctx, auditQuery,
+		log.SessionKey,
+		log.AgentName,
+		log.ProjectName,
+		log.ConversationID,
+		log.Model,
+		log.Effort,
+		log.PromptLength,
+		log.ResponseLength,
+		log.DurationSeconds,
+		log.Usage.InputTokens,
+		log.Usage.OutputTokens,
+		log.Usage.ThinkingTokens,
+		log.Usage.CacheReadTokens,
+		log.Usage.TotalTokens,
+		status,
+		log.ErrorMessage,
+		timeToMilli(createdAt),
+	); err != nil {
+		return false, fmt.Errorf("failed to insert audit log for claim: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("failed to commit claim transaction: %w", err)
+	}
+
+	return true, nil
+}

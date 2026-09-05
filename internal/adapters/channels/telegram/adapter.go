@@ -45,6 +45,7 @@ type Adapter struct {
 	pollDone   chan struct{}
 	httpServer  *http.Server
 	secretToken string
+	authorizer  InboundAuthorizer
 
 	mu      sync.RWMutex
 	running bool
@@ -142,6 +143,16 @@ func (a *Adapter) MediaManager() *MediaManager {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.mediaMgr
+}
+
+// SetInboundAuthorizer sets the inbound authorization evaluator for ingress filtering.
+func (a *Adapter) SetInboundAuthorizer(authorizer InboundAuthorizer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.authorizer = authorizer
+	if a.router != nil {
+		a.router.SetInboundAuthorizer(authorizer)
+	}
 }
 
 func (a *Adapter) getBot(botID int64) *gotgbot.Bot {
@@ -291,6 +302,9 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn, a.getBot)
 	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
 	a.router.SetBotBindings(a.bindAgents)
+	if a.authorizer != nil {
+		a.router.SetInboundAuthorizer(a.authorizer)
+	}
 
 	// 3. Bind EventBus subscriptions
 	if a.eventBus != nil {
@@ -428,9 +442,11 @@ func (a *Adapter) WebhookHandler() http.Handler {
 			a.secretToken = a.cfg.Telegram.SecretToken
 		} else {
 			tokenBytes := make([]byte, 32)
-			if _, err := rand.Read(tokenBytes); err == nil {
-				a.secretToken = hex.EncodeToString(tokenBytes)
+			if _, err := rand.Read(tokenBytes); err != nil {
+				slog.Error("failed to generate secure webhook secret token from crypto/rand", "error", err)
+				panic(fmt.Sprintf("crypto/rand failure: %v", err))
 			}
+			a.secretToken = hex.EncodeToString(tokenBytes)
 		}
 	}
 	secretToken := a.secretToken
@@ -443,12 +459,10 @@ func (a *Adapter) WebhookHandler() http.Handler {
 			return
 		}
 
-		if secretToken != "" {
-			providedToken := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
-			if subtle.ConstantTimeCompare([]byte(providedToken), []byte(secretToken)) != 1 {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+		providedToken := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+		if secretToken == "" || subtle.ConstantTimeCompare([]byte(providedToken), []byte(secretToken)) != 1 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB body limit to prevent memory DoS

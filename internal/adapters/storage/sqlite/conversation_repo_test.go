@@ -397,4 +397,3 @@ func TestSQLiteStore_ScopedConversationAntiIDOR(t *testing.T) {
 		t.Errorf("expected ErrNotFound after deletion, got %v", err)
 	}
 }
-

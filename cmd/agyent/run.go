@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
@@ -164,14 +166,19 @@ var runCmd = &cobra.Command{
 		eng.SetWorkspaceManager(wsMgr)
 
 		// Centralized Authorization Policy & Execution Chokepoint
+		ipcSecretBytes := make([]byte, 32)
+		if _, err := rand.Read(ipcSecretBytes); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to generate secure IPC secret: %v\n", err)
+			os.Exit(1)
+		}
+		ipcSecret := hex.EncodeToString(ipcSecretBytes)
+		ipcServer.SetSecretToken(ipcSecret)
+
 		policyEngine := auth.NewEngine(store, cfg)
-		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, cfg.Telegram.SecretToken, mainLogger)
+		execSvc := execution.NewService(runner, policyEngine, secMgr, store, cfg, ipcSecret, mainLogger)
 		eng.SetPolicyEngine(policyEngine)
 		eng.SetExecutionService(execSvc)
-
-		if cfg.Telegram.SecretToken != "" {
-			ipcServer.SetSecretToken(cfg.Telegram.SecretToken)
-		}
+		channel.SetInboundAuthorizer(eng)
 
 		// Initialize Scheduler (Heartbeat, Cron, One-off Schedules)
 		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
@@ -182,6 +189,10 @@ var runCmd = &cobra.Command{
 
 		subDispatcher := subagent.NewDispatcher(cfg.Subagent, cfg.AGY.BinaryPath, store, bus)
 		subDispatcher.SetSecurityManager(secMgr)
+		subDispatcher.SetPolicyEngine(policyEngine)
+		subDispatcher.SetStoragePort(store)
+		subDispatcher.SetConfig(cfg)
+		subDispatcher.SetIPCSecret(ipcSecret)
 		eng.SetSubagentDispatcher(subDispatcher)
 		ipcServer.SetSubagents(subDispatcher)
 

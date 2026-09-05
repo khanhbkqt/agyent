@@ -47,6 +47,7 @@ type AgentRepository interface {
 	CheckAgentAccess(ctx context.Context, agentName, userID string) (bool, string, error)
 	ListAgentsForUser(ctx context.Context, userID string) ([]domain.Agent, error)
 	ClaimAgent(ctx context.Context, name string, newOwnerID string) (bool, error)
+	ClaimAgentWithAudit(ctx context.Context, name string, newOwnerID string, audit domain.AuditLog) (bool, error)
 }
 
 // ProjectRepository defines persistence operations for managed projects.

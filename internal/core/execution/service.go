@@ -87,32 +87,45 @@ func (s *Service) ExecuteTurn(
 	if resource.AgentName == "" {
 		resource.AgentName = "agyent"
 	}
-
-	// 2. Authorize Principal against Policy (Default-Deny)
-	if s.policy != nil {
-		if err := s.policy.Authorize(ctx, principal, action, resource); err != nil {
-			s.logger.WarnContext(ctx, "Execution turn denied by policy",
-				"principal", principal.SubjectID,
-				"action", action,
-				"resource", resource.AgentName,
-				"error", err,
-			)
-			if s.storage != nil {
-				_ = s.storage.LogAudit(ctx, &domain.AuditLog{
-					SessionKey:     sessionKey,
-					AgentName:      req.AgentName,
-					ConversationID: req.ConversationID,
-					PromptLength:   len(req.Prompt),
-					Status:         "DENIED",
-					ErrorMessage:   fmt.Sprintf("authorization denied: %v", err),
-					CreatedAt:      time.Now(),
-				})
-			}
-			return nil, fmt.Errorf("authorization denied: %w", err)
+	if s.storage != nil {
+		if agent, err := s.storage.GetAgent(ctx, resource.AgentName); err == nil && agent != nil {
+			resource.OwnerID = agent.OwnerID
+			resource.IsPublic = agent.IsPublic
 		}
 	}
 
-	// 3. Enforce Safety Overrides on Privileged Flags
+	// 2. Authorize Principal against Policy (Default-Deny)
+	if s.policy == nil {
+		return nil, errors.New("policy engine not configured: fail-closed")
+	}
+	if err := s.policy.Authorize(ctx, principal, action, resource); err != nil {
+		s.logger.WarnContext(ctx, "Execution turn denied by policy",
+			"principal", principal.SubjectID,
+			"action", action,
+			"resource", resource.AgentName,
+			"error", err,
+		)
+		if s.storage != nil {
+			_ = s.storage.LogAudit(ctx, &domain.AuditLog{
+				SessionKey:     sessionKey,
+				AgentName:      req.AgentName,
+				ConversationID: req.ConversationID,
+				PromptLength:   len(req.Prompt),
+				Status:         "ERROR",
+				ErrorMessage:   fmt.Sprintf("authorization denied: %v", err),
+				CreatedAt:      time.Now(),
+			})
+		}
+		return nil, fmt.Errorf("authorization denied: %w", err)
+	}
+
+	// 3. Enforce Safety Overrides on Privileged Flags and Viewer Role
+	if role, err := s.policy.ResolveAgentRole(ctx, principal, resource.AgentName); err == nil {
+		if role == domain.AgentRoleViewer {
+			req.Mode = "plan"
+		}
+	}
+
 	isSuperAdmin := false
 	if s.configProvider != nil {
 		if s.configProvider.IsSuperAdmin(principal) || s.configProvider.IsAdminForProvider(principal.SubjectID, principal.Provider) {
@@ -125,10 +138,9 @@ func (s *Service) ExecuteTurn(
 		)
 		req.DangerouslySkipPermissions = false
 	}
-	// For background safety tasks (compact / reflect), always disable dangerously_skip_permissions
-	if action == domain.ActionSessionCompact || req.Mode == "plan" {
+	// For background safety tasks (compact / reflect / subagent / cron) or plan mode, always disable dangerously_skip_permissions
+	if action == domain.ActionSessionCompact || req.Mode == "plan" || strings.HasPrefix(principal.SubjectID, "system:") {
 		req.DangerouslySkipPermissions = false
-		req.Mode = "plan"
 	}
 
 	// 4. Provision End-to-End Turn Identity

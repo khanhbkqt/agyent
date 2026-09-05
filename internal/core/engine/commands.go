@@ -24,6 +24,46 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	if msg.BindAgent != "" {
 		defaultAgent = msg.BindAgent
 	}
+	// Inbound Authorization: Evaluate access to targetAgent BEFORE mutating session state
+	// Note: /a and /agents subcommands (new, list, claim, share, revoke) manage their own
+	// targeted permissions per-subcommand and per-agent.
+	if cmd != "/a" && cmd != "/agents" {
+		targetAgent := defaultAgent
+		existingSession, _ := e.storage.GetSession(ctx, sessionKey)
+		if existingSession != nil && existingSession.ActiveAgent != "" {
+			targetAgent = existingSession.ActiveAgent
+		}
+		if msg.BindAgent != "" {
+			targetAgent = msg.BindAgent
+		}
+
+		agent, getErr := e.storage.GetAgent(ctx, targetAgent)
+		if getErr == nil && agent != nil {
+			allowed, _, checkErr := e.CheckAccess(ctx, agent, msg.Sender.ID)
+			if checkErr != nil || !allowed {
+				return &domain.OutboundMessage{
+					Channel:          msg.Channel,
+					BotID:            msg.BotID,
+					ChatID:           msg.Chat.ID,
+					ThreadID:         msg.Chat.ThreadID,
+					Text:             fmt.Sprintf("⛔ **Access Denied (403):** You do not have permission to interact with agent `@%s`.", targetAgent),
+					ParseMode:        "Markdown",
+					ReplyToMessageID: msg.ID,
+				}, nil
+			}
+		} else if !e.IsSuperAdmin(msg.Sender.ID) {
+			return &domain.OutboundMessage{
+				Channel:          msg.Channel,
+				BotID:            msg.BotID,
+				ChatID:           msg.Chat.ID,
+				ThreadID:         msg.Chat.ThreadID,
+				Text:             "⛔ **Access Denied (403):** Unauthorized caller.",
+				ParseMode:        "Markdown",
+				ReplyToMessageID: msg.ID,
+			}, nil
+		}
+	}
+
 	session, err := e.storage.GetOrCreateSession(ctx, sessionKey, defaultAgent)
 	if err != nil {
 		return &domain.OutboundMessage{
@@ -62,6 +102,19 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handleSkillsCommand(ctx, session, args)
 
 	case "/plugins", "/plugin":
+		if len(args) > 0 && strings.ToLower(args[0]) != "list" {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindPlugin, ID: args[0], AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionPluginManage, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify plugins."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify plugins."
+				break
+			}
+		}
 		responseText = e.handlePluginsCommand(ctx, session, args)
 
 	case "/browser":
@@ -71,9 +124,35 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 			"• To browse or scrape: Prompt your agent in natural language (e.g. _\"Mở website https://... và cào danh sách sản phẩm\"_), and the agent will automatically use native `camoufox_*` MCP tools."
 
 	case "/stream":
+		if len(args) > 0 {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindSystem, ID: "stream", AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionStreamModeChange, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify global stream settings."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify global stream settings."
+				break
+			}
+		}
 		responseText = e.handleStreamCommand(args)
 
 	case "/mode", "/queuemode":
+		if len(args) > 0 {
+			if e.policyEngine != nil {
+				principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+				res := domain.Resource{Kind: domain.ResourceKindSystem, ID: "mode", AgentName: session.ActiveAgent}
+				if err := e.policyEngine.Authorize(ctx, principal, domain.ActionModeChange, res); err != nil {
+					responseText = "⛔ Permission denied: Only SuperAdmins can modify global queue mode."
+					break
+				}
+			} else if !e.IsSuperAdmin(msg.Sender.ID) {
+				responseText = "⛔ Permission denied: Only SuperAdmins can modify global queue mode."
+				break
+			}
+		}
 		responseText = e.handleModeCommand(args)
 
 	case "/model", "/m", "/models":
@@ -125,6 +204,14 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		responseText = e.handlePinCommand(ctx, session, args, false)
 
 	case "/reset":
+		if e.policyEngine != nil {
+			principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+			res := domain.Resource{Kind: domain.ResourceKindSession, ID: sessionKey, SessionKey: sessionKey, AgentName: session.ActiveAgent}
+			if err := e.policyEngine.Authorize(ctx, principal, domain.ActionSessionReset, res); err != nil {
+				responseText = "⛔ Permission denied: You are not authorized to reset this session context."
+				break
+			}
+		}
 		if e.HasActiveTurn(sessionKey) {
 			responseText = "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting."
 		} else {
@@ -148,6 +235,14 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 		}
 
 	case "/force_unlock", "/unlock":
+		if e.policyEngine != nil {
+			principal := domain.Principal{Kind: domain.PrincipalUser, Provider: "telegram", SubjectID: msg.Sender.ID}
+			res := domain.Resource{Kind: domain.ResourceKindSession, ID: sessionKey, SessionKey: sessionKey, AgentName: session.ActiveAgent}
+			if err := e.policyEngine.Authorize(ctx, principal, domain.ActionTurnForceUnlock, res); err != nil {
+				responseText = "⛔ Permission denied: You are not authorized to force unlock this session."
+				break
+			}
+		}
 		e.ForceUnlockSession(sessionKey)
 		responseText = "🔓 **Session mutex forcefully released.** Any hanging turn subprocess has been terminated."
 
@@ -906,7 +1001,14 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 		if !e.IsSuperAdmin(sender.ID) {
 			return "⛔ Access Denied: Only SuperAdmin can claim unowned agents."
 		}
-		claimed, err := e.storage.ClaimAgent(ctx, agentName, sender.ID)
+		audit := domain.AuditLog{
+			SessionKey:   session.SessionKey,
+			AgentName:    agentName,
+			Status:       "SUCCESS",
+			ErrorMessage: fmt.Sprintf("SuperAdmin %s claimed ownership of agent %s", sender.ID, agentName),
+			CreatedAt:    time.Now(),
+		}
+		claimed, err := e.storage.ClaimAgentWithAudit(ctx, agentName, sender.ID, audit)
 		if err != nil {
 			return fmt.Sprintf("⚠️ Failed to claim agent: %v", err)
 		}
@@ -948,8 +1050,14 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 		}
 
-		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+		if agent.OwnerID == "" {
+			return fmt.Sprintf("⛔ **Access Denied:** Unowned agent `@%s` cannot be shared until officially claimed via `/a claim` by a SuperAdmin.", agentName)
+		}
+		if agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
 			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can share access.", agentName)
+		}
+		if role == "admin" && !e.IsSuperAdmin(sender.ID) && agent.OwnerID != sender.ID {
+			return "⛔ **Access Denied:** Only the owner or a SuperAdmin can grant the `admin` role."
 		}
 
 		perm := &domain.AgentPermission{
@@ -977,7 +1085,10 @@ func (e *Engine) handleAgentsCommand(ctx context.Context, sender domain.SenderUs
 			return fmt.Sprintf("⚠️ Agent `%s` not found.", agentName)
 		}
 
-		if agent.OwnerID != "" && agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
+		if agent.OwnerID == "" {
+			return fmt.Sprintf("⛔ **Access Denied:** Unowned agent `@%s` cannot be modified until officially claimed via `/a claim` by a SuperAdmin.", agentName)
+		}
+		if agent.OwnerID != sender.ID && !e.IsSuperAdmin(sender.ID) {
 			return fmt.Sprintf("⛔ **Access Denied:** Only the owner of agent `@%s` or a superadmin can revoke access.", agentName)
 		}
 

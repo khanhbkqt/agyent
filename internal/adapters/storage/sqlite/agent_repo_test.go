@@ -221,4 +221,3 @@ func TestSQLiteStore_AgentOwnershipAndRBAC(t *testing.T) {
 		assert.False(t, claimedNonExistent, "Claiming non-existent agent must return false")
 	})
 }
-

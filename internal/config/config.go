@@ -684,6 +684,9 @@ func (c *Config) Validate() error {
 	if c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.WebhookURL) == "" {
 		return errors.New("telegram webhook_url is required when mode is 'webhook'")
 	}
+	if c.Telegram.SecretToken != "" && len(strings.TrimSpace(c.Telegram.SecretToken)) < 16 {
+		return errors.New("telegram secret_token must have at least 16 characters for security")
+	}
 	if c.Logging.Level != "" {
 		lvl := strings.ToLower(strings.TrimSpace(c.Logging.Level))
 		if lvl != "debug" && lvl != "info" && lvl != "warn" && lvl != "warning" && lvl != "error" {

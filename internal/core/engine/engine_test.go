@@ -1249,10 +1249,10 @@ func TestEngine_EvolutionExplicitSwitchHooks(t *testing.T) {
 	mockEvo := &mockEngineEvolutionOrchestrator{}
 	eng.SetEvolutionOrchestrator(mockEvo)
 
-	sender := domain.SenderUser{ID: "998877", Username: "tester"}
-	chat := domain.ChatContext{ID: "998877", Type: "private"}
+	sender := domain.SenderUser{ID: "123456", Username: "tester"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
 
-	sessionKey := "telegram:998877"
+	sessionKey := "telegram:123456"
 	sess, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
 	require.NoError(t, err)
 
@@ -1542,8 +1542,8 @@ func TestEngine_ModeSlashCommand(t *testing.T) {
 		Timestamp: time.Now(),
 		Channel:   "telegram",
 		Text:      "/mode",
-		Sender:    domain.SenderUser{ID: "123", Username: "user"},
-		Chat:      domain.ChatContext{ID: "123", Type: "private"},
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
 	}
 
 	// 1. Query current mode

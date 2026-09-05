@@ -496,4 +496,3 @@ func TestConfig_IsAdmin(t *testing.T) {
 		assert.False(t, cfg.IsAdmin("invalid_id_9999"))
 	})
 }
-
