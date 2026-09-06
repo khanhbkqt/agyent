@@ -424,13 +424,49 @@ func (c *Client) uploadMultipart(ctx context.Context, method, fieldName, chatID,
 }
 
 // SendPhoto uploads or sends an image attachment.
-func (c *Client) SendPhoto(ctx context.Context, chatID, filePath, caption string) error {
-	return c.uploadMultipart(ctx, "sendPhoto", "photo", chatID, filePath, caption)
+func (c *Client) SendPhoto(ctx context.Context, chatID, photo, caption string) error {
+	photoURL := photo
+	if !strings.HasPrefix(photo, "http://") && !strings.HasPrefix(photo, "https://") {
+		uploaded, err := UploadPublicMedia(ctx, photo)
+		if err != nil {
+			return fmt.Errorf("failed to upload local photo to public CDN: %w", err)
+		}
+		photoURL = uploaded
+	}
+
+	payload := map[string]string{
+		"chat_id": chatID,
+		"photo":   photoURL,
+	}
+	if caption != "" {
+		payload["caption"] = caption
+	}
+	return c.executeRequest(ctx, "sendPhoto", payload, nil)
 }
 
-// SendDocument uploads or sends a document/file attachment.
+// SendDocument uploads a document to public CDN and delivers the download link.
 func (c *Client) SendDocument(ctx context.Context, chatID, filePath, caption string) error {
-	return c.uploadMultipart(ctx, "sendDocument", "document", chatID, filePath, caption)
+	docURL := filePath
+	if !strings.HasPrefix(filePath, "http://") && !strings.HasPrefix(filePath, "https://") {
+		uploaded, err := UploadPublicMedia(ctx, filePath)
+		if err != nil {
+			return fmt.Errorf("failed to upload local document to public CDN: %w", err)
+		}
+		docURL = uploaded
+	}
+
+	fileName := filepath.Base(filePath)
+	text := fmt.Sprintf("📄 **Tài liệu:** [%s](%s)", fileName, docURL)
+	if caption != "" {
+		text = fmt.Sprintf("📄 **Tài liệu:** [%s](%s)\n%s", fileName, docURL, caption)
+	}
+
+	_, err := c.SendMessage(ctx, SendMessageRequest{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: "markdown",
+	})
+	return err
 }
 
 // SetWebhook registers a webhook endpoint for instant updates.

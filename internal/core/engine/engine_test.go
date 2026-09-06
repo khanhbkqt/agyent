@@ -1789,3 +1789,52 @@ func TestEngine_SchedulerEvents_PropagatesMediaContext(t *testing.T) {
 	assert.Equal(t, "agyent", sentMsg.AgentName)
 	assert.Equal(t, "12345678", sentMsg.ChatID)
 }
+
+func TestEngine_ContextTag_OmittedForZalo(t *testing.T) {
+	eng, _, channel, _, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	cfg.Zalo.AdminUserIDs = []string{"zalo-admin-1"}
+	eng.SetStreamingEnabled(false) // batch mode where engine sends outbound message directly
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	// 1. Zalo group message - should NOT have contextTag prepended
+	zaloMsg := domain.CanonicalMessage{
+		ID:        "zalo-msg-1",
+		Timestamp: time.Now(),
+		Channel:   "zalo",
+		Sender:    domain.SenderUser{ID: "zalo-admin-1", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "zalo-group-1", Type: "group"},
+		Text:      "Hello from Zalo group",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, zaloMsg)
+	require.NoError(t, err)
+
+	sent := channel.GetSentMessages()
+	require.Len(t, sent, 1)
+	assert.NotContains(t, sent[0].Text, "🌐 [")
+	assert.NotContains(t, sent[0].Text, "📁 [")
+	assert.True(t, strings.HasPrefix(sent[0].Text, "Mock response for: "))
+
+	// 2. Telegram group message - SHOULD have contextTag prepended
+	telegramMsg := domain.CanonicalMessage{
+		ID:        "tg-msg-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "tg-group-1", Type: "group"},
+		Text:      "Hello from Telegram group",
+	}
+
+	err = eng.HandleDebouncedMessage(ctx, telegramMsg)
+	require.NoError(t, err)
+
+	sent = channel.GetSentMessages()
+	require.Len(t, sent, 2)
+	assert.Contains(t, sent[1].Text, "🌐 [agyent • Global]")
+}
+
+

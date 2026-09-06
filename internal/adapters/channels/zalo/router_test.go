@@ -217,3 +217,119 @@ func TestZaloRouter_HITLSlashCommandIntercept(t *testing.T) {
 		t.Fatal("timed out waiting for approval via router command")
 	}
 }
+
+func TestZaloRouter_MentionStripping(t *testing.T) {
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			AllowedGroupIDs: []string{"group_101"},
+		},
+	}
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	router := zalo.NewRouter(cfg, nil, nil, inboundChan)
+
+	botCtx := zalo.BotContext{
+		BotID:       "9999",
+		BotName:     "Trao Mơ FC",
+		BotUsername: "traomofc",
+		BindAgent:   "traomofc",
+	}
+
+	// 1. Tag bot with slash command
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 201,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_tag_cmd",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "@Trao Mơ FC /new Bàn về dự án AI",
+		},
+	}, botCtx)
+
+	msg1 := <-inboundChan
+	assert.Equal(t, "/new Bàn về dự án AI", msg1.Text)
+	assert.Equal(t, "@Trao Mơ FC /new Bàn về dự án AI", msg1.RawText)
+	assert.True(t, msg1.IsMentioned)
+	assert.True(t, msg1.IsCommand())
+
+	// 2. Tag bot with normal conversation
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 202,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_tag_chat",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "@traomofc Thời tiết hôm nay thế nào?",
+		},
+	}, botCtx)
+
+	msg2 := <-inboundChan
+	assert.Equal(t, "Thời tiết hôm nay thế nào?", msg2.Text)
+	assert.Equal(t, "@traomofc Thời tiết hôm nay thế nào?", msg2.RawText)
+	assert.True(t, msg2.IsMentioned)
+	assert.False(t, msg2.IsCommand())
+
+	// 3. Fallback generic tag with slash command
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 203,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_generic_tag_cmd",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "@bot /reset",
+		},
+	}, botCtx)
+
+	msg3 := <-inboundChan
+	assert.Equal(t, "/reset", msg3.Text)
+	assert.True(t, msg3.IsMentioned)
+	assert.True(t, msg3.IsCommand())
+
+	// 4. Normal message without tag
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 204,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_no_tag",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "Tin nhắn không tag bot",
+		},
+	}, botCtx)
+
+	msg4 := <-inboundChan
+	assert.Equal(t, "Tin nhắn không tag bot", msg4.Text)
+	assert.False(t, msg4.IsMentioned)
+
+	// 5. Bot name with colon punctuation "@Trao Mơ FC: /new Dự án mới"
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 205,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_colon_cmd",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "@Trao Mơ FC: /new Dự án mới",
+		},
+	}, botCtx)
+
+	msg5 := <-inboundChan
+	assert.Equal(t, "/new Dự án mới", msg5.Text)
+	assert.True(t, msg5.IsMentioned)
+	assert.True(t, msg5.IsCommand())
+
+	// 6. Long bot name with 4 words and spaces fallback
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		UpdateID: 206,
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_long_name",
+			From:      zalo.ZaloUser{ID: "user_1", Name: "Tester"},
+			Chat:      zalo.ZaloChat{ID: "group_101", Type: "group"},
+			Text:      "@Trợ Lý Ảo Toàn Diện /new Topic AI",
+		},
+	}, zalo.BotContext{BotID: "123"})
+
+	msg6 := <-inboundChan
+	assert.Equal(t, "/new Topic AI", msg6.Text)
+	assert.True(t, msg6.IsMentioned)
+	assert.True(t, msg6.IsCommand())
+}
+
+

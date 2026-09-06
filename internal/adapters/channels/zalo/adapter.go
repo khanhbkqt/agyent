@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
@@ -344,7 +346,11 @@ func (a *Adapter) pollBotUpdates(ctx context.Context, botName string, inst *botI
 			BindAgent: inst.bindAgent,
 		}
 		if inst.user != nil {
+			botCtx.BotName = inst.user.Name
 			botCtx.BotUsername = inst.user.Username
+		}
+		if botCtx.BotName == "" && inst.config.Name != "" {
+			botCtx.BotName = inst.config.Name
 		}
 
 		for _, u := range updates {
@@ -373,7 +379,7 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 			return
 		}
 
-		// Secret verification if configured (using constant-time comparison to prevent timing attacks)
+		// Verify Webhook Secret Token
 		if a.cfg.Zalo.SecretToken != "" {
 			secretHeader := r.Header.Get("X-Secret-Token")
 			if secretHeader == "" {
@@ -394,8 +400,27 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 			return
 		}
 
+		var botCtx []BotContext
+		a.mu.RLock()
+		for _, b := range a.bots {
+			bc := BotContext{
+				BotID:     b.botID,
+				BindAgent: b.bindAgent,
+			}
+			if b.user != nil {
+				bc.BotName = b.user.Name
+				bc.BotUsername = b.user.Username
+			}
+			if bc.BotName == "" && b.config.Name != "" {
+				bc.BotName = b.config.Name
+			}
+			botCtx = append(botCtx, bc)
+			break
+		}
+		a.mu.RUnlock()
+
 		if a.router != nil {
-			a.router.RouteUpdate(r.Context(), update)
+			a.router.RouteUpdate(r.Context(), update, botCtx...)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -538,30 +563,96 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 		return errors.New("zalo client is not initialized")
 	}
 
-	text := msg.Text
+	sentPaths := make(map[string]bool)
+	var allMedia []domain.Attachment
+	cleanedText := msg.Text
 
-	// Format to Zalo-compliant Markdown
-	text = FormatToZaloMarkdown(text)
-
-	// Sanitize privacy leaks (home paths)
-	text = SanitizePrivacyLeaks(text)
-
-	// Send Attachments if present
-	for _, att := range msg.Attachments {
-		if a.media != nil {
-			if err := a.media.SendOutboundAttachment(ctx, msg.ChatID, att); err != nil {
-				slog.ErrorContext(ctx, "failed to send Zalo attachment", "error", err, "chat_id", msg.ChatID)
+	// 1. Extract embedded media from markdown text
+	if msg.Text != "" {
+		var extraMedia []domain.Attachment
+		cleanedText, extraMedia = ExtractAndCleanOutboundMedia(msg.Text, msg.WorkspaceDir, msg.ConversationID)
+		for _, m := range extraMedia {
+			normPath := filepath.Clean(filepath.FromSlash(m.FilePath))
+			if !sentPaths[normPath] {
+				sentPaths[normPath] = true
+				m.FilePath = normPath
+				allMedia = append(allMedia, m)
 			}
 		}
 	}
 
-	if strings.TrimSpace(text) == "" {
+	// 2. Collect any remaining unreferenced outbound attachments from msg.Attachments
+	if len(msg.Attachments) > 0 {
+		for _, att := range msg.Attachments {
+			normPath := filepath.Clean(filepath.FromSlash(att.FilePath))
+			if !sentPaths[normPath] {
+				sentPaths[normPath] = true
+				allMedia = append(allMedia, domain.Attachment{
+					FileName: att.FileName,
+					FilePath: normPath,
+					MIMEType: att.MIMEType,
+					Type:     att.Type,
+					Caption:  att.Caption,
+				})
+			}
+		}
+	}
+
+	textToSend := cleanedText
+	hasPhotos := false
+	primaryPhotoIdx := -1
+	for idx, m := range allMedia {
+		ext := strings.ToLower(filepath.Ext(m.FilePath))
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
+			hasPhotos = true
+			if primaryPhotoIdx == -1 {
+				primaryPhotoIdx = idx
+			}
+		}
+	}
+
+	// Smart Split Delivery:
+	// If outbound message contains a photo and cleanedText <= 2000 runes (Zalo caption limit):
+	// Attach the full text as the photo's caption, delivering image + text in a single unified message.
+	// If cleanedText > 2000 runes: photo is sent first, and cleanedText is sent as full text message.
+	if len(allMedia) > 0 && a.media != nil {
+		trimmedText := strings.TrimSpace(cleanedText)
+		canAttachToPhoto := hasPhotos && primaryPhotoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 2000
+
+		if canAttachToPhoto {
+			allMedia[primaryPhotoIdx].Caption = trimmedText
+		}
+
+		for _, m := range allMedia {
+			outAtt := domain.OutboundAttachment{
+				FilePath: m.FilePath,
+				FileName: m.FileName,
+				MIMEType: m.MIMEType,
+				Caption:  m.Caption,
+				Type:     m.Type,
+			}
+			if err := a.media.SendOutboundAttachment(ctx, msg.ChatID, outAtt, client); err != nil {
+				slog.ErrorContext(ctx, "failed to send Zalo outbound media", "error", err, "chat_id", msg.ChatID, "path", m.FilePath)
+				textToSend = cleanedText
+			} else if canAttachToPhoto {
+				textToSend = ""
+			}
+		}
+	}
+
+	if strings.TrimSpace(textToSend) == "" {
 		return nil
 	}
 
+	// Format to Zalo-compliant Markdown
+	textToSend = FormatToZaloMarkdown(textToSend)
+
+	// Sanitize privacy leaks (home paths)
+	textToSend = SanitizePrivacyLeaks(textToSend)
+
 	req := SendMessageRequest{
 		ChatID:    msg.ChatID,
-		Text:      text,
+		Text:      textToSend,
 		ParseMode: "markdown",
 		ReplyToID: msg.ReplyToMessageID,
 	}
@@ -589,11 +680,12 @@ func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, fil
 	if a.media == nil {
 		return errors.New("media manager not initialized")
 	}
+	client := a.resolveClientEx(target.BotID, 0, target.AgentName, "")
 	att := domain.OutboundAttachment{
 		FilePath: filePath,
 		Caption:  caption,
 	}
-	return a.media.SendOutboundAttachment(ctx, target.ChatID, att)
+	return a.media.SendOutboundAttachment(ctx, target.ChatID, att, client)
 }
 
 // RequestApproval coordinates an interactive approval request over Zalo.

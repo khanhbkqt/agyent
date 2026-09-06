@@ -15,8 +15,62 @@ import (
 // BotContext contains identifying metadata for the bot instance that received the update.
 type BotContext struct {
 	BotID       string
+	BotName     string
 	BotUsername string
 	BindAgent   string
+}
+
+// CleanZaloMention strips leading bot mentions from raw text,
+// e.g. "@Trao Mơ FC /new" -> "/new", "@Trao Mơ FC: hello" -> "hello",
+// while preserving rawText in domain.CanonicalMessage.
+func CleanZaloMention(text string, botCtx BotContext) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", false
+	}
+
+	lower := strings.ToLower(trimmed)
+	candidates := []string{
+		botCtx.BotName,
+		botCtx.BotUsername,
+		botCtx.BindAgent,
+	}
+
+	for _, c := range candidates {
+		c = strings.TrimSpace(strings.TrimPrefix(c, "@"))
+		if c == "" {
+			continue
+		}
+		mentionPrefix := "@" + strings.ToLower(c)
+		if strings.HasPrefix(lower, mentionPrefix) {
+			rest := trimmed[len(mentionPrefix):]
+			rest = strings.TrimLeft(rest, ":,- \t")
+			return strings.TrimSpace(rest), true
+		}
+	}
+
+	// Fallback 1: If message starts with "@... /<command>", strip the mention token(s)
+	// up to the slash command so that commands (e.g. /new, /reset) execute reliably
+	// regardless of how many words or spaces the bot's display name contains.
+	if strings.HasPrefix(trimmed, "@") {
+		if parts := strings.Fields(trimmed); len(parts) >= 2 {
+			for i := 1; i < len(parts); i++ {
+				if strings.HasPrefix(parts[i], "/") {
+					return strings.Join(parts[i:], " "), true
+				}
+			}
+		}
+		// Fallback 2: Single-token mention (e.g. "@bot hello")
+		if idx := strings.Index(trimmed, " "); idx != -1 {
+			token := trimmed[:idx]
+			if strings.HasPrefix(token, "@") {
+				rest := strings.TrimLeft(trimmed[idx:], ":,- \t")
+				return strings.TrimSpace(rest), true
+			}
+		}
+	}
+
+	return trimmed, false
 }
 
 // Router processes authenticated Zalo updates and converts them to domain messages.
@@ -89,14 +143,17 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 	}
 
-	var botIDStr, botUsername, bindAgent string
+	var botCtxObj BotContext
 	if len(botCtx) > 0 {
-		botIDStr = botCtx[0].BotID
-		botUsername = botCtx[0].BotUsername
-		bindAgent = botCtx[0].BindAgent
+		botCtxObj = botCtx[0]
 	}
+	botIDStr := botCtxObj.BotID
+	botUsername := botCtxObj.BotUsername
+	bindAgent := botCtxObj.BindAgent
 	botID := ParseNumericID(botIDStr)
 	sessionKey := domain.FormatSessionKey("zalo", msg.Chat.ID, msg.Chat.ThreadID, botID)
+
+	cleanText, isMentioned := CleanZaloMention(msg.Text, botCtxObj)
 
 	r.mu.RLock()
 	authorizer := r.authorizer
@@ -154,8 +211,9 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			Title:    msg.Chat.Title,
 			ThreadID: msg.Chat.ThreadID,
 		},
-		Text:           msg.Text,
+		Text:           cleanText,
 		RawText:        msg.Text,
+		IsMentioned:    isMentioned,
 		AttachmentRefs: attachmentRefs,
 	}
 	if msg.ReplyToMsg != nil {

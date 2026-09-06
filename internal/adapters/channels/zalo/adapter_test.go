@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -733,5 +734,120 @@ func TestZaloAdapter_StreamingSupport_ErrorAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestZaloAdapter_Send_EmbeddedMediaAndSmartSplitDelivery(t *testing.T) {
+	restore := zalo.SetPublicMediaUploaderForTest(func(ctx context.Context, filePath string) (string, error) {
+		return "https://cdn.example.com/" + strings.TrimPrefix(filePath, "/"), nil
+	})
+	defer restore()
 
+	tmpDir := t.TempDir()
+	chartFile := tmpDir + "/chart.png"
+	require.NoError(t, os.WriteFile(chartFile, []byte("fake-chart-png"), 0644))
 
+	var mu sync.Mutex
+	var sentPhotos []struct {
+		ChatID  string `json:"chat_id"`
+		Photo   string `json:"photo"`
+		Caption string `json:"caption"`
+	}
+	var sentTexts []zalo.SendMessageRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/bottoken_media/getMe" {
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"id": "bot_media", "name": "Media Bot", "is_bot": true}`),
+			})
+			return
+		}
+		if r.URL.Path == "/bottoken_media/sendPhoto" {
+			var p struct {
+				ChatID  string `json:"chat_id"`
+				Photo   string `json:"photo"`
+				Caption string `json:"caption"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&p)
+			mu.Lock()
+			sentPhotos = append(sentPhotos, p)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"message_id":"p_1","message_type":"CHAT_PHOTO"}`),
+			})
+			return
+		}
+		if r.URL.Path == "/bottoken_media/sendMessage" {
+			var m zalo.SendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&m)
+			mu.Lock()
+			sentTexts = append(sentTexts, m)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"message_id":"m_1","message_type":"CHAT_TEXT"}`),
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.BotToken = "token_media"
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Mode = "polling"
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	require.NoError(t, adapter.Start(ctx, inboundChan))
+	defer adapter.Stop()
+
+	// Case 1: Short text <= 2000 runes with embedded image -> Smart Split Delivery attaches text as photo caption
+	shortMsg := domain.OutboundMessage{
+		ChatID: "chat_1",
+		Text:   "Đây là biểu đồ tăng trưởng doanh số quý 3:\n\n![Biểu đồ](file://" + chartFile + ")\n\nKết quả rất khả quan!",
+	}
+	err = adapter.Send(ctx, shortMsg)
+	require.NoError(t, err)
+
+	mu.Lock()
+	require.Len(t, sentPhotos, 1)
+	assert.Equal(t, "chat_1", sentPhotos[0].ChatID)
+	assert.Contains(t, sentPhotos[0].Photo, "cdn.example.com")
+	assert.Contains(t, sentPhotos[0].Caption, "Đây là biểu đồ tăng trưởng doanh số quý 3:")
+	assert.Contains(t, sentPhotos[0].Caption, "Kết quả rất khả quan!")
+	assert.NotContains(t, sentPhotos[0].Caption, "![Biểu đồ]")
+	assert.Len(t, sentTexts, 0) // Suppressed separate text delivery!
+	mu.Unlock()
+
+	// Reset slices
+	mu.Lock()
+	sentPhotos = nil
+	sentTexts = nil
+	mu.Unlock()
+
+	// Case 2: Long text > 2000 runes with embedded image -> Photo sent first, followed by full text
+	longBody := strings.Repeat("A", 2050)
+	longMsg := domain.OutboundMessage{
+		ChatID: "chat_2",
+		Text:   longBody + "\n\n![Biểu đồ](file://" + chartFile + ")",
+	}
+	err = adapter.Send(ctx, longMsg)
+	require.NoError(t, err)
+
+	mu.Lock()
+	require.Len(t, sentPhotos, 1)
+	assert.Equal(t, "chat_2", sentPhotos[0].ChatID)
+	assert.Contains(t, sentPhotos[0].Photo, "cdn.example.com")
+	// 2050 chars exceeds photo caption limit (2000) and message limit (2000),
+	// so photo is sent separately, followed by 2 chunked text messages.
+	require.Len(t, sentTexts, 2)
+	assert.Equal(t, "chat_2", sentTexts[0].ChatID)
+	assert.Contains(t, sentTexts[0].Text, "AAAAA")
+	mu.Unlock()
+}

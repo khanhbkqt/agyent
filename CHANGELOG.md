@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.34] - 2026-09-06
+
+### Added
+- **Zalo Bot Mention Stripping & Multi-Word Tag Support (`channels/zalo`):**
+  - Implemented `CleanZaloMention` in Zalo update router to strip leading `@bot` mentions from inbound messages while preserving `RawText` in `domain.CanonicalMessage`.
+  - Seamlessly handles bot names with spaces (e.g. `@Trao Mơ FC /new` -> `/new`) and trailing punctuation (`:`, `,`), enabling slash commands (`/new`, `/reset`, `/status`) to execute reliably in group chats.
+  - Added smart split delivery and public CDN media upload support for outbound images and documents in Zalo adapter.
+
+### Changed
+- **Pure Message Delivery for Zalo Channel (`engine`):**
+  - Omitted group/ephemeral `contextTag` headers (`🌐 [agent • Global]`, `📁 [agent • project]`) for Zalo channel messages at the core engine level, returning 100% clean, pure response text without adapter-side string slicing.
+
+---
+
 ## [1.0.33] - 2026-09-06
 
 ### Fixed

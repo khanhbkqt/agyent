@@ -91,24 +91,40 @@ func TestZaloClient_SendMessage_NonRetryable401(t *testing.T) {
 }
 
 func TestZaloClient_SendPhotoAndDocument(t *testing.T) {
+	restore := zalo.SetPublicMediaUploaderForTest(func(ctx context.Context, filePath string) (string, error) {
+		return "https://cdn.example.com/" + filepath.Base(filePath), nil
+	})
+	defer restore()
+
 	tmpDir := t.TempDir()
 	photoPath := filepath.Join(tmpDir, "sample.png")
 	docPath := filepath.Join(tmpDir, "report.pdf")
 	require.NoError(t, os.WriteFile(photoPath, []byte("fake-png-data"), 0644))
 	require.NoError(t, os.WriteFile(docPath, []byte("fake-pdf-data"), 0644))
 
-	var photoCalled, docCalled bool
+	var photoReq struct {
+		ChatID  string `json:"chat_id"`
+		Photo   string `json:"photo"`
+		Caption string `json:"caption"`
+	}
+	var msgReq zalo.SendMessageRequest
+	var photoCalled, msgCalled bool
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/bottoken/sendPhoto" {
 			photoCalled = true
+			_ = json.NewDecoder(r.Body).Decode(&photoReq)
 			resp := zalo.APIResponse{OK: true}
 			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
-		if r.URL.Path == "/bottoken/sendDocument" {
-			docCalled = true
-			resp := zalo.APIResponse{OK: true}
+		if r.URL.Path == "/bottoken/sendMessage" {
+			msgCalled = true
+			_ = json.NewDecoder(r.Body).Decode(&msgReq)
+			resp := zalo.APIResponse{
+				OK: true,
+				Result: json.RawMessage(`{"message_id":"doc-msg-1","message_type":"CHAT_TEXT"}`),
+			}
 			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
@@ -118,13 +134,28 @@ func TestZaloClient_SendPhotoAndDocument(t *testing.T) {
 
 	client := zalo.NewClient("token", ts.URL, ts.Client())
 
+	// 1. SendPhoto with local file (triggers public media upload)
 	err := client.SendPhoto(context.Background(), "chat-1", photoPath, "Nice picture")
 	require.NoError(t, err)
 	assert.True(t, photoCalled)
+	assert.Equal(t, "chat-1", photoReq.ChatID)
+	assert.Equal(t, "https://cdn.example.com/sample.png", photoReq.Photo)
+	assert.Equal(t, "Nice picture", photoReq.Caption)
+
+	// 2. SendPhoto with direct HTTPS URL
+	photoCalled = false
+	err = client.SendPhoto(context.Background(), "chat-1", "https://example.com/image.jpg", "Direct URL")
+	require.NoError(t, err)
+	assert.True(t, photoCalled)
+	assert.Equal(t, "https://example.com/image.jpg", photoReq.Photo)
+	assert.Equal(t, "Direct URL", photoReq.Caption)
 
 	err = client.SendDocument(context.Background(), "chat-1", docPath, "PDF Document")
 	require.NoError(t, err)
-	assert.True(t, docCalled)
+	assert.True(t, msgCalled)
+	assert.Equal(t, "chat-1", msgReq.ChatID)
+	assert.Contains(t, msgReq.Text, "📄 **Tài liệu:** [report.pdf](https://cdn.example.com/report.pdf)")
+	assert.Contains(t, msgReq.Text, "PDF Document")
 }
 
 func TestZaloClient_WebhookLifecycle(t *testing.T) {
