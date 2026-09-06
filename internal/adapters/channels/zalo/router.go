@@ -111,7 +111,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		return
 	}
 
-	if r.cfg != nil && len(r.cfg.Zalo.AllowedGroupIDs) > 0 && msg.Chat.Type != "private" {
+	if r.cfg != nil && len(r.cfg.Zalo.AllowedGroupIDs) > 0 && !msg.Chat.IsPrivate() {
 		allowed := false
 		for _, groupID := range r.cfg.Zalo.AllowedGroupIDs {
 			if groupID == msg.Chat.ID {
@@ -229,11 +229,12 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 				action = "deny"
 			case strings.HasPrefix(parts[0], "/kill"):
 				action = "force_kill"
-			case len(parts) >= 3 && (parts[2] == "session" || parts[2] == "always"):
+			case len(parts) >= 3 && strings.EqualFold(parts[2], "session"):
 				action = "allow_session"
 			}
-			if err := r.hitl.HandleCommandApproval(ctx, parts[1], msg.From.ID, action); err != nil {
-				slog.WarnContext(ctx, "failed to handle Zalo HITL approval command", "error", err, "request_id", parts[1])
+			reqID := parts[1]
+			if err := r.hitl.HandleCommandApproval(ctx, reqID, msg.From.ID, action); err != nil {
+				slog.WarnContext(ctx, "failed to process Zalo HITL action", "req_id", reqID, "action", action, "error", err)
 			}
 			return
 		}
@@ -247,17 +248,22 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	r.mu.RLock()
 	authorizer := r.authorizer
 	r.mu.RUnlock()
+	chatType := msg.Chat.EffectiveType()
 	if authorizer != nil {
-		allowed, err := authorizeInboundMessage(ctx, authorizer, msg.From.ID, bindAgent, msg.Chat.Type, sessionKey)
+		allowed, err := authorizeInboundMessage(ctx, authorizer, msg.From.ID, bindAgent, chatType, sessionKey)
 		if err != nil || !allowed {
-			slog.WarnContext(ctx, "inbound Zalo message unauthorized (blocked by ACL)", "sender_id", msg.From.ID, "bind_agent", bindAgent, "chat_id", msg.Chat.ID, "chat_type", msg.Chat.Type, "error", err)
+			slog.WarnContext(ctx, "inbound Zalo message unauthorized (blocked by ACL)", "sender_id", msg.From.ID, "bind_agent", bindAgent, "chat_id", msg.Chat.ID, "chat_type", chatType, "error", err)
 			return
 		}
 	}
 
 	date := time.Now()
 	if msg.Date > 0 {
-		date = time.Unix(msg.Date, 0)
+		if msg.Date > 1_000_000_000_000 {
+			date = time.UnixMilli(msg.Date)
+		} else {
+			date = time.Unix(msg.Date, 0)
+		}
 	}
 	canonical := domain.CanonicalMessage{
 		ID:          msg.MessageID,
@@ -270,11 +276,11 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			ID:       msg.From.ID,
 			Provider: "zalo",
 			Username: msg.From.Username,
-			FullName: msg.From.Name,
+			FullName: msg.From.GetEffectiveName(),
 		},
 		Chat: domain.ChatContext{
 			ID:       msg.Chat.ID,
-			Type:     msg.Chat.Type,
+			Type:     chatType,
 			Title:    msg.Chat.Title,
 			ThreadID: msg.Chat.ThreadID,
 		},

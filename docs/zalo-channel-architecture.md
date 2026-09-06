@@ -92,7 +92,8 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
 
 ### 2.5 Dual Polling & Webhook Modes
 - **Polling Mode:** Long-polling (`getUpdates`) with adaptive backoff. Idle server-side timeouts (HTTP 408 Request Timeout or JSON error code 408) are treated as expected empty poll cycles returning `[]ZaloUpdate{}` without error, maintaining continuous real-time responsiveness without sleep backoff delays.
-- **Webhook Mode:** Local HTTP webhook server listening on configured host and port, secret verification via `X-Secret-Token` / `X-Bot-Token`, and automatic webhook registration via `setWebhook`.
+- **Webhook Mode:** Local HTTP webhook server listening on configured host and port, secret verification via `X-Bot-Api-Secret-Token`, `X-Secret-Token`, or `X-Bot-Token`, and automatic webhook registration via `setWebhook`.
+- **Flexible Media & Update Normalization:** Unmarshals all Zalo Bot Platform event variations (`message.text.received`, `message.image.received`, `message.voice.received`, `message.sticker.received`), supporting both flat and wrapped `result`/`data` envelopes, plain string photo URLs (`"photo": "https://..."`), string voice/document URLs, nested payload objects (`"payload": {"url": "..."}`), and array attachments.
 
 ### 2.6 Message Formatting & UTF-16 Code Unit Preservation
 - Zalo Bot Platform rich styling requires UTF-16 code unit offsets (surrogate pairs count as 2). `ZaloMessageFormatter` precisely computes `start` and `len` across Unicode / Vietnamese UTF-8 multi-byte glyphs.

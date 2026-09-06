@@ -48,19 +48,53 @@ type SendChatActionRequest struct {
 
 // ZaloUser represents a user or bot on Zalo Bot Platform.
 type ZaloUser struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Username  string `json:"username,omitempty"`
-	IsBot     bool   `json:"is_bot,omitempty"`
-	AvatarURL string `json:"avatar_url,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	Username    string `json:"username,omitempty"`
+	IsBot       bool   `json:"is_bot,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+}
+
+// GetEffectiveName returns the display name or name of the Zalo user.
+func (u ZaloUser) GetEffectiveName() string {
+	if n := strings.TrimSpace(u.DisplayName); n != "" {
+		return n
+	}
+	if n := strings.TrimSpace(u.Name); n != "" {
+		return n
+	}
+	if n := strings.TrimSpace(u.Username); n != "" {
+		return n
+	}
+	return u.ID
 }
 
 // ZaloChat represents a chat/group on Zalo Bot Platform.
 type ZaloChat struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"` // "private", "group"
+	ChatType string `json:"chat_type,omitempty"`
 	Title    string `json:"title,omitempty"`
 	ThreadID int64  `json:"thread_id,omitempty"`
+}
+
+// IsPrivate returns true if the chat is a 1-on-1 private chat.
+func (c ZaloChat) IsPrivate() bool {
+	t := strings.ToLower(strings.TrimSpace(c.Type))
+	ct := strings.ToLower(strings.TrimSpace(c.ChatType))
+	return t == "private" || ct == "private" || (t == "" && ct == "")
+}
+
+// EffectiveType returns normalized chat type ("private" or "group").
+func (c ZaloChat) EffectiveType() string {
+	if t := strings.ToLower(strings.TrimSpace(c.Type)); t != "" {
+		return t
+	}
+	if ct := strings.ToLower(strings.TrimSpace(c.ChatType)); ct != "" {
+		return ct
+	}
+	return "private"
 }
 
 // ZaloAttachmentPayload represents the nested payload inside a Zalo attachment object.
@@ -203,6 +237,49 @@ func (a ZaloAttachment) GetEffectiveCaption() string {
 	return ""
 }
 
+// parseFlexibleAttachments parses attachment data from a JSON string, object, or array.
+func parseFlexibleAttachments(raw json.RawMessage, defaultType string) []ZaloAttachment {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+
+	// 1. JSON String (e.g. "https://...")
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err == nil && strings.TrimSpace(s) != "" {
+			return []ZaloAttachment{{Type: defaultType, URL: strings.TrimSpace(s)}}
+		}
+		return nil
+	}
+
+	// 2. JSON Object (e.g. { "url": "https://..." } or { "payload": { ... } })
+	if trimmed[0] == '{' {
+		var att ZaloAttachment
+		if err := json.Unmarshal(trimmed, &att); err == nil {
+			if att.Type == "" {
+				att.Type = defaultType
+			}
+			return []ZaloAttachment{att}
+		}
+		return nil
+	}
+
+	// 3. JSON Array (e.g. [ "https://..." ] or [ { "url": "..." } ])
+	if trimmed[0] == '[' {
+		var rawList []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rawList); err == nil {
+			var result []ZaloAttachment
+			for _, item := range rawList {
+				result = append(result, parseFlexibleAttachments(item, defaultType)...)
+			}
+			return result
+		}
+	}
+
+	return nil
+}
+
 // ZaloInboundMessage represents an inbound message from Zalo Bot Platform.
 type ZaloInboundMessage struct {
 	MessageID   string              `json:"message_id"`
@@ -222,6 +299,85 @@ type ZaloInboundMessage struct {
 	ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message,omitempty"`
 }
 
+// UnmarshalJSON implements custom unmarshaling to handle all Zalo Bot Platform media variations.
+func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
+	type rawInbound struct {
+		MessageID   string              `json:"message_id"`
+		ID          string              `json:"id"`
+		From        ZaloUser            `json:"from"`
+		Chat        ZaloChat            `json:"chat"`
+		Date        int64               `json:"date"`
+		Timestamp   int64               `json:"timestamp"`
+		Text        string              `json:"text"`
+		Caption     string              `json:"caption"`
+		Description string              `json:"description"`
+		Attachments json.RawMessage     `json:"attachments"`
+		Photo       json.RawMessage     `json:"photo"`
+		Image       json.RawMessage     `json:"image"`
+		Document    json.RawMessage     `json:"document"`
+		File        json.RawMessage     `json:"file"`
+		Audio       json.RawMessage     `json:"audio"`
+		Voice       json.RawMessage     `json:"voice"`
+		VoiceURL    json.RawMessage     `json:"voice_url"`
+		Video       json.RawMessage     `json:"video"`
+		Sticker     json.RawMessage     `json:"sticker"`
+		URL         json.RawMessage     `json:"url"`
+		ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message"`
+		ReplyTo     *ZaloInboundMessage `json:"reply_to"`
+	}
+
+	var raw rawInbound
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	m.MessageID = raw.MessageID
+	if m.MessageID == "" {
+		m.MessageID = raw.ID
+	}
+	m.From = raw.From
+	m.Chat = raw.Chat
+	m.Date = raw.Date
+	if m.Date == 0 {
+		m.Date = raw.Timestamp
+	}
+	m.Text = raw.Text
+	m.Caption = raw.Caption
+	m.Description = raw.Description
+
+	m.ReplyToMsg = raw.ReplyToMsg
+	if m.ReplyToMsg == nil {
+		m.ReplyToMsg = raw.ReplyTo
+	}
+
+	m.Attachments = parseFlexibleAttachments(raw.Attachments, "file")
+	m.Photo = parseFlexibleAttachments(raw.Photo, "photo")
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.Image, "photo")
+	}
+	if docs := parseFlexibleAttachments(raw.Document, "document"); len(docs) > 0 {
+		m.Document = &docs[0]
+	} else if files := parseFlexibleAttachments(raw.File, "document"); len(files) > 0 {
+		m.Document = &files[0]
+	}
+	if voices := parseFlexibleAttachments(raw.Voice, "voice"); len(voices) > 0 {
+		m.Voice = &voices[0]
+	} else if voiceURLs := parseFlexibleAttachments(raw.VoiceURL, "voice"); len(voiceURLs) > 0 {
+		m.Voice = &voiceURLs[0]
+	}
+	if audios := parseFlexibleAttachments(raw.Audio, "audio"); len(audios) > 0 {
+		m.Audio = &audios[0]
+	}
+	if videos := parseFlexibleAttachments(raw.Video, "video"); len(videos) > 0 {
+		m.Video = &videos[0]
+	}
+	if stickers := parseFlexibleAttachments(raw.Sticker, "sticker"); len(stickers) > 0 {
+		m.Attachments = append(m.Attachments, stickers...)
+	}
+
+	return nil
+}
+
 // CollectAttachments aggregates all attachments across all schema variations.
 func (m *ZaloInboundMessage) CollectAttachments() []ZaloAttachment {
 	if m == nil {
@@ -229,55 +385,105 @@ func (m *ZaloInboundMessage) CollectAttachments() []ZaloAttachment {
 	}
 	var res []ZaloAttachment
 	res = append(res, m.Attachments...)
-	for _, p := range m.Photo {
-		if p.Type == "" {
-			p.Type = "photo"
-		}
-		res = append(res, p)
-	}
+	res = append(res, m.Photo...)
 	if m.Image != nil {
-		img := *m.Image
-		if img.Type == "" {
-			img.Type = "photo"
-		}
-		res = append(res, img)
+		res = append(res, *m.Image)
 	}
 	if m.Document != nil {
-		doc := *m.Document
-		if doc.Type == "" {
-			doc.Type = "document"
-		}
-		res = append(res, doc)
+		res = append(res, *m.Document)
 	}
 	if m.Audio != nil {
-		aud := *m.Audio
-		if aud.Type == "" {
-			aud.Type = "audio"
-		}
-		res = append(res, aud)
+		res = append(res, *m.Audio)
 	}
 	if m.Voice != nil {
-		v := *m.Voice
-		if v.Type == "" {
-			v.Type = "voice"
-		}
-		res = append(res, v)
+		res = append(res, *m.Voice)
 	}
 	if m.Video != nil {
-		vid := *m.Video
-		if vid.Type == "" {
-			vid.Type = "video"
-		}
-		res = append(res, vid)
+		res = append(res, *m.Video)
 	}
 	return res
 }
 
 // ZaloUpdate represents an update item in getUpdates or Webhook payload.
 type ZaloUpdate struct {
-	UpdateID int64               `json:"update_id"`
-	Message  *ZaloInboundMessage `json:"message,omitempty"`
-	Event    string              `json:"event,omitempty"`
+	UpdateID  int64               `json:"update_id"`
+	Message   *ZaloInboundMessage `json:"message,omitempty"`
+	Event     string              `json:"event,omitempty"`
+	EventName string              `json:"event_name,omitempty"`
+}
+
+// UnmarshalJSON implements custom unmarshaling to handle both flat and wrapped (result/data) update structures.
+func (u *ZaloUpdate) UnmarshalJSON(data []byte) error {
+	type rawUpdate ZaloUpdate
+	var flat rawUpdate
+	if err := json.Unmarshal(data, &flat); err == nil && flat.Message != nil {
+		*u = ZaloUpdate(flat)
+		if u.Event == "" && u.EventName != "" {
+			u.Event = u.EventName
+		}
+		return nil
+	}
+
+	var envelope struct {
+		OK        bool            `json:"ok"`
+		UpdateID  int64           `json:"update_id"`
+		EventName string          `json:"event_name"`
+		Event     string          `json:"event"`
+		Result    json.RawMessage `json:"result"`
+		Data      json.RawMessage `json:"data"`
+		Message   json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+
+	u.UpdateID = envelope.UpdateID
+	u.Event = envelope.Event
+	if u.Event == "" {
+		u.Event = envelope.EventName
+	}
+
+	inner := envelope.Result
+	if len(inner) == 0 {
+		inner = envelope.Data
+	}
+
+	if len(inner) > 0 {
+		var innerUpdate struct {
+			UpdateID  int64               `json:"update_id"`
+			EventName string              `json:"event_name"`
+			Event     string              `json:"event"`
+			Message   *ZaloInboundMessage `json:"message"`
+		}
+		if err := json.Unmarshal(inner, &innerUpdate); err == nil && innerUpdate.Message != nil {
+			if u.UpdateID == 0 {
+				u.UpdateID = innerUpdate.UpdateID
+			}
+			if u.Event == "" {
+				u.Event = innerUpdate.Event
+				if u.Event == "" {
+					u.Event = innerUpdate.EventName
+				}
+			}
+			u.Message = innerUpdate.Message
+			return nil
+		}
+		var directMsg ZaloInboundMessage
+		if err := json.Unmarshal(inner, &directMsg); err == nil && (directMsg.MessageID != "" || directMsg.From.ID != "" || directMsg.Chat.ID != "") {
+			u.Message = &directMsg
+			return nil
+		}
+	}
+
+	if len(envelope.Message) > 0 {
+		var msg ZaloInboundMessage
+		if err := json.Unmarshal(envelope.Message, &msg); err == nil {
+			u.Message = &msg
+			return nil
+		}
+	}
+
+	return nil
 }
 
 // APIResponse is the standard envelope returned by Zalo Bot Platform, supporting

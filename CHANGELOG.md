@@ -5,6 +5,17 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.49] - 2026-09-07
+
+### Fixed
+- **Zalo Media JSON String & Webhook Envelope Unmarshaling (`channels/zalo`):**
+  - **Custom Unmarshaler for Media Fields:** Implemented custom `UnmarshalJSON` on `ZaloInboundMessage` with `parseFlexibleAttachments`, supporting plain string media URLs (`"photo": "https://..."`, `"image": "https://..."`, `"voice_url": "https://..."`, `"document": "https://..."`, `"sticker": "..."`) as well as single object and array attachment structures without unmarshal type mismatch errors.
+  - **Wrapped Webhook & Polling Envelope Normalization:** Implemented custom `UnmarshalJSON` on `ZaloUpdate` to automatically extract updates wrapped in `{ "ok": true, "result": { "event_name": "...", "message": { ... } } }` or `{ "data": { ... } }`.
+  - **Zalo Chat & User Normalization:** Added `DisplayName` fallback on `ZaloUser` (`GetEffectiveName()`), `ChatType` / `Type` normalization on `ZaloChat` (`IsPrivate()`, `EffectiveType()`), and millisecond timestamp parsing (`time.UnixMilli`).
+  - **Webhook Secret Header:** Added support for official `X-Bot-Api-Secret-Token` header alongside `X-Secret-Token` and `X-Bot-Token`.
+
+---
+
 ## [1.0.48] - 2026-09-06
 
 ### Fixed

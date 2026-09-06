@@ -414,4 +414,131 @@ func TestIsTimeoutError_Variants(t *testing.T) {
 	assert.False(t, zalo.IsTimeoutError(assert.AnError))
 }
 
+func TestZaloInboundMessage_UnmarshalJSON_OfficialZaloWebhookImage(t *testing.T) {
+	raw := `{
+		"ok": true,
+		"result": {
+			"event_name": "message.image.received",
+			"message": {
+				"from": {
+					"id": "6ede9afa66b88fe6d6a9",
+					"display_name": "Ted",
+					"is_bot": false
+				},
+				"chat": {
+					"id": "6ede9afa66b88fe6d6a9",
+					"chat_type": "PRIVATE"
+				},
+				"text": "",
+				"photo": "https://img.zaloapp.com/v1/image.jpg",
+				"caption": "Đây là ảnh demo",
+				"message_id": "2d758cb5e222177a4e35",
+				"date": 1750316131602
+			}
+		}
+	}`
+
+	var update zalo.ZaloUpdate
+	err := json.Unmarshal([]byte(raw), &update)
+	require.NoError(t, err)
+	require.NotNil(t, update.Message)
+
+	msg := update.Message
+	assert.Equal(t, "2d758cb5e222177a4e35", msg.MessageID)
+	assert.Equal(t, "Ted", msg.From.GetEffectiveName())
+	assert.True(t, msg.Chat.IsPrivate())
+	assert.Equal(t, "private", msg.Chat.EffectiveType())
+	assert.Equal(t, "Đây là ảnh demo", msg.Caption)
+
+	atts := msg.CollectAttachments()
+	require.Len(t, atts, 1)
+	assert.Equal(t, "photo", atts[0].Type)
+	assert.Equal(t, "https://img.zaloapp.com/v1/image.jpg", atts[0].GetEffectiveURL())
+}
+
+func TestZaloInboundMessage_UnmarshalJSON_ArrayOfPhotoStrings(t *testing.T) {
+	raw := `{
+		"message_id": "m100",
+		"from": {"id": "u1", "name": "Alice"},
+		"chat": {"id": "c1", "type": "private"},
+		"photo": ["https://img1.jpg", "https://img2.png"]
+	}`
+
+	var msg zalo.ZaloInboundMessage
+	err := json.Unmarshal([]byte(raw), &msg)
+	require.NoError(t, err)
+
+	atts := msg.CollectAttachments()
+	require.Len(t, atts, 2)
+	assert.Equal(t, "https://img1.jpg", atts[0].GetEffectiveURL())
+	assert.Equal(t, "https://img2.png", atts[1].GetEffectiveURL())
+}
+
+func TestZaloInboundMessage_UnmarshalJSON_NestedPayload(t *testing.T) {
+	raw := `{
+		"message_id": "m200",
+		"from": {"id": "u2"},
+		"chat": {"id": "c2"},
+		"photo": [
+			{
+				"type": "photo",
+				"payload": {
+					"url": "https://nested.com/pic.png",
+					"caption": "nested caption",
+					"file_size": 1048576,
+					"file_name": "pic.png"
+				}
+			}
+		]
+	}`
+
+	var msg zalo.ZaloInboundMessage
+	err := json.Unmarshal([]byte(raw), &msg)
+	require.NoError(t, err)
+
+	atts := msg.CollectAttachments()
+	require.Len(t, atts, 1)
+	assert.Equal(t, "https://nested.com/pic.png", atts[0].GetEffectiveURL())
+	assert.Equal(t, "nested caption", atts[0].GetEffectiveCaption())
+	assert.Equal(t, "pic.png", atts[0].GetEffectiveFileName())
+	assert.Equal(t, int64(1048576), atts[0].GetEffectiveFileSize())
+}
+
+func TestZaloInboundMessage_UnmarshalJSON_VoiceAudioDocumentSticker(t *testing.T) {
+	raw := `{
+		"message_id": "m300",
+		"from": {"id": "u3"},
+		"chat": {"id": "c3"},
+		"voice_url": "https://voice.zalo.me/v1.ogg",
+		"document": "https://doc.zalo.me/report.pdf",
+		"sticker": "https://sticker.zalo.me/s1.png"
+	}`
+
+	var msg zalo.ZaloInboundMessage
+	err := json.Unmarshal([]byte(raw), &msg)
+	require.NoError(t, err)
+
+	atts := msg.CollectAttachments()
+	require.Len(t, atts, 3)
+
+	var foundVoice, foundDoc, foundSticker bool
+	for _, a := range atts {
+		switch a.Type {
+		case "voice":
+			foundVoice = true
+			assert.Equal(t, "https://voice.zalo.me/v1.ogg", a.GetEffectiveURL())
+		case "document":
+			foundDoc = true
+			assert.Equal(t, "https://doc.zalo.me/report.pdf", a.GetEffectiveURL())
+		case "sticker":
+			foundSticker = true
+			assert.Equal(t, "https://sticker.zalo.me/s1.png", a.GetEffectiveURL())
+		}
+	}
+	assert.True(t, foundVoice, "expected voice attachment")
+	assert.True(t, foundDoc, "expected document attachment")
+	assert.True(t, foundSticker, "expected sticker attachment")
+}
+
+
 

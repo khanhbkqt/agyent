@@ -563,4 +563,54 @@ func TestZaloRouter_NestedPayloadAndCompatibilityAttachments(t *testing.T) {
 	}
 }
 
+func TestZaloRouter_OfficialZaloWebhookImagePayload(t *testing.T) {
+
+	rawJSON := `{
+		"ok": true,
+		"result": {
+			"event_name": "message.image.received",
+			"message": {
+				"from": {
+					"id": "6ede9afa66b88fe6d6a9",
+					"display_name": "Ted",
+					"is_bot": false
+				},
+				"chat": {
+					"id": "6ede9afa66b88fe6d6a9",
+					"chat_type": "PRIVATE"
+				},
+				"text": "",
+				"photo": "https://img.zaloapp.com/v1/image.jpg",
+				"caption": "Đây là ảnh demo",
+				"message_id": "2d758cb5e222177a4e35",
+				"date": 1750316131602
+			}
+		}
+	}`
+
+	var update zalo.ZaloUpdate
+	err := json.Unmarshal([]byte(rawJSON), &update)
+	require.NoError(t, err)
+
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(&config.Config{}, nil, nil, inbound)
+
+	router.RouteUpdate(context.Background(), update)
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "2d758cb5e222177a4e35", msg.ID)
+		assert.Equal(t, "Ted", msg.Sender.FullName)
+		assert.Equal(t, "private", msg.Chat.Type)
+		assert.Equal(t, "Đây là ảnh demo", msg.Text)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "https://img.zaloapp.com/v1/image.jpg", msg.AttachmentRefs[0].SourceID)
+		assert.Equal(t, "image", msg.AttachmentRefs[0].Type)
+		assert.Equal(t, "Đây là ảnh demo", msg.AttachmentRefs[0].Caption)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for official Zalo webhook image payload")
+	}
+}
+
+
 

@@ -384,7 +384,10 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 
 		// Verify Webhook Secret Token
 		if a.cfg.Zalo.SecretToken != "" {
-			secretHeader := r.Header.Get("X-Secret-Token")
+			secretHeader := r.Header.Get("X-Bot-Api-Secret-Token")
+			if secretHeader == "" {
+				secretHeader = r.Header.Get("X-Secret-Token")
+			}
 			if secretHeader == "" {
 				secretHeader = r.Header.Get("X-Bot-Token")
 			}
