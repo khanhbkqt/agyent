@@ -504,6 +504,7 @@ func TestIPCServerAndClient_SubagentActions(t *testing.T) {
 }
 
 func TestIPC_ActionTurnCapabilityAndHookValidation(t *testing.T) {
+	t.Setenv("AGYENT_TURN_ID", "")
 	addr := "127.0.0.1:49976"
 	mockMgr := &mockSecurityManager{}
 	server := NewServer(mockMgr, addr, nil)

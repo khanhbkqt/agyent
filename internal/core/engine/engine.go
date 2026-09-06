@@ -1272,8 +1272,10 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				slog.Int("threshold", threshold),
 				slog.String("model", resolvedModel),
 			)
-			if compRes, compErr := e.CompactSessionContext(turnCtx, session, agent, "auto-threshold"); compErr == nil && compRes != nil {
-				_ = e.channel.Send(turnCtx, domain.OutboundMessage{
+			compactCtx, compactCancel := context.WithTimeout(context.WithoutCancel(turnCtx), 60*time.Second)
+			defer compactCancel()
+			if compRes, compErr := e.CompactSessionContext(compactCtx, session, agent, "auto-threshold"); compErr == nil && compRes != nil {
+				_ = e.channel.Send(compactCtx, domain.OutboundMessage{
 					Channel:  msg.Channel,
 					BotID:    msg.BotID,
 					ChatID:   msg.Chat.ID,
@@ -1289,20 +1291,22 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	hasFailed := execErr != nil || (execResult != nil && !execResult.Success)
+	var errMsg string
+	if hasFailed {
+		if execErr != nil {
+			errMsg = execErr.Error()
+		} else if execResult != nil && execResult.Error != "" {
+			errMsg = execResult.Error
+		} else {
+			errMsg = "turn execution failed without specific error message"
+		}
+	}
+
 	if e.eventBus != nil {
 		emitCtx, emitCancel := context.WithTimeout(context.WithoutCancel(turnCtx), 5*time.Second)
 		defer emitCancel()
 
 		if hasFailed {
-			errMsg := ""
-			if execErr != nil {
-				errMsg = execErr.Error()
-			} else if execResult != nil && execResult.Error != "" {
-				errMsg = execResult.Error
-			} else {
-				errMsg = "turn execution failed without specific error message"
-			}
-
 			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventErrorOccurred, errMsg))
 			if isStream {
 				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
@@ -1325,22 +1329,29 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
-	if execErr != nil {
-		if !isStream && !isInterrupted {
+	if hasFailed && !isInterrupted {
+		if !isStream {
 			if e.channel != nil {
 				outCtx, outCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				defer outCancel()
+				failureMsg := errMsg
+				if failureMsg == "" {
+					failureMsg = "Turn execution encountered an internal error."
+				}
 				_ = e.channel.Send(outCtx, domain.OutboundMessage{
 					Channel:          msg.Channel,
 					BotID:            msg.BotID,
 					ChatID:           msg.Chat.ID,
 					ThreadID:         msg.Chat.ThreadID,
-					Text:             fmt.Sprintf("⚠️ Execution failed: %v", execErr),
+					Text:             fmt.Sprintf("⚠️ Execution failed: %s", failureMsg),
 					ReplyToMessageID: msg.ID,
 				})
 			}
 		}
-		return execErr
+		if execErr != nil {
+			return execErr
+		}
+		return fmt.Errorf("turn execution failed: %s", errMsg)
 	}
 
 	return nil

@@ -81,27 +81,30 @@ func (e *Engine) CompactSessionContext(
 		}
 	}
 
-	// 3. Archive Old Conversation and Update Title
+	// 3. Archive Old Conversation and Update Title (guarded with uncancelled context)
 	scope := domain.ConversationScope{
 		SessionKey:  session.SessionKey,
 		AgentName:   session.ActiveAgent,
 		ProjectName: session.ActiveProject,
 	}
-	_ = e.storage.SetConversationArchivedScoped(ctx, scope, activeConvID, true)
+	dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer dbCancel()
 
-	oldConv, err := e.storage.GetConversationScoped(ctx, scope, activeConvID)
+	_ = e.storage.SetConversationArchivedScoped(dbCtx, scope, activeConvID, true)
+
+	oldConv, err := e.storage.GetConversationScoped(dbCtx, scope, activeConvID)
 	if err == nil && oldConv != nil {
 		oldTitle := oldConv.Title
 		if !strings.HasPrefix(oldTitle, "[Compacted]") {
-			_ = e.storage.SetConversationTitleScoped(ctx, scope, activeConvID, "[Compacted] "+oldTitle)
+			_ = e.storage.SetConversationTitleScoped(dbCtx, scope, activeConvID, "[Compacted] "+oldTitle)
 		}
 	}
 
 	// 4. Reset Active Conversation ID on Session
 	session.ResetActiveConversationID()
 	session.UpdatedAt = time.Now()
-	if err := e.storage.SaveSession(ctx, session); err != nil {
-		slog.ErrorContext(ctx, "Failed to save session after compaction", slog.String("error", err.Error()))
+	if err := e.storage.SaveSession(dbCtx, session); err != nil {
+		slog.ErrorContext(dbCtx, "Failed to save session after compaction", slog.String("error", err.Error()))
 	}
 
 	// 5. Store Continuity Digest for Level 4 Injection on Next Turn

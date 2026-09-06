@@ -107,6 +107,51 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		}
 		defer store.Close()
 
+		// Sync configured agents from config.yaml into SQLite
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer syncCancel()
+		for name, prof := range cfg.Agents {
+			ws := prof.WorkspacePath
+			if ws == "" {
+				ws = config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, name)
+			}
+			_ = os.MkdirAll(ws, 0755)
+			agentRecord, getErr := store.GetAgent(syncCtx, name)
+			if getErr != nil || agentRecord == nil {
+				preset := prof.SecurityPreset
+				if preset == "" {
+					preset = "balanced"
+				}
+				agentRecord = &domain.Agent{
+					Name:           name,
+					Description:    prof.Description,
+					Status:         domain.StatusInitialized,
+					WorkspacePath:  ws,
+					SecurityPreset: domain.SecurityPreset(preset),
+					IsPublic:       prof.IsPublic,
+					CreatedAt:      time.Now(),
+					UpdatedAt:      time.Now(),
+				}
+			} else {
+				if prof.Description != "" {
+					agentRecord.Description = prof.Description
+				}
+				if prof.WorkspacePath != "" {
+					agentRecord.WorkspacePath = ws
+				}
+				if prof.SecurityPreset != "" {
+					agentRecord.SecurityPreset = domain.SecurityPreset(prof.SecurityPreset)
+				}
+				agentRecord.IsPublic = prof.IsPublic
+				agentRecord.UpdatedAt = time.Now()
+			}
+			if saveErr := store.SaveAgent(syncCtx, agentRecord); saveErr != nil {
+				mainLogger.Warn("Failed to sync agent profile to SQLite", "agent", name, "error", saveErr)
+			} else {
+				mainLogger.Debug("Synced agent profile to SQLite", "agent", name, "is_public", agentRecord.IsPublic, "preset", agentRecord.SecurityPreset)
+			}
+		}
+
 		// 2. Initialize Central EventBus
 		bus := eventbus.NewEventBus(1024, 4)
 		defer bus.Close()

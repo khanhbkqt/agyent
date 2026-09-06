@@ -161,6 +161,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	if authorizer != nil {
 		allowed, err := authorizeInboundMessage(ctx, authorizer, msg.From.ID, bindAgent, msg.Chat.Type, sessionKey)
 		if err != nil || !allowed {
+			slog.WarnContext(ctx, "inbound Zalo message unauthorized (blocked by ACL)", "sender_id", msg.From.ID, "bind_agent", bindAgent, "chat_id", msg.Chat.ID, "chat_type", msg.Chat.Type, "error", err)
 			return
 		}
 	}

@@ -351,6 +351,11 @@ func (a *Adapter) pollBotUpdates(ctx context.Context, botName string, inst *botI
 		if botCtx.BotName == "" && inst.config.Name != "" {
 			botCtx.BotName = inst.config.Name
 		}
+		if botCtx.BotName == "" && inst.bindAgent != "" && a.cfg != nil && a.cfg.Agents != nil {
+			if prof, ok := a.cfg.Agents[inst.bindAgent]; ok && prof.Name != "" {
+				botCtx.BotName = prof.Name
+			}
+		}
 
 		for _, u := range updates {
 			if u.UpdateID >= offset {

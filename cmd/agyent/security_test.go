@@ -12,6 +12,7 @@ import (
 )
 
 func TestSecurityCLI(t *testing.T) {
+	t.Setenv("AGYENT_TURN_ID", "")
 	tempDir := t.TempDir()
 	tempCfgPath := filepath.Join(tempDir, "config.yaml")
 	tempDBPath := filepath.Join(tempDir, "agyent.db")

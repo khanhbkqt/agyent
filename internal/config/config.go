@@ -212,11 +212,13 @@ type SecurityConfig struct {
 
 // AgentProfileConfig defines per-agent declarative configuration overrides in config.yaml.
 type AgentProfileConfig struct {
+	Name           string `yaml:"name" json:"name"`
 	SecurityPreset string `yaml:"security_preset" json:"security_preset"` // e.g. "unrestricted", "developer", "balanced", "strict", "read_only"
 	DefaultModel   string `yaml:"default_model" json:"default_model"`
 	DefaultEffort  string `yaml:"default_effort" json:"default_effort"`
 	WorkspacePath  string `yaml:"workspace_path" json:"workspace_path"`
 	Description    string `yaml:"description" json:"description"`
+	IsPublic       bool   `yaml:"is_public" json:"is_public"`
 }
 
 // RecoveryConfig controls turn auto-recovery and crash resilience.

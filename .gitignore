@@ -38,6 +38,7 @@ memory/
 projects/
 .system_generated/
 .agents/skills/dummy-skill/
+.agents/hooks.json*
 
 # IDE / OS metadata
 .DS_Store
