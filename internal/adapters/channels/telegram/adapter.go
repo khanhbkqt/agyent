@@ -846,6 +846,7 @@ func (a *Adapter) sendChunkWithRetry(ctx context.Context, bot *gotgbot.Bot, chat
 
 			if tgErr.Code == 400 {
 				opts.ParseMode = ""
+				opts.ReplyParameters = nil
 				fallbackText := chunk
 				if targetParseMode == "HTML" {
 					fallbackText = StripHTMLTags(formatted)

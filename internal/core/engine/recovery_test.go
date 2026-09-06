@@ -39,6 +39,7 @@ func setupTestRecoveryEngine(t *testing.T, cfgOverrides ...func(*config.Config))
 	cfg.Recovery.Mode = "auto"
 	cfg.Recovery.MaxRetries = 1
 	cfg.Recovery.MaxConcurrentRecoveries = 2
+	cfg.AGY.StreamingEnabled = false
 
 	for _, override := range cfgOverrides {
 		override(cfg)
@@ -328,4 +329,126 @@ func TestEngine_TurnAutoRecovery_SecurityHookFailure(t *testing.T) {
 	assert.Empty(t, runner.executeCalls)
 	runner.mu.Unlock()
 }
+
+func TestEngine_TurnAutoRecovery_Streaming(t *testing.T) {
+	eng, store, runner, channel := setupTestRecoveryEngine(t, func(cfg *config.Config) {
+		cfg.AGY.StreamingEnabled = true
+	})
+	defer store.Close()
+
+	ctx := context.Background()
+	sessionKey := "telegram:stream123"
+
+	agent := &domain.Agent{
+		Name:          "agyent",
+		OwnerID:       "user-1",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: t.TempDir(),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	turn := &domain.InFlightTurn{
+		TurnID:           "turn-stream-001",
+		SessionKey:       sessionKey,
+		ConversationID:   "conv-stream-001",
+		AgentName:        "agyent",
+		Channel:          "telegram",
+		ChatID:           "123",
+		InboundMessageID: 777,
+		UserID:           "user-1",
+		Prompt:           "Write a streaming program",
+		IsEphemeral:      false,
+		Status:           domain.TurnStatusExecuting,
+		RetryCount:       0,
+		MaxRetries:       1,
+		CreatedAt:        time.Now().Add(-1 * time.Minute),
+		UpdatedAt:        time.Now().Add(-1 * time.Minute),
+	}
+	require.NoError(t, store.SaveInFlightTurn(ctx, turn))
+
+	err := eng.RecoverInterruptedTurns(ctx)
+	require.NoError(t, err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	recovTurn, err := store.GetInFlightTurn(ctx, "turn-stream-001")
+	require.NoError(t, err)
+	assert.Equal(t, domain.TurnStatusCompleted, recovTurn.Status)
+
+	// User received immediate recovery notification
+	sent := channel.GetSentMessages()
+	require.NotEmpty(t, sent)
+	assert.Contains(t, sent[0].Text, "Hệ thống vừa khởi động lại")
+
+	// Runner execute stream was invoked
+	runner.mu.Lock()
+	streamCalls := runner.streamCalls
+	runner.mu.Unlock()
+	require.Len(t, streamCalls, 1)
+	assert.Contains(t, streamCalls[0].Prompt, "[SYSTEM AUTO-RECOVERY NOTIFICATION]")
+}
+
+func TestEngine_TurnAutoRecovery_BootstrapFreshTurn(t *testing.T) {
+	eng, store, runner, channel := setupTestRecoveryEngine(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	sessionKey := "telegram:fresh123"
+
+	agent := &domain.Agent{
+		Name:          "fresh_agent",
+		OwnerID:       "user-1",
+		Status:        domain.StatusUninitialized,
+		WorkspacePath: t.TempDir(),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	// Interrupted on the very first turn before conversation ID was created
+	turn := &domain.InFlightTurn{
+		TurnID:           "turn-fresh-001",
+		SessionKey:       sessionKey,
+		ConversationID:   "", // Empty
+		AgentName:        "fresh_agent",
+		Channel:          "telegram",
+		ChatID:           "123",
+		InboundMessageID: 888,
+		UserID:           "user-1",
+		Prompt:           "Hello, let's start!",
+		IsEphemeral:      false,
+		Status:           domain.TurnStatusExecuting,
+		RetryCount:       0,
+		MaxRetries:       1,
+		CreatedAt:        time.Now().Add(-1 * time.Minute),
+		UpdatedAt:        time.Now().Add(-1 * time.Minute),
+	}
+	require.NoError(t, store.SaveInFlightTurn(ctx, turn))
+
+	err := eng.RecoverInterruptedTurns(ctx)
+	require.NoError(t, err)
+
+	time.Sleep(100 * time.Millisecond)
+
+	recovTurn, err := store.GetInFlightTurn(ctx, "turn-fresh-001")
+	require.NoError(t, err)
+	assert.Equal(t, domain.TurnStatusCompleted, recovTurn.Status)
+
+	// Runner was invoked with bootstrap directives
+	runner.mu.Lock()
+	calls := runner.executeCalls
+	runner.mu.Unlock()
+	require.Len(t, calls, 1)
+	assert.Contains(t, calls[0].Prompt, "[SYSTEM BOOTSTRAP PROTOCOL")
+	assert.Contains(t, calls[0].Prompt, "[SYSTEM AUTO-RECOVERY NOTIFICATION]")
+
+	// Messages were delivered
+	sent := channel.GetSentMessages()
+	require.Len(t, sent, 2)
+	assert.Contains(t, sent[0].Text, "Hệ thống vừa khởi động lại")
+	assert.Contains(t, sent[1].Text, "Mock response for:")
+}
+
 

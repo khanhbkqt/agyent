@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agyent/internal/config"
@@ -123,6 +124,17 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		replyID = strconv.FormatInt(turn.InboundMessageID, 10)
 	}
 
+	threadID := parseThreadID(turn.ThreadID)
+	canonicalMsg := domain.CanonicalMessage{
+		ID:        strconv.FormatInt(turn.InboundMessageID, 10),
+		Channel:   turn.Channel,
+		BotID:     turn.BotID,
+		Chat:      domain.ChatContext{ID: turn.ChatID, ThreadID: threadID},
+		Sender:    domain.SenderUser{ID: turn.UserID, Username: turn.UserName},
+		Text:      turn.Prompt,
+		BindAgent: turn.AgentName,
+	}
+
 	// 2. Handle notify_only mode
 	if e.cfg != nil && strings.ToLower(e.cfg.Recovery.Mode) == "notify_only" {
 		if e.channel != nil {
@@ -134,7 +146,9 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 				Channel:          turn.Channel,
 				BotID:            turn.BotID,
 				ChatID:           turn.ChatID,
-				ThreadID:         parseThreadID(turn.ThreadID),
+				ThreadID:         threadID,
+				AgentName:        turn.AgentName,
+				SessionKey:       turn.SessionKey,
 				Text:             fmt.Sprintf("⚠️ **Yêu cầu bị gián đoạn do hệ thống khởi động lại.**\n*Prompt:* `%s`\nVui lòng gửi lại nếu bạn muốn tiếp tục.", promptSnippet),
 				ParseMode:        "Markdown",
 				ReplyToMessageID: replyID,
@@ -168,7 +182,9 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 			Channel:          turn.Channel,
 			BotID:            turn.BotID,
 			ChatID:           turn.ChatID,
-			ThreadID:         parseThreadID(turn.ThreadID),
+			ThreadID:         threadID,
+			AgentName:        turn.AgentName,
+			SessionKey:       turn.SessionKey,
 			Text:             "🔄 **Hệ thống vừa khởi động lại.** Đang tự động khôi phục và tiếp tục tác vụ trước đó của bạn...",
 			ParseMode:        "Markdown",
 			ReplyToMessageID: replyID,
@@ -218,29 +234,75 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		}
 	}
 
-	// 6. Build guarded continuation prompt or bootstrap recovery prompt
-	var promptText string
-	if turn.ConversationID != "" {
-		promptText = fmt.Sprintf(
-			"[SYSTEM AUTO-RECOVERY NOTIFICATION]\n"+
-				"The system daemon was restarted while processing the previous turn.\n"+
-				"1. Inspect the current workspace files and recent tool outputs to determine which actions were already completed.\n"+
-				"2. Avoid re-executing non-idempotent side effects (e.g. git commits, external API calls, duplicate file appends) that have already succeeded.\n"+
-				"3. Resume and complete the user's original request:\n"+
-				"\"%s\"",
-			turn.Prompt,
-		)
-	} else {
-		promptText = fmt.Sprintf(
-			"[SYSTEM AUTO-RECOVERY NOTIFICATION]\n"+
-				"The system daemon was restarted during initial session bootstrap.\n"+
-				"Proceed to initialize workspace directives if missing, and complete the user's original request:\n"+
-				"\"%s\"",
-			turn.Prompt,
-		)
-	}
+	// 6. Build guarded continuation prompt or full bootstrap prompt
+	recoveryNotice := fmt.Sprintf(
+		"[SYSTEM AUTO-RECOVERY NOTIFICATION]\n"+
+			"The system daemon was restarted while processing the previous turn.\n"+
+			"1. Inspect the current workspace files and recent tool outputs to determine which actions were already completed.\n"+
+			"2. Avoid re-executing non-idempotent side effects (e.g. git commits, external API calls, duplicate file appends) that have already succeeded.\n"+
+			"3. Resume and complete the user's original request:\n"+
+			"\"%s\"",
+		turn.Prompt,
+	)
 
 	session, _ := e.storage.GetSession(ctx, turn.SessionKey)
+	var promptText string
+
+	if turn.ConversationID != "" {
+		// Subsequent turn: AGY CLI maintains context, history, and workspace files in its brain.
+		promptText = recoveryNotice
+	} else {
+		// Fresh turn without prior ConversationID: inject full Level 0-4 foundation and directives.
+		isBootstrap := agent == nil || !agent.IsInitialized()
+		if isBootstrap && agent != nil && e.workspaceManager != nil && e.workspaceManager.HasDirectives(agent.WorkspacePath) {
+			isBootstrap = false
+			agent.Status = domain.StatusInitialized
+			_ = e.storage.SaveAgent(ctx, agent)
+		}
+
+		if isBootstrap && agent != nil {
+			promptText = BuildBootstrapPrompt(agent, canonicalMsg.Sender, recoveryNotice)
+		} else if agent != nil {
+			var resolved *domain.ResolvedContext
+			if e.contextResolver != nil {
+				resolved, _ = e.contextResolver.Resolve(ctx, agent.WorkspacePath, workspaceDir)
+			}
+			if e.pluginManager != nil {
+				if pluginResolved, _ := e.pluginManager.AssembleActivePlugins(ctx, agent.WorkspacePath, workspaceDir); pluginResolved != nil {
+					if resolved == nil {
+						resolved = pluginResolved
+					} else {
+						if pluginResolved.WorkspaceDirectives != "" {
+							resolved.CombinedDirectives += "\n\n" + pluginResolved.WorkspaceDirectives
+						}
+						resolved.SkillHeaders = append(resolved.SkillHeaders, pluginResolved.SkillHeaders...)
+						resolved.ActiveMCPServers = append(resolved.ActiveMCPServers, pluginResolved.ActiveMCPServers...)
+					}
+				}
+			}
+
+			var temporalTag string
+			if e.temporal != nil && session != nil && !session.UpdatedAt.IsZero() {
+				loc := time.Local
+				if resolved != nil && resolved.UserLocation != nil {
+					loc = resolved.UserLocation
+				}
+				temporalTag = e.temporal.FormatTemporalTag(session.UpdatedAt, time.Now(), loc)
+			}
+
+			msgWithNotice := canonicalMsg
+			msgWithNotice.Text = recoveryNotice
+			if resolved != nil {
+				promptText = ComposeResolvedTurnPrompt(resolved, msgWithNotice, temporalTag, "")
+			} else {
+				knowledgeDirectives := LoadAgentKnowledgeDirectives(agent.WorkspacePath)
+				promptText = ComposeTurnPrompt(knowledgeDirectives, msgWithNotice)
+			}
+		} else {
+			promptText = recoveryNotice
+		}
+	}
+
 	resolvedModel, resolvedEffort, _ := e.ResolveExecutionParams("", "", session, agent)
 
 	req := domain.ExecutionRequest{
@@ -265,16 +327,49 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		SubjectID: turn.UserID,
 	}
 
-	// 7. Execute turn
+	isStream := e.IsStreamingEnabled()
+
+	// 7. Execute turn with heartbeat typing when not streaming
 	var (
 		res     *domain.ExecutionResult
 		execErr error
 	)
 
+	if !isStream && e.channel != nil {
+		typingStop := make(chan struct{})
+		var typingOnce sync.Once
+		stopTyping := func() {
+			typingOnce.Do(func() {
+				close(typingStop)
+			})
+		}
+		defer stopTyping()
+
+		concurrency.SafeGo(func() {
+			_ = e.channel.SendTyping(ctx, canonicalMsg.TargetContext())
+			ticker := time.NewTicker(4 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-typingStop:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					_ = e.channel.SendTyping(ctx, canonicalMsg.TargetContext())
+				}
+			}
+		})
+	}
+
 	if e.executionService != nil {
-		res, execErr = e.executionService.ExecuteTurn(ctx, principal, req, turn.SessionKey, false)
+		res, execErr = e.executionService.ExecuteTurn(ctx, principal, req, turn.SessionKey, isStream)
 	} else if e.runner != nil {
-		res, execErr = e.runner.Execute(ctx, req)
+		if isStream {
+			res, execErr = e.runner.ExecuteStream(ctx, req, turn.SessionKey)
+		} else {
+			res, execErr = e.runner.Execute(ctx, req)
+		}
 	} else {
 		execErr = fmt.Errorf("no execution service or runner available")
 	}
@@ -300,7 +395,9 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 				Channel:          turn.Channel,
 				BotID:            turn.BotID,
 				ChatID:           turn.ChatID,
-				ThreadID:         parseThreadID(turn.ThreadID),
+				ThreadID:         threadID,
+				AgentName:        turn.AgentName,
+				SessionKey:       turn.SessionKey,
 				Text:             fmt.Sprintf("⚠️ Khôi phục tác vụ thất bại: %s", errMsg),
 				ParseMode:        "Markdown",
 				ReplyToMessageID: replyID,
@@ -317,13 +414,16 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		_ = e.storage.SaveSession(context.WithoutCancel(ctx), session)
 	}
 
-	if res != nil && e.channel != nil {
+	// In non-streaming mode (or if channel is non-telegram where throttler didn't deliver stream), deliver final message
+	if res != nil && e.channel != nil && (!isStream || turn.Channel != "telegram") {
 		responseText := PruneToolOutput(res.ResponseText)
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
 			Channel:          turn.Channel,
 			BotID:            turn.BotID,
 			ChatID:           turn.ChatID,
-			ThreadID:         parseThreadID(turn.ThreadID),
+			ThreadID:         threadID,
+			AgentName:        turn.AgentName,
+			SessionKey:       turn.SessionKey,
 			Text:             responseText,
 			ParseMode:        "Markdown",
 			ReplyToMessageID: replyID,
