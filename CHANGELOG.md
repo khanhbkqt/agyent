@@ -5,6 +5,14 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.46] - 2026-09-06
+
+### Fixed
+- **AGY CLI Execution Argument Parsing (`harness/agy`):**
+  - **Removed Erroneous `--print` Flag in STDIN Mode:** Removed standalone `--print` flag argument from `Execute` which caused `agy` CLI's flag parser to consume `--output-format` as prompt text (`--print took "--output-format" as its prompt`). Headless execution reliably uses `--output-format json` with the prompt streamed over STDIN.
+
+---
+
 ## [1.0.45] - 2026-09-06
 
 ### Fixed

@@ -103,7 +103,7 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	}
 	projectID := req.Admission.AGYProjectID
 
-	args := []string{"--print", "--output-format", "json", "--project", projectID, "--sandbox"}
+	args := []string{"--output-format", "json", "--project", projectID, "--sandbox"}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}

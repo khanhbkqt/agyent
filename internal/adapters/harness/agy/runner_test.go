@@ -215,10 +215,10 @@ func runMockAGYHelper() {
 		os.Exit(0)
 
 	case "verify_headless_flags":
-		var hasPrint, hasDangerousSkip, hasDisableSlash bool
-		for _, arg := range args {
-			if arg == "--print" {
-				hasPrint = true
+		var hasOutputFormat, hasDangerousSkip, hasDisableSlash bool
+		for i, arg := range args {
+			if arg == "--output-format" && i+1 < len(args) && args[i+1] == "json" {
+				hasOutputFormat = true
 			}
 			if arg == "--dangerously-skip-permissions" {
 				hasDangerousSkip = true
@@ -227,9 +227,9 @@ func runMockAGYHelper() {
 				hasDisableSlash = true
 			}
 		}
-		if !hasPrint || !hasDangerousSkip || !hasDisableSlash {
-			fmt.Fprintf(os.Stderr, "missing expected headless flags: print=%v dangerous=%v slash=%v, args=%v\n",
-				hasPrint, hasDangerousSkip, hasDisableSlash, args)
+		if !hasOutputFormat || !hasDangerousSkip || !hasDisableSlash {
+			fmt.Fprintf(os.Stderr, "missing expected headless flags: outputFormat=%v dangerous=%v slash=%v, args=%v\n",
+				hasOutputFormat, hasDangerousSkip, hasDisableSlash, args)
 			os.Exit(1)
 		}
 		fmt.Println(`{"conversation_id":"c-headless-success","status":"SUCCESS","response":"Headless flags verified","duration_seconds":0.3}`)
@@ -881,7 +881,7 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 	})
 }
 
-func TestHarness_HeadlessFlags_DangerouslySkipPermissionsAndPrint(t *testing.T) {
+func TestHarness_HeadlessFlags_DangerouslySkipPermissions(t *testing.T) {
 	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
 	t.Setenv("MOCK_SCENARIO", "verify_headless_flags")
 
