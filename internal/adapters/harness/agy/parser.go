@@ -26,13 +26,14 @@ func StripANSI(s string) string {
 }
 
 type agyJSONPayload struct {
-	Status          string             `json:"status"` // "SUCCESS" | "ERROR"
+	Status          string             `json:"status"` // "SUCCESS" | "ERROR" | "DENIED" | "CANCELLED"
 	ConversationID  string             `json:"conversation_id"`
 	Response        string             `json:"response"`
 	DurationSeconds float64            `json:"duration_seconds"`
 	NumTurns        int                `json:"num_turns"`
 	Usage           *domain.TokenUsage `json:"usage"`
 	Error           string             `json:"error,omitempty"`
+	DeniedActions   []any              `json:"denied_actions,omitempty"`
 }
 
 // ParseOutput cleans ANSI escape sequences, extracts the last valid JSON envelope from stdout,
@@ -66,6 +67,22 @@ func ParseOutput(stdoutBytes, stderrBytes []byte) (*domain.ExecutionResult, erro
 		if usage.TotalTokens == 0 {
 			usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.ThinkingTokens
 		}
+	}
+
+	// 3. Handle native AGY headless permission denials / denied_actions
+	if len(payload.DeniedActions) > 0 || payload.Status == "DENIED" {
+		errMsg := payload.Error
+		if errMsg == "" {
+			errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
+		}
+		return &domain.ExecutionResult{
+			Success:        false,
+			ConversationID: payload.ConversationID,
+			ResponseText:   payload.Response,
+			DurationSec:    payload.DurationSeconds,
+			Usage:          usage,
+			Error:          errMsg,
+		}, fmt.Errorf("native permission denial: %s", errMsg)
 	}
 
 	return &domain.ExecutionResult{

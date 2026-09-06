@@ -1,12 +1,12 @@
 # ADR 0002: AGY project-scoped worker isolation
 
-> **Document status:** Proposed  
-> **Code authority:** Proposed change to `internal/core/execution`,
-> `internal/adapters/harness/agy`, `internal/adapters/security`, and worker
-> provisioning; no implementation exists  
+> **Document status:** Normative  
+> **Code authority:** `internal/core/execution`, `internal/adapters/harness/agy`,
+> `internal/adapters/security`, `internal/adapters/storage/sqlite`,
+> `internal/adapters/subagent`  
 > **Last verified:** 2026-09-06
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-06
 - Owners: agyent maintainers
 - Supersedes: none

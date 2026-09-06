@@ -22,8 +22,13 @@ type Evaluator struct {
 func NewEvaluator(cfg config.FilesystemGuardrailConfig, manageableFiles []string) *Evaluator {
 	allowed := make([]string, 0, len(cfg.AllowedPaths))
 	for _, p := range cfg.AllowedPaths {
+		if p == "." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, ".\\") {
+			// Relative paths like "." represent the active workspace and are dynamically
+			// evaluated in EvaluatePath, never bound statically to daemon startup CWD.
+			continue
+		}
 		if expanded, err := config.ExpandPath(p); err == nil && expanded != "" {
-			if abs, err := filepath.Abs(expanded); err == nil {
+			if abs, err := filepath.Abs(expanded); err == nil && filepath.IsAbs(expanded) {
 				allowed = append(allowed, resolveSymlinksAndCanonicalize(abs))
 			}
 		}
@@ -147,6 +152,21 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 				Reason:   fmt.Sprintf("🛡️ [Path Jail]: Target path '%s' resides outside active workspace '%s'", targetPath, workspaceDir),
 			}, nil
 		}
+
+		// 6. Control-plane path protection: writing to .agents or .agyent inside workspace is strictly forbidden
+		if isWrite && isInside {
+			rel, relErr := filepath.Rel(canonWorkspace, canonTarget)
+			if relErr == nil {
+				relClean := strings.ToLower(filepath.ToSlash(filepath.Clean(rel)))
+				if relClean == ".agents" || strings.HasPrefix(relClean, ".agents/") ||
+					relClean == ".agyent" || strings.HasPrefix(relClean, ".agyent/") {
+					return domain.SecurityDecision{
+						Decision: domain.DecisionDeny,
+						Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of control-plane path '%s' is strictly forbidden", targetPath),
+					}, nil
+				}
+			}
+		}
 	}
 
 	return domain.SecurityDecision{
@@ -219,3 +239,8 @@ func pathMatches(target, base string) bool {
 	}
 	return strings.HasPrefix(target, baseWithSep)
 }
+
+func (e *Evaluator) AllowedPaths() []string {
+	return append([]string(nil), e.allowedPaths...)
+}
+

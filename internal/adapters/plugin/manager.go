@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -15,7 +16,8 @@ import (
 	"strings"
 	"time"
 
-	contextAdapter "agyent/internal/adapters/context"
+	"gopkg.in/yaml.v3"
+
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
 	"agyent/internal/updater"
@@ -173,7 +175,7 @@ func (m *PluginManager) ListEmbeddedPlugins(ctx context.Context) ([]domain.Plugi
 				}
 				skillFile := fmt.Sprintf("%s/%s/SKILL.md", skillsDir, se.Name())
 				if skillData, err := m.embeddedFS.ReadFile(skillFile); err == nil {
-					if header, err := contextAdapter.ParseSkillHeaderFromBytes(skillData, skillFile, domain.ScopeGlobal); err == nil && header != nil {
+					if header, err := parseSkillHeaderFromBytes(skillData, skillFile, domain.ScopeGlobal); err == nil && header != nil {
 						p.Skills = append(p.Skills, *header)
 					}
 				}
@@ -488,7 +490,7 @@ func (m *PluginManager) loadPluginFromDir(pluginDir string, scope domain.Context
 				continue
 			}
 			skillFile := filepath.Join(skillsRoot, se.Name(), "SKILL.md")
-			header, err := contextAdapter.SafeParseSkillHeader(skillFile, scope)
+			header, err := safeParseSkillHeader(skillFile, scope)
 			if err == nil && header != nil {
 				p.Skills = append(p.Skills, *header)
 			}
@@ -784,4 +786,47 @@ func ResolveCommandPath(cmd string) string {
 		}
 	}
 	return cmd
+}
+
+// parseSkillHeaderFromBytes safely parses YAML frontmatter delimiters (---) from raw SKILL.md bytes.
+func parseSkillHeaderFromBytes(data []byte, filePath string, scope domain.ContextScope) (*domain.SkillHeader, error) {
+	content := string(data)
+	if !strings.HasPrefix(content, "---") {
+		return nil, fmt.Errorf("missing YAML frontmatter delimiters in %s", filePath)
+	}
+
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("malformed frontmatter in %s", filePath)
+	}
+
+	var meta struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader([]byte(parts[1])))
+	if err := decoder.Decode(&meta); err != nil {
+		return nil, fmt.Errorf("yaml syntax error in %s: %w", filePath, err)
+	}
+
+	if strings.TrimSpace(meta.Name) == "" {
+		return nil, fmt.Errorf("skill in %s is missing name", filePath)
+	}
+
+	return &domain.SkillHeader{
+		Name:        meta.Name,
+		Description: meta.Description,
+		FilePath:    filePath,
+		Scope:       scope,
+	}, nil
+}
+
+// safeParseSkillHeader safely parses YAML frontmatter delimiters (---) from a SKILL.md file.
+func safeParseSkillHeader(filePath string, scope domain.ContextScope) (*domain.SkillHeader, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read skill file: %w", err)
+	}
+	return parseSkillHeaderFromBytes(data, filePath, scope)
 }

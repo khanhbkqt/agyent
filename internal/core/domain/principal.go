@@ -12,9 +12,10 @@ const (
 // Principal represents the authenticating entity interacting with Agyent.
 type Principal struct {
 	Kind      PrincipalKind `json:"kind"`
-	Provider  string        `json:"provider"`   // telegram, discord, cli, internal
-	AccountID string        `json:"account_id"` // bot/application identity (e.g. Telegram Bot ID)
-	SubjectID string        `json:"subject_id"` // Platform user ID or system service identity
+	Provider  string        `json:"provider"`            // telegram, discord, cli, internal
+	AccountID string        `json:"account_id"`          // bot/application identity (e.g. Telegram Bot ID)
+	SubjectID string        `json:"subject_id"`          // Platform user ID or system service identity
+	TenantID  string        `json:"tenant_id,omitempty"` // Multi-tenant isolation ID
 }
 
 // Key returns a canonical string representation of the principal identity.

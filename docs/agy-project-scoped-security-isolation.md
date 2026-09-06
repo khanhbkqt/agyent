@@ -1,17 +1,17 @@
 # AGY project-scoped security isolation
 
-> **Document status:** Proposed  
+> **Document status:** Reference  
 > **Code authority:** `internal/core/execution`, `internal/adapters/harness/agy`,
-> `internal/adapters/security`, `internal/adapters/subagent`, and `internal/config`  
+> `internal/adapters/security`, `internal/adapters/storage/sqlite`,
+> `internal/adapters/subagent`, and `internal/config`  
 > **Last verified:** 2026-09-06
 
-This is an unshipped design for isolating managed AGY guest agents without
-Docker. It uses AGY's project-local permission store as a per-agent **native
+This document describes the design and runtime implementation for isolating managed AGY guest
+agents without Docker. It uses AGY's project-local permission store as a per-agent **native
 grant scope**, while keeping agyent's authenticated hook/IPC path as the
-authorization decision point. An AGY project ID alone is not an agent identity,
-filesystem boundary, or tenant boundary; the trusted registry, execution
-admission, hook/IPC binding, and OS sandbox must bind it to an agent. This
-document does not describe current runtime behaviour.
+authorization decision point. An AGY project ID is bound to execution identity,
+filesystem boundary, tenant boundary, trusted registry, execution admission,
+hook/IPC binding, and OS terminal sandbox.
 
 The design applies to every managed worker, including subagents. The owner or
 administrator agent is a separate, explicitly provisioned trust tier; it must

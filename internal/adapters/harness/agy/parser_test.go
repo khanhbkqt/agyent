@@ -167,3 +167,22 @@ func TestParseOutput_TC_PARS_08_StdoutSuccessWithWarningOnStderr(t *testing.T) {
 	assert.Equal(t, "new-conv-uuid-999", res.ConversationID)
 	assert.Equal(t, "Recovered turn response", res.ResponseText)
 }
+
+func TestParseOutput_TC_PARS_09_NativeDeniedActions(t *testing.T) {
+	stdout := []byte(`{
+		"conversation_id": "c-denied-123",
+		"status": "DENIED",
+		"response": "",
+		"duration_seconds": 0.2,
+		"denied_actions": [{"tool": "run_command", "reason": "unauthorized"}],
+		"error": "headless permission denied"
+	}`)
+	stderr := []byte("")
+
+	res, err := agy.ParseOutput(stdout, stderr)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "native permission denial")
+	require.NotNil(t, res)
+	assert.False(t, res.Success)
+	assert.Equal(t, "headless permission denied", res.Error)
+}

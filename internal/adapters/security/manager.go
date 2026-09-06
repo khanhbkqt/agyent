@@ -213,6 +213,24 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	switch req.ToolName {
 	case "run_command":
 		cmd, _ := req.Args["CommandLine"].(string)
+		cwd, _ := req.Args["Cwd"].(string)
+		if cwd != "" {
+			ws := req.WorkspaceDir
+			if ws == "" && hasTurn {
+				ws = turnCtx.WorkspaceDir
+			}
+			if ws == "" {
+				ws = "."
+			}
+			cwdDec, cwdErr := bundle.pathjailEval.EvaluatePath(ws, cwd, false, false)
+			if cwdErr != nil || cwdDec.Decision == domain.DecisionDeny {
+				decision = domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Gate - Path Jail]: Working directory (Cwd) '%s' is outside active workspace", cwd),
+				}
+				break
+			}
+		}
 		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, bundle)
 
 	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
@@ -276,10 +294,24 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	case "invoke_subagent", "define_subagent":
 		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
 
-	default:
+	case "manage_subagents", "send_message", "ask_question", "schedule", "manage_task", "generate_image", "read_browser_page":
 		decision = domain.SecurityDecision{
 			Decision: domain.DecisionAllow,
-			Reason:   "Standard substrate tool permitted",
+			Reason:   "Registered system substrate tool permitted",
+		}
+
+	default:
+		// Check if it's an MCP tool (starts with mcp__ or call_mcp_tool)
+		if strings.HasPrefix(req.ToolName, "mcp__") || req.ToolName == "call_mcp_tool" {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Registered MCP tool permitted",
+			}
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate]: Unknown or unregistered tool '%s' is denied fail-closed", req.ToolName),
+			}
 		}
 	}
 
@@ -412,15 +444,25 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}, nil
 	}
 
-	// 1.5. Check Anti-Self-Escalation & Gateway Tampering (Forbidden across all managed presets - Inviolable Hard Guardrail)
+	parsedCmds := ParseCommandPipeline(cmd)
+
+	// 1.5. Inviolable Hard Guardrail: Check Anti-Self-Escalation across raw and all parsed commands
 	if isSelfEscalationCommand(cmd) {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
 			Reason:   fmt.Sprintf("🛡️ [Security Gate - Privilege Escalation Blocked]: Execution of administrative command '%s' to alter agyent configuration or security presets is strictly forbidden from an AI agent session", cmd),
 		}, nil
 	}
+	for _, pcmd := range parsedCmds {
+		if isSelfEscalationCommand(pcmd.Executable) || isSelfEscalationCommand(pcmd.Raw) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Privilege Escalation Blocked]: Subcommand '%s' references forbidden gateway resources", pcmd.Raw),
+			}, nil
+		}
+	}
 
-	// 2. Check Blacklist Patterns (Inviolable Hard Guardrail)
+	// 2. Inviolable Hard Guardrail: Check Blacklist Patterns
 	for _, bl := range bundle.blacklistPatterns {
 		if bl.MatchString(cmd) {
 			return domain.SecurityDecision{
@@ -428,58 +470,72 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 				Reason:   fmt.Sprintf("🛡️ [Command Guardrail]: Command matches forbidden pattern '%s'", bl.String()),
 			}, nil
 		}
-	}
-
-	// 3. Check in-memory session grants (Valid for the entire duration of the active session)
-	m.mu.RLock()
-	grants, hasGrants := m.sessionGrants[sessionKey]
-	m.mu.RUnlock()
-	if hasGrants {
-		for _, g := range grants {
-			if g.pattern == "*" || cmd == g.pattern || strings.HasPrefix(cmd, g.pattern+" ") || isBaseCommandMatch(cmd, g.pattern) {
+		for _, pcmd := range parsedCmds {
+			if bl.MatchString(pcmd.Raw) || bl.MatchString(pcmd.Executable) {
 				return domain.SecurityDecision{
-					Decision: domain.DecisionAllow,
-					Reason:   fmt.Sprintf("Allowed by active session permission grant (%s)", g.pattern),
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Command Guardrail]: Pipeline subcommand '%s' matches forbidden pattern '%s'", pcmd.Raw, bl.String()),
 				}, nil
 			}
 		}
 	}
 
-	// 4. Check Whitelist Patterns
+	// 3. Check in-memory session grants (Valid for the active session, after hard guardrails pass)
 	m.mu.RLock()
-	wlPatterns := make([]*regexp.Regexp, len(bundle.whitelistPatterns))
-	copy(wlPatterns, bundle.whitelistPatterns)
+	grants, hasGrants := m.sessionGrants[sessionKey]
 	m.mu.RUnlock()
-
-	for _, wl := range wlPatterns {
-		if wl.MatchString(cmd) || strings.HasPrefix(cmd, wl.String()) {
+	if hasGrants && len(parsedCmds) > 0 {
+		hasWildcard := false
+		for _, g := range grants {
+			if g.pattern == "*" {
+				hasWildcard = true
+				break
+			}
+		}
+		if hasWildcard {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionAllow,
-				Reason:   "Command matched custom whitelist rule",
+				Reason:   "Allowed by active wildcard session permission grant",
+			}, nil
+		}
+
+		allGranted := true
+		for _, pcmd := range parsedCmds {
+			granted := false
+			for _, g := range grants {
+				if g.pattern == "*" || strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern) {
+					granted = true
+					break
+				}
+			}
+			if !granted {
+				allGranted = false
+				break
+			}
+		}
+		if allGranted {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Allowed by active session permission grant",
 			}, nil
 		}
 	}
 
-	// 5. Preset Strict mode -> auto block if not in whitelist
-	if preset == domain.PresetStrict {
-		return domain.SecurityDecision{
-			Decision: domain.DecisionDeny,
-			Reason:   fmt.Sprintf("🛡️ [Security Preset: Strict]: Command '%s' is not explicitly whitelisted", cmd),
-		}, nil
-	}
+	m.mu.RLock()
+	wlPatterns := make([]*regexp.Regexp, len(bundle.whitelistPatterns))
+	copy(wlPatterns, bundle.whitelistPatterns)
+	blPatterns := make([]*regexp.Regexp, len(bundle.blacklistPatterns))
+	copy(blPatterns, bundle.blacklistPatterns)
+	m.mu.RUnlock()
 
-	// 6. Preset Balanced mode -> Ask HITL for sensitive actions
-	if preset == domain.PresetBalanced && sensitiveCommandRegex.MatchString(cmd) {
-		return domain.SecurityDecision{
-			Decision: domain.DecisionAsk,
-			Reason:   fmt.Sprintf("Sensitive shell execution: `%s`", cmd),
-		}, nil
-	}
-
-	return domain.SecurityDecision{
-		Decision: domain.DecisionAllow,
-		Reason:   "Command permitted under active security profile",
-	}, nil
+	return EvaluateParsedCommandPolicy(
+		parsedCmds,
+		cmd,
+		preset,
+		sensitiveCommandRegex,
+		blPatterns,
+		wlPatterns,
+	)
 }
 
 // EvaluateCommand validates shell commands against active rules and session grants.
@@ -695,7 +751,18 @@ func (m *Manager) UnregisterTurnByID(turnID string) {
 			delete(m.activeTurns, turn.ConversationID)
 		}
 		if turn.WorkspaceDir != "" {
-			delete(m.activeWorkspaces, canonicalizeWorkspacePath(turn.WorkspaceDir))
+			canonWS := canonicalizeWorkspacePath(turn.WorkspaceDir)
+			stillUsed := false
+			for _, other := range m.activeTurns {
+				if other.TurnID != turnID && canonicalizeWorkspacePath(other.WorkspaceDir) == canonWS {
+					m.activeWorkspaces[canonWS] = other
+					stillUsed = true
+					break
+				}
+			}
+			if !stillUsed {
+				delete(m.activeWorkspaces, canonWS)
+			}
 		}
 	}
 }

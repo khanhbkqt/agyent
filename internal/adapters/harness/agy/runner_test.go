@@ -119,6 +119,26 @@ func runMockAGYHelper() {
 		fmt.Println(`{"conversation_id":"c-iso-success","status":"SUCCESS","response":"Workspace isolation verified","duration_seconds":0.5}`)
 		os.Exit(0)
 
+	case "verify_project_sandbox_flags":
+		var hasProject, hasSandbox, hasAddDir bool
+		for i, arg := range args {
+			if arg == "--project" && i+1 < len(args) && args[i+1] == "agy-proj-alpha-99" {
+				hasProject = true
+			}
+			if arg == "--sandbox" {
+				hasSandbox = true
+			}
+			if arg == "--add-dir" && i+1 < len(args) && args[i+1] != "" {
+				hasAddDir = true
+			}
+		}
+		if !hasProject || !hasSandbox || !hasAddDir {
+			fmt.Fprintf(os.Stderr, "missing expected project sandbox flags, args: %v\n", args)
+			os.Exit(1)
+		}
+		fmt.Println(`{"conversation_id":"c-proj-sandbox-success","status":"SUCCESS","response":"Project sandbox flags verified","duration_seconds":0.5}`)
+		os.Exit(0)
+
 	case "verify_apis4d_env":
 		agentName := os.Getenv("AGYENT_AGENT_NAME")
 		workspace := os.Getenv("AGYENT_AGENT_WORKSPACE")
@@ -342,6 +362,32 @@ func TestHarness_WorkspaceIsolationFlags(t *testing.T) {
 	assert.True(t, res.Success)
 	assert.Equal(t, "c-iso-success", res.ConversationID)
 	assert.Contains(t, res.ResponseText, "Workspace isolation verified")
+}
+
+func TestHarness_ProjectScopedSandboxFlags(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "verify_project_sandbox_flags")
+
+	harness := newTestHarness("verify_project_sandbox_flags", 5)
+	tempDir := t.TempDir()
+
+	req := domain.ExecutionRequest{
+		Prompt:       "verify project scoped sandbox",
+		WorkspaceDir: tempDir,
+		Admission: &domain.ExecutionAdmission{
+			AdmissionID:  "adm-123",
+			AGYProjectID: "agy-proj-alpha-99",
+			WorkspaceDir: tempDir,
+			TurnID:       "turn-123",
+		},
+	}
+
+	res, err := harness.Execute(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+	assert.Equal(t, "c-proj-sandbox-success", res.ConversationID)
+	assert.Contains(t, res.ResponseText, "Project sandbox flags verified")
 }
 
 func TestHarness_HealthCheck_Mock(t *testing.T) {

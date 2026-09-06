@@ -143,11 +143,74 @@ func (s *Service) ExecuteTurn(
 		req.DangerouslySkipPermissions = false
 	}
 
-	// 4. Provision End-to-End Turn Identity
+	// 4. Provision End-to-End Turn Identity & Execution Admission
 	turnID := req.TurnID
 	if turnID == "" {
 		turnID = "turn-" + generateUUIDHex()
 		req.TurnID = turnID
+	}
+	if req.SessionKey == "" {
+		req.SessionKey = sessionKey
+	}
+	if req.UserID == "" {
+		req.UserID = principal.SubjectID
+	}
+
+	tenantID := principal.TenantID
+	if tenantID == "" {
+		if principal.AccountID != "" {
+			tenantID = principal.AccountID
+		} else {
+			tenantID = "default"
+		}
+	}
+
+	agyProjectID := "agy-proj-" + req.AgentName
+	agentGen := 1
+	if s.storage != nil {
+		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, req.AgentName)
+		if err == nil && mapping != nil {
+			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
+				return nil, fmt.Errorf("%w: AGY project mapping for agent %q is %s", ports.ErrAccessDenied, req.AgentName, mapping.Status)
+			}
+			if mapping.AGYProjectID != "" {
+				agyProjectID = mapping.AGYProjectID
+			}
+			if mapping.AgentGeneration > 0 {
+				agentGen = mapping.AgentGeneration
+			}
+		} else if errors.Is(err, ports.ErrNotFound) {
+			mapping = &domain.AGYProjectMapping{
+				TenantID:             tenantID,
+				AgentName:            req.AgentName,
+				AgentGeneration:      1,
+				ExecutionHostID:      "local",
+				AGYConfigNamespaceID: "default",
+				AGYProjectID:         agyProjectID,
+				WorkspaceDir:         req.WorkspaceDir,
+				Status:               domain.AGYProjectStatusActive,
+				CreatedAt:            time.Now(),
+			}
+			_ = s.storage.SaveAGYProjectMapping(ctx, mapping)
+		} else if err != nil {
+			return nil, fmt.Errorf("failed to retrieve AGY project mapping: %w", err)
+		}
+	}
+
+	req.Admission = &domain.ExecutionAdmission{
+		AdmissionID:          "adm-" + generateUUIDHex(),
+		TenantID:             tenantID,
+		AgentName:            req.AgentName,
+		AgentGeneration:      agentGen,
+		ExecutionHostID:      "local",
+		AGYConfigNamespaceID: "default",
+		AGYProjectID:         agyProjectID,
+		WorkspaceDir:         req.WorkspaceDir,
+		TurnID:               turnID,
+		SessionKey:           sessionKey,
+		Principal:            principal,
+		Mode:                 req.Mode,
+		CreatedAt:            time.Now(),
 	}
 
 	// 5. Setup Environment & Isolated Turn Directory
@@ -155,6 +218,7 @@ func (s *Service) ExecuteTurn(
 		req.Env = make(map[string]string)
 	}
 	req.Env["AGYENT_TURN_ID"] = turnID
+	req.Env["AGYENT_PROJECT_ID"] = agyProjectID
 
 	// 6. Register Turn in Security Manager
 	if s.securityManager != nil {

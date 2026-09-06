@@ -133,6 +133,13 @@ type ConversationRepository interface {
 	UpdateConversationReflectedStep(ctx context.Context, id string, step int) error
 }
 
+// AGYProjectRegistryRepository defines persistence operations for per-agent AGY project mappings.
+type AGYProjectRegistryRepository interface {
+	GetAGYProjectMapping(ctx context.Context, tenantID, agentName string) (*domain.AGYProjectMapping, error)
+	SaveAGYProjectMapping(ctx context.Context, mapping *domain.AGYProjectMapping) error
+	RevokeAGYProjectMapping(ctx context.Context, tenantID, agentName string) error
+}
+
 // StoragePort is the unified interface combining all repositories and lifecycle management.
 type StoragePort interface {
 	SessionRepository
@@ -145,6 +152,7 @@ type StoragePort interface {
 	SubagentRepository
 	ScheduleRepository
 	InFlightTurnRepository
+	AGYProjectRegistryRepository
 
 	// Close gracefully closes any open database connections.
 	Close() error

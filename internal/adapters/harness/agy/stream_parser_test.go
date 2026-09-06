@@ -330,4 +330,17 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		// 1 (init) + 1 (tool RUNNING start) + >= 2 (heartbeat pings during 60ms) + 1 (tool DONE) + 1 (result) >= 6
 		assert.GreaterOrEqual(t, count, 6, "Milestone must be pinged periodically during silent tool execution")
 	})
+
+	t.Run("TC-BRG-Denial_EmitsErrorAndFailsClosed", func(t *testing.T) {
+		sampleNDJSON := `
+{"event":"init","conversation_id":"c-denied"}
+{"event":"result","result":{"conversation_id":"c-denied","status":"DENIED","error":"permission denied by policy","denied_actions":["run_command"]}}
+`
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:denied", strings.NewReader(sampleNDJSON))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "native permission denial")
+		require.NotNil(t, res)
+		assert.Equal(t, "DENIED", res.Status)
+		assert.Equal(t, "permission denied by policy", res.Error)
+	})
 }

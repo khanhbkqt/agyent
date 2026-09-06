@@ -52,12 +52,13 @@ type ToolInfoPayload struct {
 
 type ResultPayload struct {
 	ConversationID  string            `json:"conversation_id"`
-	Status          string            `json:"status"` // "SUCCESS", "ERROR"
+	Status          string            `json:"status"` // "SUCCESS", "ERROR", "DENIED"
 	Response        string            `json:"response"`
 	Error           string            `json:"error,omitempty"`
 	DurationSeconds float64           `json:"duration_seconds"`
 	NumTurns        int               `json:"num_turns"`
 	Usage           domain.TokenUsage `json:"usage"`
+	DeniedActions   []any             `json:"denied_actions,omitempty"`
 }
 
 // StreamParser reads NDJSON lines from an io.Reader and translates them into domain.Events on the EventBus.
@@ -299,6 +300,23 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					NumTurns:        res.NumTurns,
 					Usage:           usage,
 					Artifacts:       artifacts,
+				}
+				if len(res.DeniedActions) > 0 || res.Status == "DENIED" {
+					errMsg := res.Error
+					if errMsg == "" {
+						errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
+					}
+					lastResult.Status = "DENIED"
+					lastResult.Error = errMsg
+					if p.eventBus != nil {
+						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+							SessionKey:     sessionKey,
+							ConversationID: conversationID,
+							TurnID:         p.turnID,
+							Error:          errMsg,
+						}))
+					}
+					return lastResult, fmt.Errorf("native permission denial: %s", errMsg)
 				}
 				if p.eventBus != nil {
 					if res.Status == "INTERRUPTED" {

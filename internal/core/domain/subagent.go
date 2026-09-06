@@ -29,6 +29,7 @@ const (
 // SubagentTask represents an asynchronous background work unit executed by a sub-agent.
 type SubagentTask struct {
 	ID                   string               `json:"id"`
+	TenantID             string               `json:"tenant_id,omitempty"`
 	ParentSessionKey     string               `json:"parent_session_key"`
 	ParentConversationID string               `json:"parent_conversation_id"`
 	SubConversationID    string               `json:"sub_conversation_id"`

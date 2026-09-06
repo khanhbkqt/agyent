@@ -67,6 +67,7 @@ some intentionally preserve context from earlier milestones.
 | Subagents | [Subagent architecture](subagent-architecture.md) | subagent adapter, ports and repository |
 | Turn recovery | [Turn auto-recovery & crash resilience](turn-recovery-and-resilience-architecture.md) | `internal/core/engine`, `internal/adapters/storage/sqlite`, `internal/adapters/subagent` |
 | Evolution | [Self-learning and evolution](agent-self-learning-and-evolution-architecture.md) | evolution adapter and engine integration |
+| Worker isolation | [AGY project-scoped isolation](agy-project-scoped-security-isolation.md) | `internal/core/execution`, `internal/adapters/harness/agy`, `internal/adapters/security` |
 
 ## Proposed designs
 
@@ -74,9 +75,6 @@ some intentionally preserve context from earlier milestones.
   extension points. Telegram and Zalo are the currently wired production channel adapters.
 - [Multi-account architecture](multi-account-architecture.md) is a proposal. No
   account-pool domain, port, adapter, or migration exists in the current tree.
-- [AGY project-scoped security isolation](agy-project-scoped-security-isolation.md)
-  proposes per-agent AGY projects, native sandboxing, and agyent-mediated
-  authorization for managed workers. It is not implemented.
 
 ## Historical material
 

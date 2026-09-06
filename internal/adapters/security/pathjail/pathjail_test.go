@@ -50,6 +50,12 @@ func TestPathJail_WorkspaceEnforcement(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAsk, decision.Decision)
 	assert.Contains(t, decision.Reason, "requires user confirmation")
+
+	// Test 5: Control plane path write inside workspace (.agents/hooks.json) -> Strictly Denied
+	decision, err = evaluator.EvaluatePath(workspaceDir, filepath.Join(workspaceDir, ".agents", "hooks.json"), true, false)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "Control Plane Protection")
 }
 
 func TestPathJail_WindowsQuirks(t *testing.T) {
@@ -103,4 +109,38 @@ func TestPathJail_InboundUploadsInWorkspace(t *testing.T) {
 	decision2, err := evaluator.EvaluatePath(workspaceDir, extUploadFile, false, false)
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionDeny, decision2.Decision, "external upload files outside workspace must be blocked by PathJail")
+}
+
+func TestPathJail_ControlPlaneCaseVariations(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: true,
+		AllowedPaths:         []string{workspaceDir},
+	}
+	evaluator := NewEvaluator(cfg, nil)
+
+	// Test case variations on control-plane writes (.Agents, .AGYENT)
+	for _, target := range []string{
+		filepath.Join(workspaceDir, ".Agents", "hooks.json"),
+		filepath.Join(workspaceDir, ".AGYENT", "config.yaml"),
+		filepath.Join(workspaceDir, ".agents", "rules.md"),
+		filepath.Join(workspaceDir, ".agyent", "settings.json"),
+	} {
+		decision, err := evaluator.EvaluatePath(workspaceDir, target, true, false)
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, decision.Decision, "control-plane writes must be denied regardless of casing")
+		assert.Contains(t, decision.Reason, "Control Plane Protection")
+	}
+}
+
+func TestPathJail_RelativeAllowedPaths_NoDaemonCWDLeak(t *testing.T) {
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: true,
+		AllowedPaths:         []string{"."},
+	}
+	evaluator := NewEvaluator(cfg, nil)
+	assert.Empty(t, evaluator.AllowedPaths(), "relative '.' should not bind daemon CWD to allowedPaths")
 }

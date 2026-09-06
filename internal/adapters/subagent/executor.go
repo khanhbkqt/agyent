@@ -65,13 +65,6 @@ func (e *taskExecutor) executeTurn(
 	tCtx.mu.Unlock()
 	defer cancel()
 
-	args := []string{
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--project", "outside-of-project",
-		"--mode", "accept-edits",
-	}
-
 	workspaceDir, agent, cleanupWorkspace, err := e.resolveWorkspace(parentCtx, task)
 	if err != nil {
 		return &TurnResult{
@@ -82,6 +75,31 @@ func (e *taskExecutor) executeTurn(
 		}, err
 	}
 	defer cleanupWorkspace()
+
+	tenantID := task.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agyProjectID := "agy-proj-sub-" + task.AgentName
+	if e.storage != nil {
+		if mapping, err := e.storage.GetAGYProjectMapping(parentCtx, tenantID, task.AgentName); err == nil && mapping != nil {
+			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
+				err := fmt.Errorf("subagent execution denied: AGY project mapping is %s", mapping.Status)
+				return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
+			}
+			if mapping.AGYProjectID != "" {
+				agyProjectID = mapping.AGYProjectID
+			}
+		}
+	}
+
+	args := []string{
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--project", agyProjectID,
+		"--sandbox",
+		"--mode", "accept-edits",
+	}
 	args = append(args, "--add-dir", workspaceDir)
 
 	// Policy authorization check for system:subagent principal
@@ -189,6 +207,7 @@ func (e *taskExecutor) executeTurn(
 		"AGYENT_SESSION_KEY="+task.ParentSessionKey,
 		"AGYENT_AGENT_NAME="+task.AgentName,
 		"AGYENT_PROJECT_NAME="+task.ProjectName,
+		"AGYENT_PROJECT_ID="+agyProjectID,
 	)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
@@ -301,6 +320,18 @@ func (e *taskExecutor) executeTurn(
 				if rawEvt.Result.Response != "" {
 					lastResponseBuilder.Reset()
 					lastResponseBuilder.WriteString(rawEvt.Result.Response)
+				}
+				if rawEvt.Result.Status == "DENIED" || len(rawEvt.Result.DeniedActions) > 0 {
+					errMsg := rawEvt.Result.Error
+					if errMsg == "" {
+						errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
+					}
+					return &TurnResult{
+						ConversationID:  turnConvID,
+						Status:          domain.TaskStatusFailed,
+						ErrorMessage:    errMsg,
+						DurationSeconds: time.Since(tCtx.startedAt).Seconds(),
+					}, fmt.Errorf("native permission denial: %s", errMsg)
 				}
 			}
 		case "error":

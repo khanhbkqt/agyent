@@ -100,11 +100,21 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	defer cancel()
 
 	// Build CLI arguments
-	args := []string{"--output-format", "json", "--project", "outside-of-project"}
+	projectID := "outside-of-project"
+	useSandbox := false
+	if req.Admission != nil && req.Admission.AGYProjectID != "" {
+		projectID = req.Admission.AGYProjectID
+		useSandbox = true
+	}
+
+	args := []string{"--output-format", "json", "--project", projectID}
+	if useSandbox {
+		args = append(args, "--sandbox")
+	}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions {
+	if req.DangerouslySkipPermissions && req.Admission == nil {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
@@ -280,11 +290,21 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	// Build CLI arguments for streaming
-	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", "outside-of-project"}
+	projectID := "outside-of-project"
+	useSandbox := false
+	if req.Admission != nil && req.Admission.AGYProjectID != "" {
+		projectID = req.Admission.AGYProjectID
+		useSandbox = true
+	}
+
+	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", projectID}
+	if useSandbox {
+		args = append(args, "--sandbox")
+	}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions {
+	if req.DangerouslySkipPermissions && req.Admission == nil {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {

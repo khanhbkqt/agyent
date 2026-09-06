@@ -23,7 +23,58 @@ type ExecutionRequest struct {
 	ProjectName                string            `json:"project_name,omitempty"`
 	SessionKey                 string            `json:"session_key,omitempty"`
 	UserID                     string            `json:"user_id,omitempty"`
-	Env                        map[string]string `json:"env,omitempty"`
+	Env                        map[string]string   `json:"env,omitempty"`
+	Admission                  *ExecutionAdmission `json:"admission,omitempty"`
+}
+
+// ExecutionAdmission represents an immutable authorization admission ticket
+// issued by internal/core/execution.Service to admit an AGY CLI execution.
+type ExecutionAdmission struct {
+	AdmissionID          string    `json:"admission_id"`
+	TenantID             string    `json:"tenant_id"`
+	AgentName            string    `json:"agent_name"`
+	AgentGeneration      int       `json:"agent_generation"`
+	ExecutionHostID      string    `json:"execution_host_id"`
+	AGYConfigNamespaceID string    `json:"agy_config_namespace_id"`
+	AGYProjectID         string    `json:"agy_project_id"`
+	WorkspaceDir         string    `json:"workspace_dir"`
+	TurnID               string    `json:"turn_id"`
+	SessionKey           string    `json:"session_key"`
+	Principal            Principal `json:"principal"`
+	Mode                 string    `json:"mode,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+// AGYProjectStatus represents the operational lifecycle state of an AGY project mapping.
+type AGYProjectStatus string
+
+const (
+	AGYProjectStatusActive      AGYProjectStatus = "ACTIVE"
+	AGYProjectStatusQuarantined AGYProjectStatus = "QUARANTINED"
+	AGYProjectStatusRevoked     AGYProjectStatus = "REVOKED"
+)
+
+// AGYProjectMapping represents the persistent mapping between an agent and its dedicated AGY project scope.
+type AGYProjectMapping struct {
+	TenantID             string           `json:"tenant_id"`
+	AgentName            string           `json:"agent_name"`
+	AgentGeneration      int              `json:"agent_generation"`
+	ExecutionHostID      string           `json:"execution_host_id"`
+	AGYConfigNamespaceID string           `json:"agy_config_namespace_id"`
+	AGYProjectID         string           `json:"agy_project_id"`
+	WorkspaceDir         string           `json:"workspace_dir"`
+	Status               AGYProjectStatus `json:"status"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
+}
+
+// AGYCapabilities represents detected host CLI capabilities.
+type AGYCapabilities struct {
+	Version                     string `json:"version"`
+	SupportsSandbox             bool   `json:"supports_sandbox"`
+	SupportsProjectScopedGrants bool   `json:"supports_project_scoped_grants"`
+	SupportsStreamJSON          bool   `json:"supports_stream_json"`
+	Platform                    string `json:"platform"`
 }
 
 // ExecutionResult contains the outcome of an AGY execution run.

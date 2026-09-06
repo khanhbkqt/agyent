@@ -1291,7 +1291,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	hasFailed := execErr != nil || (execResult != nil && !execResult.Success)
-	var errMsg string
+	errMsg = ""
 	if hasFailed {
 		if execErr != nil {
 			errMsg = execErr.Error()
