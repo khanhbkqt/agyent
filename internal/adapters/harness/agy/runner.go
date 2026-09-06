@@ -105,6 +105,9 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if req.Admission != nil && req.Admission.AGYProjectID != "" {
 		projectID = req.Admission.AGYProjectID
 		useSandbox = true
+	} else if req.AgentName != "" {
+		projectID = "agy-proj-" + req.AgentName
+		useSandbox = true
 	}
 
 	args := []string{"--output-format", "json", "--project", projectID}
@@ -294,6 +297,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	useSandbox := false
 	if req.Admission != nil && req.Admission.AGYProjectID != "" {
 		projectID = req.Admission.AGYProjectID
+		useSandbox = true
+	} else if req.AgentName != "" {
+		projectID = "agy-proj-" + req.AgentName
 		useSandbox = true
 	}
 

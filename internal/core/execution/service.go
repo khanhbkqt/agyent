@@ -165,15 +165,20 @@ func (s *Service) ExecuteTurn(
 		}
 	}
 
-	agyProjectID := "agy-proj-" + req.AgentName
+	agentName := req.AgentName
+	if agentName == "" {
+		agentName = "agyent"
+	}
+
+	agyProjectID := "agy-proj-" + agentName
 	agentGen := 1
 	if s.storage != nil {
-		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, req.AgentName)
+		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, agentName)
 		if err == nil && mapping != nil {
 			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
-				return nil, fmt.Errorf("%w: AGY project mapping for agent %q is %s", ports.ErrAccessDenied, req.AgentName, mapping.Status)
+				return nil, fmt.Errorf("%w: AGY project mapping for agent %q is %s", ports.ErrAccessDenied, agentName, mapping.Status)
 			}
-			if mapping.AGYProjectID != "" {
+			if mapping.AGYProjectID != "" && mapping.AGYProjectID != "agy-proj-" {
 				agyProjectID = mapping.AGYProjectID
 			}
 			if mapping.AgentGeneration > 0 {
@@ -182,7 +187,7 @@ func (s *Service) ExecuteTurn(
 		} else if errors.Is(err, ports.ErrNotFound) {
 			mapping = &domain.AGYProjectMapping{
 				TenantID:             tenantID,
-				AgentName:            req.AgentName,
+				AgentName:            agentName,
 				AgentGeneration:      1,
 				ExecutionHostID:      "local",
 				AGYConfigNamespaceID: "default",
