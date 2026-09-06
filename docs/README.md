@@ -2,7 +2,7 @@
 
 > **Document status:** Canonical
 > **Code authority:** repository-wide
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This page defines how to read and maintain the `agyent` documentation. Coding
 agents should start with the root `AGENTS.md`, this map, and
@@ -73,6 +73,9 @@ some intentionally preserve context from earlier milestones.
   extension points. Telegram and Zalo are the currently wired production channel adapters.
 - [Multi-account architecture](multi-account-architecture.md) is a proposal. No
   account-pool domain, port, adapter, or migration exists in the current tree.
+- [AGY project-scoped security isolation](agy-project-scoped-security-isolation.md)
+  proposes per-agent AGY projects, native sandboxing, and agyent-mediated
+  authorization for managed workers. It is not implemented.
 
 ## Historical material
 
