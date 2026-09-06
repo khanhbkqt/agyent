@@ -724,38 +724,11 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 	}
 
 	textToSend := cleanedText
-	hasPhotos := false
-	primaryPhotoIdx := -1
-	for idx, m := range allMedia {
-		ext := strings.ToLower(filepath.Ext(m.FilePath))
-		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
-			hasPhotos = true
-			if primaryPhotoIdx == -1 {
-				primaryPhotoIdx = idx
-			}
-		}
-	}
 
-	// Smart Split Delivery:
-	// If outbound message contains a photo and cleanedText <= 1024 characters:
-	// Attach the full text as the photo's caption, delivering image + greeting in a single unified message.
-	// If cleanedText > 1024 characters: photo is sent first with original alt-text/filename caption,
-	// and cleanedText is subsequently sent as full text message(s) without dropping any text.
+	// Deliver media attachments (photos, albums, documents) first so they appear above the text message
 	if len(allMedia) > 0 && mediaMgr != nil {
-		trimmedText := strings.TrimSpace(cleanedText)
-		canAttachToPhoto := hasPhotos && primaryPhotoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 1024
-
-		if canAttachToPhoto {
-			allMedia[primaryPhotoIdx].Caption = trimmedText
-		}
-
 		if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, allMedia, bot); err != nil {
 			slog.ErrorContext(ctx, "Failed to upload outbound media attachments", "chat_id", chatID, "error", err)
-			// Fallback: If media upload failed, retain textToSend so the message text is not lost
-			textToSend = cleanedText
-		} else if canAttachToPhoto {
-			// Successfully delivered text inside the photo caption! Suppress duplicate text message.
-			textToSend = ""
 		}
 	}
 

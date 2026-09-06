@@ -364,16 +364,16 @@ func TestAdapter_MultiBot_FallbackToPrimaryBotWhenAgentBotFails(t *testing.T) {
 	mockServer1.mu.Unlock()
 }
 
-// TC-ACT-18: Smart Split Delivery for Outbound Messages with Media
-func TestAdapter_Send_SmartSplitDelivery(t *testing.T) {
-	mockServer := NewMockTelegramServer("token_smart_split")
+// TC-ACT-18: Standalone Text Message Delivery for Outbound Messages with Media
+func TestAdapter_Send_MediaAndTextMessage(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_media_text")
 	defer mockServer.Close()
 
 	bot, err := mockServer.NewBot()
 	require.NoError(t, err)
 
 	cfg := config.DefaultConfig()
-	cfg.Telegram.BotToken = "token_smart_split"
+	cfg.Telegram.BotToken = "token_media_text"
 	cfg.Telegram.AdminUserIDs = []int64{123456}
 
 	bus := eventbus.NewEventBus(10, 1)
@@ -387,8 +387,10 @@ func TestAdapter_Send_SmartSplitDelivery(t *testing.T) {
 	tmpDir := t.TempDir()
 	photoPath := filepath.Join(tmpDir, "be_na.jpg")
 	require.NoError(t, os.WriteFile(photoPath, []byte("fake-photo-binary"), 0644))
+	photoPath2 := filepath.Join(tmpDir, "be_na2.jpg")
+	require.NoError(t, os.WriteFile(photoPath2, []byte("fake-photo-binary-2"), 0644))
 
-	t.Run("Text under 1024 chars attaches to photo caption without separate text message", func(t *testing.T) {
+	t.Run("Text with single photo sends photo with alt-text and text message separately", func(t *testing.T) {
 		mockServer.mu.Lock()
 		mockServer.SentMessages = nil
 		mockServer.SentMedia = nil
@@ -408,9 +410,9 @@ func TestAdapter_Send_SmartSplitDelivery(t *testing.T) {
 
 		require.Len(t, mockServer.SentMedia, 1, "Photo must be sent")
 		assert.Equal(t, "photo", mockServer.SentMedia[0].Type)
-		assert.Contains(t, mockServer.SentMedia[0].Caption, greeting, "Caption must contain greeting")
-		assert.Equal(t, "HTML", mockServer.SentMedia[0].ParseMode, "Caption should use HTML parse mode")
-		assert.Empty(t, mockServer.SentMessages, "No separate text message should be sent when caption <= 1024 chars")
+		assert.Equal(t, "Bé Na thức dậy", mockServer.SentMedia[0].Caption, "Photo retains its own alt-text caption")
+		require.Len(t, mockServer.SentMessages, 1, "Text message must be sent separately as a standalone message")
+		assert.Contains(t, mockServer.SentMessages[0].Text, greeting)
 	})
 
 	t.Run("Text over 1024 chars sends photo first then sends full text message", func(t *testing.T) {
@@ -434,8 +436,53 @@ func TestAdapter_Send_SmartSplitDelivery(t *testing.T) {
 
 		require.Len(t, mockServer.SentMedia, 1, "Photo must be sent")
 		assert.Equal(t, "photo", mockServer.SentMedia[0].Type)
-		assert.Equal(t, "Bé Na thức dậy", mockServer.SentMedia[0].Caption, "Photo keeps alt-text when text > 1024")
+		assert.Equal(t, "Bé Na thức dậy", mockServer.SentMedia[0].Caption, "Photo keeps alt-text")
 		require.Len(t, mockServer.SentMessages, 1, "Full text message must be sent separately")
 		assert.Contains(t, mockServer.SentMessages[0].Text, "Chào buổi sáng anh Khánh!")
+	})
+
+	t.Run("Multiple photos album sends photos and sends full text message separately", func(t *testing.T) {
+		mockServer.mu.Lock()
+		mockServer.SentMessages = nil
+		mockServer.SentMedia = nil
+		mockServer.mu.Unlock()
+
+		summary := "Dưới đây là 2 thiết kế Oktoberfest hot trend trên Pinterest."
+		text := fmt.Sprintf("%s\n\n![Mẫu 1](%s)\n![Mẫu 2](%s)", summary, photoPath, photoPath2)
+
+		err := adapter.Send(context.Background(), domain.OutboundMessage{
+			ChatID: "123456",
+			Text:   text,
+		})
+		require.NoError(t, err)
+
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+
+		require.GreaterOrEqual(t, len(mockServer.SentMedia), 2, "Both photos must be sent in album")
+		require.Len(t, mockServer.SentMessages, 1, "Text summary must be sent as standalone message")
+		assert.Contains(t, mockServer.SentMessages[0].Text, summary)
+	})
+
+	t.Run("Photo only without text does not send empty text message", func(t *testing.T) {
+		mockServer.mu.Lock()
+		mockServer.SentMessages = nil
+		mockServer.SentMedia = nil
+		mockServer.mu.Unlock()
+
+		text := fmt.Sprintf("![Chỉ có ảnh](%s)", photoPath)
+
+		err := adapter.Send(context.Background(), domain.OutboundMessage{
+			ChatID: "123456",
+			Text:   text,
+		})
+		require.NoError(t, err)
+
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+
+		require.Len(t, mockServer.SentMedia, 1, "Photo must be sent")
+		assert.Equal(t, "Chỉ có ảnh", mockServer.SentMedia[0].Caption)
+		assert.Empty(t, mockServer.SentMessages, "No empty text message should be sent")
 	})
 }

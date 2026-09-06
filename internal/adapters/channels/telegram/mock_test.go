@@ -222,7 +222,7 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 			},
 		})
 
-	case "deleteWebhook", "setWebhook":
+	case "deleteWebhook", "setWebhook", "deleteMessage":
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":     true,

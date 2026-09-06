@@ -79,7 +79,7 @@ and automatically synchronizes capability plugins.`,
 			// Automatically invoke new binary to synchronize updated embedded plugins
 			if !updateSkipPluginsFlag && res.ExecutablePath != "" {
 				fmt.Fprintln(out, "\n📦 Updating capability plugins to match new release...")
-				syncCmd := exec.CommandContext(ctx, res.ExecutablePath, "plugin", "update", "--all")
+				syncCmd := exec.CommandContext(ctx, res.ExecutablePath, "plugin", "update", "--all", "--force")
 				syncCmd.Stdout = out
 				syncCmd.Stderr = cmd.ErrOrStderr()
 				if err := syncCmd.Run(); err != nil {

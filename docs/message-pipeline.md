@@ -138,11 +138,10 @@ To ensure rock-solid rendering, the gateway implements **Telegram HTML Mode (`Pa
 
 ---
 
-### Stage 7: Auto Artifacts Upload & Smart Split Delivery
+### Stage 7: Auto Artifacts Upload & Standalone Text Message Delivery
 1. Compares post-execution snapshot with the pre-execution baseline and inspects the AGY brain directory (`~/.gemini/antigravity/brain/<conv_id>/`).
-2. When newly created files match the artifact whitelist (`.png`, `.jpg`, `.pdf`, `.zip`, `.csv`, `.xlsx`, `exports/*`), the gateway automatically invokes Telegram APIs (`sendPhoto` / `sendDocument`) to deliver them to the chat.
-3. **Smart Split Delivery:**
-   - If an outbound message contains media (photos) alongside message text:
-     - **$\le 1,024$ characters:** Gathers the entire greeting or response text into the `caption` field of the primary photo (formatted with Telegram HTML mode, clamped $\le 1,024$ UTF-16 code units, and falling back to plain text if HTML parsing fails). Redundant, disconnected duplicate text messages are suppressed.
-     - **$> 1,024$ characters:** Sends the photo first with its original alt-text/filename caption (clamped $\le 1,024$), followed immediately by the complete response text delivered via chunked `sendMessage`.
-   - If media upload encounters an error, the text message delivery remains fail-safe so no text is ever dropped.
+2. When newly created files match the artifact whitelist (`.png`, `.jpg`, `.pdf`, `.zip`, `.csv`, `.xlsx`, `exports/*`), the gateway automatically invokes Telegram APIs (`sendPhoto` / `sendDocument` / `sendMediaGroup`) to deliver them to the chat.
+3. **Standalone Text Message Delivery ("Text is Conversation, Media is Attachment"):**
+   - Media attachments (photos, albums, documents) are delivered first so they appear neatly in the chat history. Each media item preserves its own concise alt-text or filename caption (clamped $\le 1,024$ UTF-16 code units with HTML entity fallback).
+   - If the outbound message contains conversational text, it is ALWAYS delivered as a genuine, standalone message bubble (`sendMessage` / streaming edit). This eliminates caption truncation, ensures albums do not obscure conversational responses, and guarantees full markdown formatting up to standard message limits.
+   - If a turn generates only media without conversational text, no empty message is sent, and any streaming placeholder is cleanly deleted.

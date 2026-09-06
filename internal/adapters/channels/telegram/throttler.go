@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
@@ -50,6 +49,7 @@ type StreamSession struct {
 	LastActivity    time.Time
 	WorkspaceDir    string
 	SentMediaPaths  map[string]bool
+	PendingMedia    []domain.Attachment
 
 	Mu              sync.Mutex
 	WakeupChan      chan struct{}
@@ -299,7 +299,6 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 	sess.Dirty = true
 
 	// Filter out any media already sent earlier (e.g. via OnStreamTool instant sync)
-	var allArtifacts []domain.Attachment
 	if sess.SentMediaPaths == nil {
 		sess.SentMediaPaths = make(map[string]bool)
 	}
@@ -307,7 +306,7 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 		normPath := filepath.Clean(filepath.FromSlash(em.FilePath))
 		if !sess.SentMediaPaths[normPath] {
 			em.FilePath = normPath
-			allArtifacts = append(allArtifacts, em)
+			sess.PendingMedia = append(sess.PendingMedia, em)
 			sess.SentMediaPaths[normPath] = true
 		}
 	}
@@ -316,17 +315,6 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 	// Trigger worker to finalize
 	sess.closeWorker()
 	<-sess.WorkerDone
-
-	// Outbound turn artifacts: ONLY upload artifacts explicitly reported by the agent
-	// (Raw filesystem snapshot diffs from p.Artifacts are excluded)
-	if len(allArtifacts) > 0 && dt.mediaMgr != nil {
-		bot := dt.getBot(sess.BotID)
-		go func(targetBot *gotgbot.Bot, chatID, threadID int64, arts []domain.Attachment) {
-			if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, arts, targetBot); err != nil {
-				slog.Error("Failed to upload turn artifacts", "chat_id", chatID, "count", len(arts), "error", err)
-			}
-		}(bot, sess.ChatID, sess.ThreadID, allArtifacts)
-	}
 
 	// Zero-idle cleanup: CompareAndDelete guarantees we do not remove a newer active session
 	dt.sessions.CompareAndDelete(p.SessionKey, sess)
@@ -613,66 +601,51 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	chatID := sess.ChatID
 	threadID := sess.ThreadID
 	convID := sess.ConversationID
+	wsDir := sess.WorkspaceDir
+	pendingMedia := sess.PendingMedia
+	sess.PendingMedia = nil
 	sess.State = StateCompleted
 	sess.Mu.Unlock()
-
-	if strings.TrimSpace(text) == "" {
-		text = "⚠️ [Lượt xử lý hoàn tất nhưng không có nội dung phản hồi. Hãy thử gửi lại câu hỏi hoặc yêu cầu khác.]"
-	}
-
-	wsDir := sess.WorkspaceDir
 
 	// Clean any remaining markdown image references or comments before final dispatch
 	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, wsDir, convID)
 	sess.Mu.Lock()
-	var unuploadedMedia []domain.Attachment
 	for _, em := range extractedMedia {
 		normPath := filepath.Clean(filepath.FromSlash(em.FilePath))
-		if sess.SentMediaPaths == nil || !sess.SentMediaPaths[normPath] {
+		if sess.SentMediaPaths == nil {
+			sess.SentMediaPaths = make(map[string]bool)
+		}
+		if !sess.SentMediaPaths[normPath] {
 			em.FilePath = normPath
-			unuploadedMedia = append(unuploadedMedia, em)
-			if sess.SentMediaPaths == nil {
-				sess.SentMediaPaths = make(map[string]bool)
-			}
+			pendingMedia = append(pendingMedia, em)
 			sess.SentMediaPaths[normPath] = true
 		}
 	}
+	hasSentMedia := len(sess.SentMediaPaths) > 0
 	sess.Mu.Unlock()
 
+	trimmed := strings.TrimSpace(cleanedText)
+	if trimmed == "" {
+		if !hasSentMedia && len(pendingMedia) == 0 {
+			cleanedText = "⚠️ [Lượt xử lý hoàn tất nhưng không có nội dung phản hồi. Hãy thử gửi lại câu hỏi hoặc yêu cầu khác.]"
+		} else {
+			cleanedText = ""
+		}
+	}
+
+	// 1. Deliver media attachments first (synchronously) so photos/albums arrive before the text message
+	if len(pendingMedia) > 0 && dt.mediaMgr != nil {
+		if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), chatID, threadID, pendingMedia, bot); err != nil {
+			slog.Error("Failed to upload turn artifacts from final flush", "chat_id", chatID, "count", len(pendingMedia), "error", err)
+		}
+	}
+
 	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, SafeTelegramMessageLimit)
-
-	// Smart Split Delivery:
-	// If no streaming message was posted yet (msgID == 0) and we have photos to upload:
-	// If cleanedText <= 1024 chars, attach it directly as caption of the first photo.
-	// This avoids creating an empty or disconnected separate text message on Telegram.
-	if msgID == 0 && len(unuploadedMedia) > 0 {
-		trimmedText := strings.TrimSpace(cleanedText)
-		hasPhotos := false
-		photoIdx := -1
-		for idx, m := range unuploadedMedia {
-			ext := strings.ToLower(filepath.Ext(m.FilePath))
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
-				hasPhotos = true
-				if photoIdx == -1 {
-					photoIdx = idx
-				}
-			}
-		}
-		if hasPhotos && photoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 1024 {
-			unuploadedMedia[photoIdx].Caption = trimmedText
-			chunks = nil
-		}
-	}
-
-	if len(unuploadedMedia) > 0 && dt.mediaMgr != nil {
-		go func(targetBot *gotgbot.Bot, cID, tID int64, arts []domain.Attachment) {
-			if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts, targetBot); err != nil {
-				slog.Error("Failed to upload turn artifacts from final flush", "chat_id", cID, "count", len(arts), "error", err)
-			}
-		}(bot, chatID, threadID, unuploadedMedia)
-	}
-
 	if len(chunks) == 0 {
+		// If response only contained images and no text, delete the typing/thinking placeholder message if one was sent
+		if msgID != 0 {
+			_, _ = bot.DeleteMessage(chatID, msgID, nil)
+		}
 		return
 	}
 

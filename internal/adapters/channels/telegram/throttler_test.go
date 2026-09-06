@@ -2,6 +2,9 @@ package telegram
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -848,6 +851,104 @@ func TestThrottler_EditFailure_PreservesForumTopicThreadID(t *testing.T) {
 	mockServer.mu.Lock()
 	assert.Equal(t, int64(7788), mockServer.SentMessages[1].ThreadID, "Fallback message must maintain forum topic ThreadID")
 	assert.Equal(t, "Final answer delivered to forum topic!", mockServer.SentMessages[1].Text)
+	mockServer.mu.Unlock()
+}
+
+// TC-THR-18: Streaming Turn with Media and Standalone Text Message Delivery
+func TestThrottler_MediaAndStandaloneTextMessage(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_18")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	mediaMgr := NewMediaManager(nil, bot)
+	throttler := NewDeliveryThrottler(bot, mediaMgr, 0.2, true)
+	defer throttler.Stop()
+
+	tmpDir := t.TempDir()
+	photoPath := filepath.Join(tmpDir, "chart.png")
+	require.NoError(t, os.WriteFile(photoPath, []byte("fake-photo-binary"), 0644))
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_18",
+		TurnID:         "turn-18",
+	}))
+
+	summary := "Dưới đây là báo cáo tăng trưởng doanh thu."
+	responseText := fmt.Sprintf("%s\n\n![Báo Cáo](%s)", summary, photoPath)
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_18",
+		TurnID:         "turn-18",
+		Status:         "SUCCESS",
+		Response:       responseText,
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMedia) == 1 && len(mockServer.SentMessages) == 1
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, "Báo Cáo", mockServer.SentMedia[0].Caption, "Media should preserve its own caption")
+	assert.Contains(t, mockServer.SentMessages[0].Text, summary, "Text summary must be sent as a standalone text message")
+	mockServer.mu.Unlock()
+}
+
+// TC-THR-19: Streaming Turn Image-Only Does Not Inject Bogus Warning Message
+func TestThrottler_ImageOnlyDoesNotInjectWarning(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_thr_19")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	mediaMgr := NewMediaManager(nil, bot)
+	throttler := NewDeliveryThrottler(bot, mediaMgr, 0.2, true)
+	defer throttler.Stop()
+
+	tmpDir := t.TempDir()
+	photoPath := filepath.Join(tmpDir, "logo.png")
+	require.NoError(t, os.WriteFile(photoPath, []byte("fake-photo-binary"), 0644))
+
+	sessionKey := "telegram:123456:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_19",
+		TurnID:         "turn-19",
+	}))
+
+	// Response has ONLY the image markdown
+	responseText := fmt.Sprintf("![Logo](%s)", photoPath)
+
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_19",
+		TurnID:         "turn-19",
+		Status:         "SUCCESS",
+		Response:       responseText,
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMedia) == 1
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mockServer.mu.Lock()
+	assert.Equal(t, "Logo", mockServer.SentMedia[0].Caption)
+	assert.Empty(t, mockServer.SentMessages, "No warning or empty text message should be sent for image-only turn")
 	mockServer.mu.Unlock()
 }
 

@@ -15,7 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
@@ -599,30 +598,9 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 	}
 
 	textToSend := cleanedText
-	hasPhotos := false
-	primaryPhotoIdx := -1
-	for idx, m := range allMedia {
-		ext := strings.ToLower(filepath.Ext(m.FilePath))
-		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
-			hasPhotos = true
-			if primaryPhotoIdx == -1 {
-				primaryPhotoIdx = idx
-			}
-		}
-	}
 
-	// Smart Split Delivery:
-	// If outbound message contains a photo and cleanedText <= 2000 runes (Zalo caption limit):
-	// Attach the full text as the photo's caption, delivering image + text in a single unified message.
-	// If cleanedText > 2000 runes: photo is sent first, and cleanedText is sent as full text message.
+	// Deliver media attachments first
 	if len(allMedia) > 0 && a.media != nil {
-		trimmedText := strings.TrimSpace(cleanedText)
-		canAttachToPhoto := hasPhotos && primaryPhotoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 2000
-
-		if canAttachToPhoto {
-			allMedia[primaryPhotoIdx].Caption = trimmedText
-		}
-
 		for _, m := range allMedia {
 			outAtt := domain.OutboundAttachment{
 				FilePath: m.FilePath,
@@ -633,9 +611,6 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 			}
 			if err := a.media.SendOutboundAttachment(ctx, msg.ChatID, outAtt, client); err != nil {
 				slog.ErrorContext(ctx, "failed to send Zalo outbound media", "error", err, "chat_id", msg.ChatID, "path", m.FilePath)
-				textToSend = cleanedText
-			} else if canAttachToPhoto {
-				textToSend = ""
 			}
 		}
 	}

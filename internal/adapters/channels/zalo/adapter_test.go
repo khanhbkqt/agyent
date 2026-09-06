@@ -807,7 +807,7 @@ func TestZaloAdapter_Send_EmbeddedMediaAndSmartSplitDelivery(t *testing.T) {
 	require.NoError(t, adapter.Start(ctx, inboundChan))
 	defer adapter.Stop()
 
-	// Case 1: Short text <= 2000 runes with embedded image -> Smart Split Delivery attaches text as photo caption
+	// Case 1: Short text with embedded image -> Media sent with alt-text caption, followed by standalone text message
 	shortMsg := domain.OutboundMessage{
 		ChatID: "chat_1",
 		Text:   "Đây là biểu đồ tăng trưởng doanh số quý 3:\n\n![Biểu đồ](file://" + chartFile + ")\n\nKết quả rất khả quan!",
@@ -819,10 +819,10 @@ func TestZaloAdapter_Send_EmbeddedMediaAndSmartSplitDelivery(t *testing.T) {
 	require.Len(t, sentPhotos, 1)
 	assert.Equal(t, "chat_1", sentPhotos[0].ChatID)
 	assert.Contains(t, sentPhotos[0].Photo, "cdn.example.com")
-	assert.Contains(t, sentPhotos[0].Caption, "Đây là biểu đồ tăng trưởng doanh số quý 3:")
-	assert.Contains(t, sentPhotos[0].Caption, "Kết quả rất khả quan!")
-	assert.NotContains(t, sentPhotos[0].Caption, "![Biểu đồ]")
-	assert.Len(t, sentTexts, 0) // Suppressed separate text delivery!
+	assert.Equal(t, "Biểu đồ", sentPhotos[0].Caption)
+	require.Len(t, sentTexts, 1)
+	assert.Contains(t, sentTexts[0].Text, "Đây là biểu đồ tăng trưởng doanh số quý 3:")
+	assert.Contains(t, sentTexts[0].Text, "Kết quả rất khả quan!")
 	mu.Unlock()
 
 	// Reset slices
