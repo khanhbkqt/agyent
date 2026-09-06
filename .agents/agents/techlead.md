@@ -38,29 +38,61 @@ When evaluating requirements, code, or documentation, resolve conflicts strictly
 
 ## 2. Complete Repository Package Map
 
-```text
-[Inbound Channels: Telegram / Zalo]             [Cobra CLI: cmd/agyent]
-          │                                                │
-          ▼                                                ▼
-internal/adapters/channels                       cmd/agyent/run.go (Composition Root)
-          │                                                │
-          ▼                                                ▼
-internal/core/debouncer ────────► internal/core/engine (Session Locks & Resolvers)
-                                           │
-                                           ▼
-                               internal/core/execution (Authorized Chokepoint)
-                                           │
-          ┌────────────────────────────────┼────────────────────────────────┐
-          ▼                                ▼                                ▼
-internal/core/auth (RBAC)      internal/adapters/security       internal/adapters/harness/agy
-(Default-Deny Policy)          (Turn Registry & IPC Hook)       (Isolated Subprocess Runner)
-                                           │                                │
-                                           ▼                                ▼
-                               internal/adapters/storage/sqlite  internal/core/eventbus (Pub/Sub)
-                               (Dual-Pool CGO-Free)                         │
-                                                                            ▼
-                                                                 internal/adapters/channels
-                                                                 (Delivery Throttlers)
+```mermaid
+flowchart TD
+    subgraph Ingress [1. INGRESS CHANNELS]
+        Telegram[internal/adapters/channels/telegram]
+        Zalo[internal/adapters/channels/zalo]
+    end
+
+    subgraph Composition [COMPOSITION ROOT]
+        Main[cmd/agyent/run.go]
+    end
+
+    subgraph Core [2. APPLICATION CORE]
+        Debouncer[internal/core/debouncer]
+        Engine[internal/core/engine]
+        LockMgr[internal/core/concurrency]
+        Auth[internal/core/auth]
+        ExecSvc[internal/core/execution]
+        EventBus[internal/core/eventbus]
+        Scheduler[internal/core/scheduler]
+    end
+
+    subgraph Adapters [3. ADAPTERS]
+        Storage[internal/adapters/storage/sqlite]
+        Security[internal/adapters/security]
+        Harness[internal/adapters/harness/agy]
+        Plugins[internal/adapters/plugin]
+        Subagents[internal/adapters/subagent]
+        ContextAdp[internal/adapters/context]
+    end
+
+    subgraph Contracts [4. CONTRACTS & MODEL]
+        Ports[internal/core/ports]
+        Domain[internal/core/domain]
+    end
+
+    Main -->|Wires Dependency Graph| Core
+    Main -->|Wires Implementations| Adapters
+
+    Ingress -->|Normalize CanonicalMessage| Debouncer
+    Debouncer -->|Coalesced Message| Engine
+    Engine -->|Acquire Lock| LockMgr
+    Engine -->|Execute Turn| ExecSvc
+
+    ExecSvc -->|Authorize Action/Resource| Auth
+    ExecSvc -->|Register TurnSecurityContext| Security
+    ExecSvc -->|Spawn Process| Harness
+
+    Harness -->|NDJSON Stream Events| EventBus
+    EventBus -->|Throttled Edits| Telegram
+    EventBus -->|Formatted Delivery| Zalo
+
+    Adapters -.->|Implements| Ports
+    Core -.->|Depends On| Ports
+    Ports -.->|Depends On| Domain
+    Core -.->|Operates On| Domain
 ```
 
 ### Layer Ownership & Boundary Rules
@@ -75,70 +107,48 @@ internal/core/auth (RBAC)      internal/adapters/security       internal/adapter
 
 ## 3. End-to-End Runtime Pipeline Flow
 
-```text
-1. INGRESS & ADMISSION (internal/adapters/channels/{telegram,zalo})
-   ├── Normalizes payload to domain.CanonicalMessage
-   ├── Extracts lazy attachment references (InboundAttachmentRef) without immediate disk I/O
-   └── Runs InboundAuthorizer admission checks (sender whitelist, group whitelist)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as User / Chat Channel
+    participant Channel as Channel Adapter (TG/Zalo)
+    participant Debounce as Debouncer
+    participant Engine as Core Engine
+    participant Lock as FIFO LockManager
+    participant Exec as Execution Service
+    participant Policy as Policy Engine (Auth)
+    participant Sec as Security Manager
+    participant AGY as AGY Harness (Runner)
+    participant Bus as EventBus
+    participant DB as SQLite Storage
 
-2. DEBOUNCING & FAST-PATH (internal/core/debouncer)
-   ├── Sliding window (WindowDuration = 2s, MaxWaitDuration = 10s, MaxMessages = 20)
-   ├── Fast-path detection: Slash commands bypass debouncer immediately (0ms delay)
-   └── Coalescer merges text, aggregates attachments, and caps total payload at 1MB
+    User->>Channel: Send message / attachment
+    Channel->>Channel: Normalize to CanonicalMessage & Admission check
+    Channel->>Debounce: Ingest(msg)
+    Note over Debounce: Sliding window (2s), Starvation ceiling (10s), Fast-path for slash commands
+    Debounce->>Engine: HandleDebouncedMessage(coalescedMsg)
 
-3. ORCHESTRATION & SESSION LOCK (internal/core/engine/engine.go)
-   ├── Acquires FIFO Session Lock (LockManager.Acquire) with background typing heartbeat (4s)
-   ├── Registers active turn ID and cancellation context in Engine.activeTurns
-   ├── Resolves Session, Agent Profile, and Workspace Directory (Global vs Project scope)
-   ├── Persists InFlightTurn record in SQLite (status: EXECUTING) for crash resilience
-   └── Provisions workspace security hooks (EnsureWorkspaceHooks)
+    Engine->>Lock: Acquire(sessionKey)
+    Engine->>DB: Record InFlightTurn (status: EXECUTING)
+    Engine->>Engine: Resolve Agent Profile, Context, Directives, MCP servers
+    Engine->>Engine: Deterministic 5-Level Prompt Assembly
 
-4. CONTEXT RESOLUTION & PROMPT BOOTSTRAP (internal/core/engine/bootstrap.go)
-   ├── Deterministic 5-Level Prompt Assembly:
-   │   Level 0: Static system runtime foundation (subagent protocols, link hygiene)
-   │   Level 1: Global directives (IDENTITY.md, SOUL.md, USER.md, MEMORY.md, AGENTS.md)
-   │   Level 2: Workspace directives & active plugin rules
-   │   Level 3: Alphabetically sorted Progressive Skills Index ([AVAILABLE SKILLS INDEX])
-   │   Level 4: Attachments, Temporal Context Tag, Continuity Digest, Daily Memory, User Message
-   └── Continuation turns use ComposeContinuationPrompt (leveraging AGY transcript)
+    Engine->>Exec: ExecuteTurn(principal, req, sessionKey, isStreaming)
+    Exec->>Policy: Authorize(principal, action, resource)
+    Policy-->>Exec: Allow (or Fail-Closed Deny)
+    Exec->>Sec: RegisterActiveTurn(TurnSecurityContext with AGYENT_TURN_ID)
 
-5. MCP SERVER MOUNTING & EXCLUSIVE LEASE (internal/adapters/plugin/mcp_syncer.go)
-   ├── Acquires exclusive turn lock (mcp_config.json.turn.lock)
-   ├── Mounts ephemeral servers (__agyent_ephemeral_<hash>_<name>) with APIS-4D env vars
-   └── Deferred unmount upon turn completion
+    Exec->>AGY: ExecuteStream(req with APIS-4D Env)
+    loop Stream NDJSON Lines
+        AGY->>Bus: SyncEmit(StreamDelta / StreamTool / StreamResult)
+        Bus->>Channel: DeliveryThrottler edits chat (1.5s ticker)
+    end
 
-6. PARAMETER RESOLUTION & 5-TIER PRECEDENCE (internal/core/engine/resolver.go)
-   ├── Tier 1: Per-turn explicit override (/ask flags)
-   ├── Tier 2: Session override (session.ActiveModel, session.ActiveEffort)
-   ├── Tier 3: Agent default (agent.DefaultModel, agent.DefaultEffort)
-   ├── Tier 4: Global gateway config (cfg.AGY.DefaultModel, cfg.AGY.DefaultEffort)
-   └── Tier 5: domain.NormalizeModelAndEffort capability clamping
-
-7. AUTHORIZED EXECUTION CHOKEPOINT (internal/core/execution/service.go)
-   ├── PolicyEngine.Authorize (RBAC Default-Deny)
-   ├── Viewer role clamped to req.Mode = "plan"
-   ├── DangerouslySkipPermissions stripped for non-SuperAdmins and background tasks
-   ├── Generates Turn ID (turn-<uuid>), registers TurnSecurityContext with SecurityManager
-   ├── Spawns AGY subprocess (--project outside-of-project --add-dir <workspace>)
-   ├── Injects APIS-4D environment:
-   │   AGYENT_AGENT_WORKSPACE, AGYENT_AGENT_NAME, AGYENT_SESSION_KEY, AGYENT_USER_ID, AGYENT_TURN_ID
-   └── Auto-recovers from model effort rejections via domain.IsEffortError single retry
-
-8. STREAMING & REAL-TIME EVENTBUS (internal/adapters/harness/agy/stream_parser.go)
-   ├── StreamParser reads NDJSON lines -> maps to EventStreamDelta, EventStreamTool, EventStreamResult
-   ├── Emits synchronously via EventBus.SyncEmit
-   ├── Telegram DeliveryThrottler:
-   │   • Initial token delivered sub-second (<1.0s)
-   │   • Edits throttled via 1.5s ticker
-   │   • SafeTelegramMessageLimit = 3200 runes (preserves ``` code block fences across chunks)
-   └── Zalo Adapter: Accumulates tokens + typing indicator -> delivers chunked (1890 runes, 500ms delay)
-
-9. TURN COMPLETION & POST-PROCESSING
-   ├── Extracts outbound artifacts (ExtractAndCleanOutboundMedia) -> uploads media groups/docs
-   ├── Authoritative audit record written to SQLite audit_logs
-   ├── If input tokens > 70% of context window -> triggers CompactSessionContext
-   ├── InFlightTurn updated to COMPLETED in SQLite
-   └── Unregisters TurnSecurityContext, unmounts MCP servers, releases FIFO session lock
+    Exec->>DB: LogAudit(telemetry, token_usage, status)
+    Exec->>Sec: UnregisterTurnByID(turnID)
+    Engine->>DB: Update InFlightTurn (status: COMPLETED)
+    Engine->>Lock: Release FIFO Session Lock
+    Channel-->>User: Final message with artifacts
 ```
 
 ---

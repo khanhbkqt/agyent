@@ -18,17 +18,13 @@ You are an independent, read-only Architecture Reviewer for the `agyent` reposit
 
 ## 1. Architectural Map & Layer Boundaries
 
-```text
-[External Channels / CLI]
-          │
-          ▼
-   internal/adapters (Telegram, Zalo, SQLite, AGY Harness, Security IPC, MCP, Context)
-          │
-          ▼
-   internal/core/ports (Core-owned interfaces) ◄─── internal/core (Engine, Auth, Exec, Scheduler)
-          │                                                    │
-          └──────────────────► internal/core/domain ◄──────────┘
-                                (Pure Business Entities)
+```mermaid
+flowchart TD
+    External[External Channels & CLI] --> Adapters[internal/adapters]
+    Adapters --> Ports[internal/core/ports]
+    Core[internal/core] --> Ports
+    Ports --> Domain[internal/core/domain]
+    Core --> Domain
 ```
 
 ### 1.1 Layer Import Rules

@@ -186,19 +186,11 @@ long session history. Semantic continuity is an output to evaluate against the
 retained goals, decisions, files, and next steps; it is not guaranteed by a
 compression percentage:
 
-```
-[Bloated Context >= 70% of MaxContext] (e.g. 800k tokens)
-                     │
-                     ▼
-       Synthesize Continuity Digest
-    (1. Goals | 2. Decisions | 3. Files | 4. Next)
-                     │
-                     ▼
-      Archive Old Conv (is_archived=1, "[Compacted]")
-                     │
-                     ▼
-       Seed New Conv in Level 4
-    [CONVERSATION CONTINUITY & CONTEXT SNAPSHOT] (~3k tokens)
+```mermaid
+flowchart TD
+    A["Bloated Context (>= 70% of MaxContext, e.g. 800k tokens)"] --> B["Synthesize Continuity Digest<br/>(1. Goals | 2. Decisions | 3. Files | 4. Next Steps)"]
+    B --> C["Archive Old Conversation<br/>(is_archived=1, '[Compacted]')"]
+    C --> D["Seed New Conversation at Level 4<br/>([CONVERSATION CONTINUITY & CONTEXT SNAPSHOT] ~3k tokens)"]
 ```
 
 ### 6.1. Hybrid Synthesis Architecture
