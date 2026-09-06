@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.40] - 2026-09-06
+
+### Added
+- **Parent Agent & Creator Permission Inheritance for Scheduled Tasks (`scheduler`, `security`, `engine`):**
+  - **Delegated User Principal:** Scheduled and background cron turns inherit the task creator's identity (`domain.PrincipalUser`, `Provider: task.Channel`, `SubjectID: task.CreatedBy`, `AccountID: task.AgentName`), resolving agent persona security presets and workspace boundaries.
+  - **Channel-Routable Session Keys:** Constructed channel session keys (`domain.FormatSessionKey`) for cron turns, enabling synchronous and interactive HITL approval cards to route directly to the creator's Telegram chat.
+  - **Quality Assertion against False-Positive Completion:** Guarded `TaskExecutor.ExecuteSchedule` against silent failures by asserting non-empty output, checking for soft-deny refusal patterns, and validating generated media artifacts before marking tasks as `COMPLETED`.
+- **Multi-Tier HITL Approval & Smart Base Binary Extraction (`security`, `channels/telegram`, `engine`):**
+  - **3-Tier Interactive Telegram Card:** Rendered approval hierarchy: `[ ✅ Allow Once ]`, `[ 🛡️ Allow Command (<base>) ]`, `[ 🔓 Allow All (Session) ]`, `[ ❌ Deny ]`, and `[ 🛑 Force Kill Agent ]`.
+  - **Smart Base Command Matching:** Implemented `domain.ExtractBaseCommand` to dynamically parse shell command strings, environments, absolute/relative paths, and pipelines, extracting base binaries (e.g. `python3`, `node`, `git`, `curl`) for prefix matching.
+  - **Session-Lifecycle-Bound Grants:** Bound session permissions to the active session lifecycle rather than arbitrary TTL timers, automatically invalidating grants upon session resets (`/reset`, `/new`, `/clear`, `/c switch`), agent switches (`/a use`), project switches (`/p use`), and cron turn completions.
+  - **Hard Guardrails Invariance:** Core system protections (anti-self-escalation, `agyent.db` protection, `pkill agyent`, forbidden system paths) are strictly evaluated prior to session grant matching, ensuring wildcard `*` never bypasses system security.
+
+---
+
 ## [1.0.39] - 2026-09-06
 
 ### Fixed
