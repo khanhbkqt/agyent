@@ -161,3 +161,84 @@ func TestParseNumericID_StableForOpaqueProviderIDs(t *testing.T) {
 	assert.Equal(t, zalo.ParseNumericID("bot_opaque_id"), zalo.ParseNumericID("bot_opaque_id"))
 	assert.NotEqual(t, zalo.ParseNumericID("bot_opaque_id"), zalo.ParseNumericID("another_bot"))
 }
+
+func TestZaloClient_GetUpdates_ArrayAndObject(t *testing.T) {
+	tests := []struct {
+		name          string
+		jsonResult    string
+		expectedCount int
+		expectedID    int64
+	}{
+		{
+			name: "array with multiple updates",
+			jsonResult: `[
+				{"update_id": 101, "message": {"message_id": "m1", "text": "first"}},
+				{"update_id": 102, "message": {"message_id": "m2", "text": "second"}}
+			]`,
+			expectedCount: 2,
+			expectedID:    101,
+		},
+		{
+			name: "single object update (Zalo server quirk)",
+			jsonResult: `{
+				"update_id": 201,
+				"message": {"message_id": "m201", "text": "single update object"}
+			}`,
+			expectedCount: 1,
+			expectedID:    201,
+		},
+		{
+			name:          "empty object returns empty slice",
+			jsonResult:    `{}`,
+			expectedCount: 0,
+		},
+		{
+			name:          "empty array returns empty slice",
+			jsonResult:    `[]`,
+			expectedCount: 0,
+		},
+		{
+			name:          "null result returns empty slice",
+			jsonResult:    `null`,
+			expectedCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/bottoken/getUpdates", r.URL.Path)
+				resp := zalo.APIResponse{
+					OK:     true,
+					Result: json.RawMessage(tt.jsonResult),
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer ts.Close()
+
+			client := zalo.NewClient("token", ts.URL, ts.Client())
+			updates, err := client.GetUpdates(context.Background(), 0, 50, 10)
+			require.NoError(t, err)
+			assert.Len(t, updates, tt.expectedCount)
+			if tt.expectedCount > 0 {
+				assert.Equal(t, tt.expectedID, updates[0].UpdateID)
+			}
+		})
+	}
+}
+
+func TestZaloClient_GetUpdates_InvalidFormat(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := zalo.APIResponse{
+			OK:     true,
+			Result: json.RawMessage(`"just a string"`),
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	client := zalo.NewClient("token", ts.URL, ts.Client())
+	_, err := client.GetUpdates(context.Background(), 0, 50, 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected JSON format")
+}

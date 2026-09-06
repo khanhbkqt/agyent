@@ -249,12 +249,37 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, limit int, timeou
 		"limit":   limit,
 		"timeout": timeoutSec,
 	}
-	var updates []ZaloUpdate
-	err := c.executeRequest(ctx, "getUpdates", payload, &updates)
+	var raw json.RawMessage
+	err := c.executeRequest(ctx, "getUpdates", payload, &raw)
 	if err != nil {
 		return nil, err
 	}
-	return updates, nil
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+
+	if trimmed[0] == '{' {
+		var update ZaloUpdate
+		if err := json.Unmarshal(trimmed, &update); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal Zalo update object: %w", err)
+		}
+		if update.UpdateID == 0 && update.Message == nil && update.Event == "" {
+			return nil, nil
+		}
+		return []ZaloUpdate{update}, nil
+	}
+
+	if trimmed[0] == '[' {
+		var updates []ZaloUpdate
+		if err := json.Unmarshal(trimmed, &updates); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal Zalo update array: %w", err)
+		}
+		return updates, nil
+	}
+
+	return nil, fmt.Errorf("unexpected JSON format for getUpdates: %s", string(trimmed))
 }
 
 // uploadMultipart handles multipart file upload (photos, documents) with retry.
