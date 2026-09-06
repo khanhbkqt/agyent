@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.31] - 2026-09-06
+
+### Fixed
+- **Zalo Outbound Multi-Bot Routing & Fallback Resolution (`channels/zalo`):**
+  - Resolved outbound message delivery failure where bot client lookup failed when session keys or numeric Bot IDs were used (e.g. `zalo:4293721026991223652:zgr-...`).
+  - Implemented `resolveClientEx` with prioritized multi-stage resolution across agent persona name, bot ID string, numeric bot ID, session key, and graceful fallback to primary/default/active bot client pool to ensure messages are never dropped.
+  - Automatically registered numeric Bot ID prefixes from tokens (`<botID>:<secret>`) and agent bindings (`bind_agent`) into bot lookup maps during adapter startup and authenticated update polling.
+- **Strict Zalo Bot Platform Message Formatting (`channels/zalo`):**
+  - Added `FormatToZaloMarkdown` for automatic outbound text normalization conforming strictly to Zalo Bot specifications.
+  - Bullet list conversion (`- item`, `* item` to `• item`).
+  - Strict italics (`_text_`), strikethrough (`~~text~~`), underline (`{underline}text{/underline}`), big text (`{big}text{/big}`), and named color tags (`{red}`, `{green}`, `{yellow}`, `{orange}`).
+  - Automatic Markdown hyperlink normalization (`[Title](url)` to `Title (url)`) ensuring links are directly clickable in Zalo chat bubbles.
+  - Markdown horizontal divider conversion (`---` to `────────────────────────`).
+  - Full protection for multiline code blocks and inline code snippets preventing accidental style corruption.
+
+---
+
 ## [1.0.30] - 2026-09-06
 
 ### Fixed
