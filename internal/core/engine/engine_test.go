@@ -1837,4 +1837,43 @@ func TestEngine_ContextTag_OmittedForZalo(t *testing.T) {
 	assert.Contains(t, sent[1].Text, "🌐 [agyent • Global]")
 }
 
+func TestEngine_ExecuteTurn_LongResponseDeliveredIntact(t *testing.T) {
+	eng, runner, channel, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	longResponse := strings.Repeat("Detailed multi-line report and code analysis block.\n", 200)
+	assert.Greater(t, len(longResponse), 5000)
+
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-long-123",
+			ResponseText:   longResponse,
+			DurationSec:    1.2,
+			Usage:          domain.TokenUsage{InputTokens: 100, OutputTokens: 1500, TotalTokens: 1600},
+		}, nil
+	})
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-long-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "stevan"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Please provide the detailed report",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	sent := channel.GetSentMessages()
+	require.Len(t, sent, 1)
+	assert.Equal(t, longResponse, sent[0].Text, "Outbound response text must be delivered 100% intact without any in-memory truncation")
+	assert.NotContains(t, sent[0].Text, "Output truncated:")
+}
+
+
 

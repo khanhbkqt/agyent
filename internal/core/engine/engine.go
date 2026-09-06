@@ -1145,8 +1145,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 
 		if execErr == nil && execResult != nil && execResult.Success {
-			// In-Memory Tool Output Pruning on response text if oversized
-			responseText := PruneToolOutput(execResult.ResponseText)
+			responseText := execResult.ResponseText
 			if (msg.Chat.Type != "private" || isEphemeral) && msg.Channel != "zalo" {
 				responseText = fmt.Sprintf("%s\n\n%s", contextTag, responseText)
 			}

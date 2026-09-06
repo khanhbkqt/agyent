@@ -759,7 +759,7 @@ func (e *Engine) handleContextCommand(ctx context.Context, session *domain.Sessi
 • **Active Skills (Progressive Index):** %d skills
 • **Active Plugins:** %d plugins
 • **Active MCP Servers:** %d servers
-• **Pruning Policy:** Head-Tail Sandwich (Max: 2000 chars)
+• **Context Management:** Native AGY Substrate
 • **Pre-Compaction Flush:** Enabled (Threshold: 75%%)`,
 		session.ActiveAgent,
 		scopeLabel,

@@ -416,7 +416,7 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 
 	// In non-streaming mode (or if channel is non-telegram where throttler didn't deliver stream), deliver final message
 	if res != nil && e.channel != nil && (!isStream || turn.Channel != "telegram") {
-		responseText := PruneToolOutput(res.ResponseText)
+		responseText := res.ResponseText
 		_ = e.channel.Send(ctx, domain.OutboundMessage{
 			Channel:          turn.Channel,
 			BotID:            turn.BotID,

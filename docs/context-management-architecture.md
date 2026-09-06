@@ -19,7 +19,7 @@ In autonomous personal AI assistant systems, the Context Window is the most crit
 2. **Deterministic Precedence & Override Hierarchy:** Explicit merge precedence rules when conflicts arise:
    $$\text{System Foundation} \rightarrow \text{Workspace Project} > \text{Global Config} > \text{Built-in Engine Defaults}$$
 3. **Zero Context Leakage:** When switching projects, all Workspace MCP tools and skills from the previous project are unmounted/released immediately, eliminating cross-project hallucinations and data contamination.
-4. **Progressive Disclosure & Lifecycle Pruning:** Injects only lightweight skill headers (~60 tokens/skill) into the prompt index; automatically prunes excessive tool execution outputs to preserve token budget.
+4. **Progressive Disclosure & Native Substrate Lifecycle:** Injects only lightweight skill headers (~60 tokens/skill) into the prompt index; delegates tool execution buffers and conversation context window management natively to the AGY CLI substrate without mutating or truncating user-facing agent responses.
 
 ---
 
@@ -47,7 +47,6 @@ flowchart TB
         Scanner["Context Scanner (Global + Project Directory Traversal)"]
         Merger["Capability Merger & Conflict Deduplicator"]
         MCPMounter["Dynamic Workspace MCP Mounter / Syncer"]
-        Pruner["In-Memory Tool Pruner & Token Budgeter"]
         PromptComp["Prompt Assembler & Directives Formatter"]
     end
 
@@ -57,7 +56,7 @@ flowchart TB
 
     GlobalBase --> Scanner
     WorkspaceOverlay --> Scanner
-    Scanner --> Merger --> MCPMounter --> Pruner --> PromptComp --> LLMContext
+    Scanner --> Merger --> MCPMounter --> PromptComp --> LLMContext
 ```
 
 ---
@@ -80,8 +79,6 @@ Drawing inspiration from OpenClaw's Cognitive OS design, `agyent` implements 3 a
 ```mermaid
 stateDiagram-v2
     [*] --> ActiveMonitoring: Token Budget < 75%
-    ActiveMonitoring --> InMemoryPruning: Tool stdout/stderr > 2000 chars
-    InMemoryPruning --> ActiveMonitoring: Raw output truncated, signature kept
     
     ActiveMonitoring --> PreCompactionFlush: Token Budget >= 75% Soft Limit
     state PreCompactionFlush {
@@ -101,7 +98,7 @@ stateDiagram-v2
     Compaction --> ActiveMonitoring: Context Fresh & Drift-Free
 ```
 
-1. **In-Memory Tool Result Pruning:** Automatically truncates large terminal and log outputs (> 2000 characters) in memory after the turn completes, preserving signatures and status while protecting user conversation history.
+1. **Native Substrate Tool & Context Lifecycle:** Tool output buffers, error formatting, and context window limits are handled natively by the AGY CLI substrate in its conversation brain. Outbound agent responses are delivered 100% intact to users without artificial gateway truncation.
 2. **Two-Tier Memory Structure:** Clearly separates Durable Memory (`MEMORY.md`) from Daily Episodic Logs (`memory/YYYY-MM-DD.md`).
 3. **Agent Self-Learning & Evolution ([Architecture Details](agent-self-learning-and-evolution-architecture.md)):** Autonomous reflection, feedback sentiment sensing, and persistent memory updates are managed by the self-learning subsystem.
 4. **Pre-Compaction Silent Memory Flush:** When context approaches 75% of window capacity, the engine triggers a background turn asking the agent to extract critical facts/decisions into `MEMORY.md` prior to compaction.

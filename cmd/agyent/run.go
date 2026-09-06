@@ -150,7 +150,14 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 			} else {
 				mainLogger.Debug("Synced agent profile to SQLite", "agent", name, "is_public", agentRecord.IsPublic, "preset", agentRecord.SecurityPreset)
 			}
+
+			// Provision Workspace Hooks & AGY Project Grants for this agent
+			if ws != "" {
+				_, _ = securityAdapter.EnsureWorkspaceHooksProvisioned(ws, "", mainLogger)
+			}
+			_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-"+name, name, mainLogger)
 		}
+		_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-agyent", "agyent", mainLogger)
 
 		// 2. Initialize Central EventBus
 		bus := eventbus.NewEventBus(1024, 4)

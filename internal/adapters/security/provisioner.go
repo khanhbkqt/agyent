@@ -196,3 +196,96 @@ func RemoveGlobalHooks(logger *slog.Logger) error {
 
 	return nil
 }
+
+// AGYProjectConfig represents the JSON structure of an AGY project in ~/.gemini/config/projects/<id>.json
+type AGYProjectConfig struct {
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	PermissionGrants AGYPermissionGrantsObj `json:"permissionGrants"`
+	UpdatedAt        string                 `json:"updatedAt,omitempty"`
+}
+
+// AGYPermissionGrantsObj wraps the nested permissionGrants object.
+type AGYPermissionGrantsObj struct {
+	PermissionGrants AGYAllowList `json:"permissionGrants"`
+}
+
+// AGYAllowList holds the list of allowed tool patterns.
+type AGYAllowList struct {
+	Allow []string `json:"allow"`
+}
+
+// EnsureAGYProjectProvisioned guarantees that ~/.gemini/config/projects/<projectID>.json exists
+// with native AGY permission grants so that headless tool calls are admitted to the PreToolUse hook.
+func EnsureAGYProjectProvisioned(projectID, agentName string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if projectID == "" {
+		return fmt.Errorf("projectID cannot be empty")
+	}
+
+	projectsDir, err := config.ExpandPath("~/.gemini/config/projects")
+	if err != nil {
+		return fmt.Errorf("failed to resolve gemini projects dir: %w", err)
+	}
+
+	if err := os.MkdirAll(projectsDir, 0700); err != nil {
+		return fmt.Errorf("failed to create gemini projects dir %s: %w", projectsDir, err)
+	}
+
+	projFilePath := filepath.Join(projectsDir, fmt.Sprintf("%s.json", projectID))
+
+	// Check if already exists and has permissionGrants
+	if data, err := os.ReadFile(projFilePath); err == nil {
+		var cfg AGYProjectConfig
+		if err := json.Unmarshal(data, &cfg); err == nil && len(cfg.PermissionGrants.PermissionGrants.Allow) > 0 {
+			return nil
+		}
+	}
+
+	name := agentName
+	if name == "" {
+		name = projectID
+	}
+
+	projConfig := AGYProjectConfig{
+		ID:   projectID,
+		Name: name,
+		PermissionGrants: AGYPermissionGrantsObj{
+			PermissionGrants: AGYAllowList{
+				Allow: []string{
+					"command(*)",
+					"read_file(*)",
+					"write_file(*)",
+					"edit_file(*)",
+					"list_dir(*)",
+					"read_url(*)",
+					"view_file(*)",
+					"grep_search(*)",
+					"find_by_name(*)",
+					"generate_image(*)",
+				},
+			},
+		},
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	data, err := json.MarshalIndent(projConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal project config: %w", err)
+	}
+
+	tmpFile := fmt.Sprintf("%s.tmp.%d.%d", projFilePath, os.Getpid(), time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+		return fmt.Errorf("failed to write tmp project file %s: %w", tmpFile, err)
+	}
+
+	if err := os.Rename(tmpFile, projFilePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("failed to atomically replace %s: %w", projFilePath, err)
+	}
+
+	logger.Debug("Provisioned AGY project configuration", "project_id", projectID, "path", projFilePath)
+	return nil
+}
