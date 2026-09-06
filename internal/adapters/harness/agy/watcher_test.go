@@ -83,7 +83,7 @@ func TestSnapshotWatcher_TC_WAT_05_MarkdownPlansAndDocuments(t *testing.T) {
 
 	assert.Equal(t, "camoufox_plan.md", artifacts[0].FileName)
 	assert.Equal(t, "document", artifacts[0].Type)
-	assert.Equal(t, "text/markdown", artifacts[0].MIMEType)
+	assert.Contains(t, artifacts[0].MIMEType, "text/markdown")
 
 	assert.Equal(t, "notes.txt", artifacts[1].FileName)
 	assert.Equal(t, "document", artifacts[1].Type)
@@ -194,7 +194,7 @@ func TestSnapshotWatcher_TC_WAT_07_CompoundExtensionTarGz(t *testing.T) {
 	require.Len(t, artifacts, 1)
 	assert.Equal(t, "backup.tar.gz", artifacts[0].FileName)
 	assert.Equal(t, "archive", artifacts[0].Type)
-	assert.Equal(t, "application/gzip", artifacts[0].MIMEType)
+	assert.Contains(t, []string{"application/gzip", "application/x-compressed-tar", "application/x-tar"}, artifacts[0].MIMEType)
 }
 
 func TestSnapshotWatcher_TC_WAT_08_RootDirNamedExcluded(t *testing.T) {

@@ -5,7 +5,7 @@ Provides clean, structured, and token-optimized extraction from modern websites.
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from core.browser_manager import BrowserManager
 from perception.readability_cleaner import dismiss_cookie_banners, extract_clean_markdown

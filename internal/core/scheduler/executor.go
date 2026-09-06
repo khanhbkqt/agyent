@@ -21,6 +21,8 @@ type TaskExecutor struct {
 	securityManager  ports.SecurityManagerPort
 	workspace        ports.WorkspacePort
 	eventBus         ports.EventBusPort
+	pluginManager    ports.PluginManagerPort
+	mcpRegistry      ports.MCPRegistryPort
 	logger           *slog.Logger
 }
 
@@ -54,6 +56,16 @@ func (e *TaskExecutor) SetSecurityManager(sec ports.SecurityManagerPort) {
 	e.securityManager = sec
 }
 
+// SetPluginManager injects the plugin manager into the TaskExecutor.
+func (e *TaskExecutor) SetPluginManager(pm ports.PluginManagerPort) {
+	e.pluginManager = pm
+}
+
+// SetMCPRegistry injects the MCP registry syncer into the TaskExecutor.
+func (e *TaskExecutor) SetMCPRegistry(mcp ports.MCPRegistryPort) {
+	e.mcpRegistry = mcp
+}
+
 // ExecuteSchedule runs a single scheduled task in an isolated, non-blocking session turn.
 func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.ScheduleTask) (*domain.ExecutionResult, error) {
 	agentWS := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, task.AgentName)
@@ -72,9 +84,45 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		}
 	}
 
-	// Invalidate session grants when the background turn execution finishes
+	// Invalidate session grants and ensure workspace security hooks
 	if e.securityManager != nil {
 		defer e.securityManager.ClearSessionGrants(sessionKey)
+		_ = e.securityManager.EnsureWorkspaceHooks(agentWS)
+	}
+
+	// Dynamic MCP mounting for this scheduled turn
+	if e.pluginManager != nil && e.mcpRegistry != nil {
+		resolvedCtx, err := e.pluginManager.AssembleActivePlugins(ctx, "", agentWS)
+		if err == nil && resolvedCtx != nil && len(resolvedCtx.ActiveMCPServers) > 0 {
+			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx)
+			if leaseErr == nil {
+				defer releaseLease()
+				activeServers := make([]domain.MCPServerConfig, len(resolvedCtx.ActiveMCPServers))
+				copy(activeServers, resolvedCtx.ActiveMCPServers)
+				for i := range activeServers {
+					if activeServers[i].Env == nil {
+						activeServers[i].Env = make(map[string]string)
+					}
+					if _, exists := activeServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
+						activeServers[i].Env["AGYENT_AGENT_NAME"] = task.AgentName
+					}
+					if _, exists := activeServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
+						activeServers[i].Env["AGYENT_AGENT_WORKSPACE"] = agentWS
+					}
+					if _, exists := activeServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
+						activeServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+					}
+					if _, exists := activeServers[i].Env["AGYENT_USER_ID"]; !exists {
+						activeServers[i].Env["AGYENT_USER_ID"] = task.CreatedBy
+					}
+				}
+				if mountErr := e.mcpRegistry.MountServers(ctx, sessionKey, activeServers); mountErr == nil {
+					defer func() {
+						_ = e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeServers)
+					}()
+				}
+			}
+		}
 	}
 
 	timeout := 1800 * time.Second
@@ -101,6 +149,11 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	promptText := formatBackgroundPrompt(task.Title, task.Prompt)
 	model, effort := e.resolveModelAndEffort(task.AgentName)
 
+	skipPerms := false
+	if e.cfg != nil && e.cfg.AGY.DangerouslySkipPermissions {
+		skipPerms = true
+	}
+
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
 		ConversationID:             "", // Fresh stateless turn: prevents transcript accumulation
@@ -110,7 +163,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		Model:                      model,
 		Effort:                     effort,
 		Mode:                       "accept-edits",
-		DangerouslySkipPermissions: false,
+		DangerouslySkipPermissions: skipPerms,
 		AgentName:                  task.AgentName,
 		SessionKey:                 sessionKey,
 		UserID:                     task.CreatedBy,
@@ -133,9 +186,16 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		// Delegated User Principal: Inherit identity of task creator + agent persona
 		var principal domain.Principal
 		if task.CreatedBy != "" && task.CreatedBy != "system" {
+			provider := task.Channel
+			if provider == "" && strings.Contains(sessionKey, ":") {
+				provider = strings.Split(sessionKey, ":")[0]
+			}
+			if provider == "" {
+				provider = "telegram"
+			}
 			principal = domain.Principal{
 				Kind:      domain.PrincipalUser,
-				Provider:  task.Channel,
+				Provider:  provider,
 				SubjectID: task.CreatedBy,
 				AccountID: task.AgentName,
 			}
@@ -231,9 +291,42 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		}
 	}
 
-	// Invalidate session grants when the background turn execution finishes
+	// Invalidate session grants and ensure workspace security hooks
 	if e.securityManager != nil {
 		defer e.securityManager.ClearSessionGrants(sessionKey)
+		_ = e.securityManager.EnsureWorkspaceHooks(agentWS)
+	}
+
+	// Dynamic MCP mounting for this heartbeat turn
+	if e.pluginManager != nil && e.mcpRegistry != nil {
+		resolvedCtx, err := e.pluginManager.AssembleActivePlugins(ctx, "", agentWS)
+		if err == nil && resolvedCtx != nil && len(resolvedCtx.ActiveMCPServers) > 0 {
+			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx)
+			if leaseErr == nil {
+				defer releaseLease()
+				activeServers := make([]domain.MCPServerConfig, len(resolvedCtx.ActiveMCPServers))
+				copy(activeServers, resolvedCtx.ActiveMCPServers)
+				for i := range activeServers {
+					if activeServers[i].Env == nil {
+						activeServers[i].Env = make(map[string]string)
+					}
+					if _, exists := activeServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
+						activeServers[i].Env["AGYENT_AGENT_NAME"] = hb.AgentName
+					}
+					if _, exists := activeServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
+						activeServers[i].Env["AGYENT_AGENT_WORKSPACE"] = agentWS
+					}
+					if _, exists := activeServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
+						activeServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+					}
+				}
+				if mountErr := e.mcpRegistry.MountServers(ctx, sessionKey, activeServers); mountErr == nil {
+					defer func() {
+						_ = e.mcpRegistry.UnmountServers(context.Background(), sessionKey, activeServers)
+					}()
+				}
+			}
+		}
 	}
 
 	var promptDirectives string
@@ -263,6 +356,11 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	promptText := formatHeartbeatPrompt(hb.AgentName, promptDirectives)
 	model, effort := e.resolveModelAndEffort(hb.AgentName)
 
+	skipPerms := false
+	if e.cfg != nil && e.cfg.AGY.DangerouslySkipPermissions {
+		skipPerms = true
+	}
+
 	req := domain.ExecutionRequest{
 		Prompt:                     promptText,
 		ConversationID:             "", // Fresh turn
@@ -272,7 +370,7 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		Model:                      model,
 		Effort:                     effort,
 		Mode:                       "accept-edits",
-		DangerouslySkipPermissions: false,
+		DangerouslySkipPermissions: skipPerms,
 		AgentName:                  hb.AgentName,
 		SessionKey:                 sessionKey,
 		UserID:                     "",

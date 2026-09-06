@@ -6,7 +6,7 @@ Prevents detection by Datadome, Cloudflare Turnstile, PerimeterX, and Kasada.
 import math
 import random
 import time
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 def _bezier_point(

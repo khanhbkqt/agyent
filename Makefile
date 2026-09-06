@@ -76,10 +76,15 @@ release: cross-compile
 	tar -czf dist/archives/agyent-v$(VERSION)-linux-arm64.tar.gz -C dist/agyent-linux-arm64 .
 	tar -czf dist/archives/agyent-v$(VERSION)-darwin-amd64.tar.gz -C dist/agyent-darwin-amd64 .
 	tar -czf dist/archives/agyent-v$(VERSION)-darwin-arm64.tar.gz -C dist/agyent-darwin-arm64 .
-	zip -j dist/archives/agyent-v$(VERSION)-windows-amd64.zip dist/agyent-windows-amd64/*
-	zip -j dist/archives/agyent-v$(VERSION)-windows-arm64.zip dist/agyent-windows-arm64/*
+	@if command -v zip >/dev/null 2>&1; then \
+		zip -j dist/archives/agyent-v$(VERSION)-windows-amd64.zip dist/agyent-windows-amd64/*; \
+		zip -j dist/archives/agyent-v$(VERSION)-windows-arm64.zip dist/agyent-windows-arm64/*; \
+	else \
+		python3 -c "import zipfile, glob, os, sys; z = zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED); [z.write(f, os.path.basename(f)) for f in glob.glob(sys.argv[2] + '/*') if os.path.isfile(f)]; z.close()" dist/archives/agyent-v$(VERSION)-windows-amd64.zip dist/agyent-windows-amd64; \
+		python3 -c "import zipfile, glob, os, sys; z = zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED); [z.write(f, os.path.basename(f)) for f in glob.glob(sys.argv[2] + '/*') if os.path.isfile(f)]; z.close()" dist/archives/agyent-v$(VERSION)-windows-arm64.zip dist/agyent-windows-arm64; \
+	fi
 	@echo "==> Generating SHA256 Checksums..."
-	cd dist/archives && sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt 2>/dev/null || true
+	cd dist/archives && rm -f checksums.txt && (sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt 2>/dev/null || true)
 	@echo "==> Release packaging complete in dist/archives/ directory:"
 	ls -la dist/archives/ 2>/dev/null || true
 

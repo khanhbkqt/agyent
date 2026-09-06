@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.41] - 2026-09-06
+
+### Fixed
+- **Scheduler Ephemeral MCP Mounting, Permission Bypass & Security Hooks (`scheduler`, `security`, `cmd`):**
+  - **Dynamic Ephemeral MCP Plugin Mounting:** Injected `PluginManagerPort` and `MCPRegistryPort` into `TaskExecutor` and `Scheduler`, dynamically mounting active MCP servers (such as `browser-camoufox`, `scheduler`, `database-sqlite`, `subagent-dispatcher`) and acquiring turn leases before scheduled turn execution.
+  - **Automatic Security Hook Provisioning:** Ensured workspace security hooks (`.agents/hooks.json`) are automatically provisioned before background scheduled tasks and heartbeats execute.
+  - **Creator Privilege & DangerouslySkipPermissions Inheritance:** Propagated `e.cfg.AGY.DangerouslySkipPermissions` to scheduled turns created by SuperAdmins and resolved principal providers from channel session keys, eliminating headless stdin approval blocking on privileged tools (`run_command`, browser execution).
+  - **Browser Camoufox Typing Imports:** Fixed missing `Union` and `Optional` typing imports in `builtin/plugins/browser-camoufox` (`handlers/extraction_handler.py`, `kinematics/mouse_dynamics.py`).
+
+---
+
 ## [1.0.40] - 2026-09-06
 
 ### Added

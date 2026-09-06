@@ -93,6 +93,24 @@ func (s *Scheduler) SetSecurityManager(sec ports.SecurityManagerPort) {
 	}
 }
 
+// SetPluginManager injects the plugin manager into the scheduler executor.
+func (s *Scheduler) SetPluginManager(pm ports.PluginManagerPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executor != nil {
+		s.executor.SetPluginManager(pm)
+	}
+}
+
+// SetMCPRegistry injects the MCP registry syncer into the scheduler executor.
+func (s *Scheduler) SetMCPRegistry(mcp ports.MCPRegistryPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executor != nil {
+		s.executor.SetMCPRegistry(mcp)
+	}
+}
+
 // Start launches the background scheduler poller loop.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()
