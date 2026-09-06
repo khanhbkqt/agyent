@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"agyent/internal/adapters/harness/agy"
+	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
@@ -184,5 +185,6 @@ func TestParseOutput_TC_PARS_09_NativeDeniedActions(t *testing.T) {
 	assert.Contains(t, err.Error(), "native permission denial")
 	require.NotNil(t, res)
 	assert.False(t, res.Success)
-	assert.Equal(t, "headless permission denied", res.Error)
+	assert.Equal(t, domain.StatusNativePermissionDenied, res.Outcome)
+	assert.Equal(t, "native permission denial: headless permission denied", res.Error)
 }

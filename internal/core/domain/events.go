@@ -106,16 +106,17 @@ func (p StreamToolPayload) GetSessionKey() string { return p.SessionKey }
 
 // StreamResultPayload carries the final execution result summary of a turn.
 type StreamResultPayload struct {
-	SessionKey      string       `json:"session_key"`
-	ConversationID  string       `json:"conversation_id"`
-	TurnID          string       `json:"turn_id,omitempty"`
-	Status          string       `json:"status"` // "SUCCESS", "ERROR"
-	Response        string       `json:"response"`
-	Error           string       `json:"error,omitempty"`
-	DurationSeconds float64      `json:"duration_seconds"`
-	NumTurns        int          `json:"num_turns,omitempty"`
-	Usage           TokenUsage   `json:"usage"`
-	Artifacts       []Attachment `json:"artifacts,omitempty"`
+	SessionKey      string           `json:"session_key"`
+	ConversationID  string           `json:"conversation_id"`
+	TurnID          string           `json:"turn_id,omitempty"`
+	Status          string           `json:"status"` // "SUCCESS", "ERROR"
+	Outcome         ExecutionOutcome `json:"outcome,omitempty"`
+	Response        string           `json:"response"`
+	Error           string           `json:"error,omitempty"`
+	DurationSeconds float64          `json:"duration_seconds"`
+	NumTurns        int              `json:"num_turns,omitempty"`
+	Usage           TokenUsage       `json:"usage"`
+	Artifacts       []Attachment     `json:"artifacts,omitempty"`
 }
 
 func (p StreamResultPayload) GetSessionKey() string { return p.SessionKey }

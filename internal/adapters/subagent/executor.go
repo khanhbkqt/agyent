@@ -205,7 +205,23 @@ func (e *taskExecutor) executeTurn(
 
 	cmd := exec.CommandContext(execCtx, e.binaryPath, args...)
 	cmd.Dir = workspaceDir
-	env := append(os.Environ(),
+
+	safeKeys := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true, "TMP": true,
+		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "USER": true, "LOGNAME": true,
+		"SHELL": true, "TERM": true, "NO_COLOR": true, "SYSTEMROOT": true, "COMSPEC": true,
+		"PATHEXT": true, "WINDIR": true, "APPDATA": true, "LOCALAPPDATA": true,
+		"GO_WANT_MOCK_AGY_HELPER": true, "MOCK_SCENARIO": true,
+	}
+
+	var env []string
+	for _, eStr := range os.Environ() {
+		parts := strings.SplitN(eStr, "=", 2)
+		if len(parts) > 0 && safeKeys[strings.ToUpper(parts[0])] {
+			env = append(env, eStr)
+		}
+	}
+	env = append(env,
 		"NO_COLOR=1",
 		"TERM=dumb",
 		"AGYENT_TURN_ID="+turnID,
@@ -227,7 +243,10 @@ func (e *taskExecutor) executeTurn(
 
 	agy.ConfigureCmd(cmd)
 	jobGuard, err := agy.CreateProcessJobGuard()
-	if err == nil {
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize subagent process job guard: %w", err)
+	}
+	if jobGuard != nil {
 		tCtx.mu.Lock()
 		tCtx.jobGuard = jobGuard
 		tCtx.mu.Unlock()
@@ -245,7 +264,10 @@ func (e *taskExecutor) executeTurn(
 	tCtx.mu.Unlock()
 
 	if jobGuard != nil && cmd.Process != nil {
-		_ = jobGuard.AttachProcess(cmd.Process)
+		if attachErr := jobGuard.AttachProcess(cmd.Process); attachErr != nil {
+			_ = agy.KillProcessTree(cmd)
+			return nil, fmt.Errorf("failed to attach subagent process to JobGuard: %w", attachErr)
+		}
 	}
 
 	scanner := bufio.NewScanner(stdoutPipe)

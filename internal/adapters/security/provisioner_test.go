@@ -1,6 +1,7 @@
 package security
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,3 +57,32 @@ func TestEnsureWorkspaceSettingsProvisioned(t *testing.T) {
 	assert.Contains(t, string(geminiData), "command")
 }
 
+func TestEnsureAGYProjectProvisionedIncludesWorkspacePathGrants(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	workspaceDir := filepath.Join(homeDir, "agent-workspace")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0700))
+
+	err := EnsureAGYProjectProvisioned("agy-proj-test", "test", workspaceDir, nil)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(homeDir, ".gemini", "config", "projects", "agy-proj-test.json"))
+	require.NoError(t, err)
+	var project AGYProjectConfig
+	require.NoError(t, json.Unmarshal(data, &project))
+
+	grants := project.PermissionGrants.PermissionGrants.Allow
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspaceDir)
+	require.NoError(t, err)
+	for _, tool := range []string{"read_file", "write_file", "edit_file", "view_file", "list_dir", "grep_search", "find_by_name"} {
+		assert.Contains(t, grants, tool+"("+canonicalWorkspace+")")
+		assert.Contains(t, grants, tool+"("+filepath.Join(canonicalWorkspace, "**")+")")
+	}
+}
+
+func TestEnsureAGYProjectProvisionedRejectsProjectPathTraversal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	err := EnsureAGYProjectProvisioned("../settings", "test", t.TempDir(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid path character")
+}

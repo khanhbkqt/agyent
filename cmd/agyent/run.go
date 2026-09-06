@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -107,6 +108,12 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 			os.Exit(1)
 		}
 		defer store.Close()
+		type agyPreflightTarget struct {
+			agentName    string
+			projectID    string
+			workspaceDir string
+		}
+		preflightTargets := make(map[string]agyPreflightTarget)
 
 		// Sync configured agents from config.yaml into SQLite
 		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -140,8 +147,12 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 				if prof.WorkspacePath != "" {
 					agentRecord.WorkspacePath = ws
 				}
-				if prof.SecurityPreset != "" {
-					agentRecord.SecurityPreset = domain.SecurityPreset(prof.SecurityPreset)
+				if agentRecord.SecurityPreset == "" {
+					if prof.SecurityPreset != "" {
+						agentRecord.SecurityPreset = domain.SecurityPreset(prof.SecurityPreset)
+					} else {
+						agentRecord.SecurityPreset = domain.PresetBalanced
+					}
 				}
 				agentRecord.IsPublic = prof.IsPublic
 				agentRecord.UpdatedAt = time.Now()
@@ -167,6 +178,9 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 				fmt.Fprintf(os.Stderr, "❌ Failed to provision AGY project for agent %q: %v\n", name, err)
 				os.Exit(1)
 			}
+			preflightTargets["agy-proj-"+name] = agyPreflightTarget{
+				agentName: name, projectID: "agy-proj-" + name, workspaceDir: ws,
+			}
 		}
 		defaultWs := filepath.Join(cfg.Storage.AgentsDir, "workspace")
 		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(defaultWs, "", mainLogger); err != nil {
@@ -181,17 +195,50 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 			fmt.Fprintf(os.Stderr, "❌ Failed to provision AGY project for default agent: %v\n", err)
 			os.Exit(1)
 		}
+		_ = securityAdapter.EnsureAGYProjectProvisioned("default-cli-project", "default-cli-project", defaultWs, mainLogger)
+		preflightTargets["agy-proj-agyent"] = agyPreflightTarget{
+			agentName: "agyent", projectID: "agy-proj-agyent", workspaceDir: defaultWs,
+		}
 
-		// Probe AGY CLI Capabilities on startup
-		if caps, probeErr := agy.ProbeCapabilities(syncCtx, cfg.AGY.BinaryPath); probeErr != nil {
-			mainLogger.Warn("AGY CLI capability probing returned warning", "binary", cfg.AGY.BinaryPath, "error", probeErr)
-		} else {
-			mainLogger.Info("Probed AGY CLI capabilities",
-				"version", caps.Version,
-				"supports_sandbox", caps.SupportsSandbox,
-				"supports_project_grants", caps.SupportsProjectScopedGrants,
-				"supports_stream_json", caps.SupportsStreamJSON,
-				"platform", caps.Platform,
+		// Probe required AGY security capabilities and verify every provisioned
+		// project grant reaches the fail-closed workspace hook before serving turns.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		caps, probeErr := agy.ProbeCapabilities(probeCtx, cfg.AGY.BinaryPath)
+		probeCancel()
+		if probeErr != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to verify AGY CLI security capabilities: %v\n", probeErr)
+			os.Exit(1)
+		}
+		if !caps.SupportsSandbox || !caps.SupportsProjectScopedGrants || !caps.SupportsStreamJSON {
+			fmt.Fprintf(os.Stderr, "❌ AGY CLI lacks required security capabilities (sandbox=%t project_grants=%t stream_json=%t)\n",
+				caps.SupportsSandbox, caps.SupportsProjectScopedGrants, caps.SupportsStreamJSON)
+			os.Exit(1)
+		}
+		mainLogger.Info("Probed AGY CLI capabilities",
+			"version", caps.Version,
+			"supports_sandbox", caps.SupportsSandbox,
+			"supports_project_grants", caps.SupportsProjectScopedGrants,
+			"supports_stream_json", caps.SupportsStreamJSON,
+			"platform", caps.Platform,
+		)
+		preflightProjectIDs := make([]string, 0, len(preflightTargets))
+		for projectID := range preflightTargets {
+			preflightProjectIDs = append(preflightProjectIDs, projectID)
+		}
+		sort.Strings(preflightProjectIDs)
+		for _, projectID := range preflightProjectIDs {
+			target := preflightTargets[projectID]
+			canaryCtx, canaryCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			canaryErr := agy.PreflightCanaryCheck(canaryCtx, cfg.AGY.BinaryPath, target.projectID, target.workspaceDir)
+			canaryCancel()
+			if canaryErr != nil {
+				fmt.Fprintf(os.Stderr, "❌ AGY project security preflight failed for agent %q: %v\n", target.agentName, canaryErr)
+				os.Exit(1)
+			}
+			mainLogger.Info("Verified AGY project grant reaches workspace security hook",
+				"agent_name", target.agentName,
+				"project_id", target.projectID,
+				"workspace", target.workspaceDir,
 			)
 		}
 
@@ -230,7 +277,6 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 
 		// 6. Initialize Universal Security Gateway & IPC Host
 		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
-		_ = securityAdapter.RemoveGlobalSettingsPermissions(mainLogger)
 		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
 		channelMux.SetURLSafetyEvaluator(secMgr)

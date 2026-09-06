@@ -124,6 +124,19 @@ func TestSecurityManager_EvaluateToolCall_CommandPolicies(t *testing.T) {
 	assert.Equal(t, "conv-123", payload.ConversationID)
 }
 
+func TestSecurityManager_AskWithoutHITLPortFailsClosed(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mgr := NewManager(cfg, nil, nil)
+
+	decision, err := mgr.EvaluateToolCall(context.Background(), domain.ToolEvaluationRequest{
+		ToolName: "run_command",
+		Args:     map[string]interface{}{"CommandLine": "curl https://example.com"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "approval channel")
+}
+
 func TestSecurityManager_AntiSelfEscalation(t *testing.T) {
 	cfg := config.GetEffectiveSecurityPreset("balanced")
 	mgr := NewManager(cfg, nil, nil)
@@ -394,12 +407,17 @@ func TestSecurityManager_HeavyConcurrentStressTest(t *testing.T) {
 	}
 
 	for _, p := range presets {
+		subj := p.agentName
+		if p.preset == domain.PresetUnrestricted {
+			subj = "admin"
+		}
 		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
 			ConversationID: p.convID,
 			SessionKey:     "session-" + p.agentName,
 			WorkspaceDir:   p.wsDir,
 			Preset:         p.preset,
 			AgentName:      p.agentName,
+			Principal:      domain.Principal{SubjectID: subj, Kind: domain.PrincipalUser},
 		})
 	}
 

@@ -328,6 +328,28 @@ func EvaluateParsedCommandPolicy(
 		}
 	}
 
+	// 2.5. Deep-scan command arguments and redirections for control-plane and sensitive paths
+	for _, cmd := range parsedCmds {
+		if hasControlPlanePathReference(cmd) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Control Plane Protection]: Command '%s' attempts to reference or mutate forbidden control-plane or system paths", cmd.Raw),
+			}, nil
+		}
+	}
+
+	// 2.6. Check Process/Host Enumeration in Workspace-Only preset
+	if preset == domain.PresetWorkspaceOnly {
+		for _, cmd := range parsedCmds {
+			if isHostProcessEnumerationCommand(cmd.Executable) {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Preset: Workspace Only]: Host process or system resource inspection '%s' is strictly forbidden outside workspace scope", cmd.Executable),
+				}, nil
+			}
+		}
+	}
+
 	// 3. Check Whitelist in Strict preset
 	if preset == domain.PresetStrict {
 		for _, cmd := range parsedCmds {
@@ -363,6 +385,45 @@ func EvaluateParsedCommandPolicy(
 		Decision: domain.DecisionAllow,
 		Reason:   "Command permitted under active security profile",
 	}, nil
+}
+
+func isHostProcessEnumerationCommand(execName string) bool {
+	lower := strings.ToLower(execName)
+	switch lower {
+	case "ps", "top", "htop", "pm2", "pgrep", "pkill", "kill", "lsof", "netstat", "ss",
+		"who", "w", "last", "id", "env", "printenv", "set", "systemctl", "service",
+		"launchctl", "journalctl", "dmesg", "uname", "hostname", "whoami":
+		return true
+	}
+	return false
+}
+
+func hasControlPlanePathReference(cmd ParsedCommand) bool {
+	forbiddenSubstrings := []string{
+		".agents", ".agyent", "hooks.json", "config.yaml", "agyent.db",
+		".gemini", "/etc/shadow", "/etc/passwd", "/etc/sudoers", "/private/etc",
+		".ssh", ".aws", ".kube", ".gnupg",
+	}
+
+	// Check raw command line
+	rawLower := strings.ToLower(cmd.Raw)
+	for _, forbidden := range forbiddenSubstrings {
+		if strings.Contains(rawLower, forbidden) {
+			return true
+		}
+	}
+
+	// Check all token arguments
+	for _, arg := range cmd.Args {
+		argLower := strings.ToLower(arg)
+		for _, forbidden := range forbiddenSubstrings {
+			if strings.Contains(argLower, forbidden) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // ExtractScriptFileReferences extracts referenced local script filenames from command invocations

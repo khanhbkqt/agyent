@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/adapters/harness/agy`, runner port, execution service
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This document provides a detailed technical specification of how the Gateway written in **Go** orchestrates, supervises, and captures results from the `agy` CLI binary, including defense-in-depth architectural mechanisms.
 
@@ -10,21 +10,28 @@ This document provides a detailed technical specification of how the Gateway wri
 
 ## 1. Execution Protocol & Safe STDIN Prompt Delivery
 
-### A. STDIN Prompt Delivery (Bypassing OS CLI Argument Limits)
-To eliminate subprocess crashes caused by exceeding OS command-line character length limits (Windows ~32KB, Linux ~128KB when users send large code files or text buffers), the Harness pipes prompt content directly via **standard input (`STDIN`)**:
+### A. Project-scoped launch and STDIN prompt delivery
+
+Every batch or streaming launch requires an `ExecutionAdmission` issued by
+`internal/core/execution.Service`. The runner selects the admitted AGY project,
+sets the process working directory to the admitted workspace, passes that single
+workspace with `--add-dir`, and enables `--sandbox`. A missing admission is
+rejected. The harness does not append `--dangerously-skip-permissions`, even if
+the legacy request/config field is set.
+
+Prompts are sent through standard input so their size and shell characters do
+not become command-line arguments:
 
 ```go
 func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
-    args := []string{
-        "--output-format", "json",
-        "--project", "outside-of-project", // Prevents AGY CLI from loading default-cli-project.json
+    if req.Admission == nil || req.Admission.AGYProjectID == "" {
+        return nil, ports.ErrExecutionRefused
     }
+    args := []string{"--output-format", "json",
+        "--project", req.Admission.AGYProjectID, "--sandbox"}
 
     if req.WorkspaceDir != "" {
-        args = append(args, "--add-dir", req.WorkspaceDir) // Mount exclusively the agent/project workspace
-    }
-    if req.DangerouslySkipPermissions || h.dangerouslySkipPermissions {
-        args = append(args, "--dangerously-skip-permissions")
+        args = append(args, "--add-dir", req.WorkspaceDir)
     }
     if req.ConversationID != "" {
         args = append(args, "--conversation", req.ConversationID)
@@ -48,16 +55,24 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
     cmd.Stdout = &stdoutBuf
     cmd.Stderr = &stderrBuf
 
-    // Configure process tree termination on Windows / Linux when context is cancelled
+    // Configure process tree termination on Windows and POSIX when cancelled.
     configureCmd(cmd)
 
     if err := cmd.Run(); err != nil {
         return nil, fmt.Errorf("agy process failed: %w, stderr: %s", err, stderrBuf.String())
     }
 
-    return h.parseOutput(stdoutBuf.Bytes())
+    return ParseOutput(stdoutBuf.Bytes(), stderrBuf.Bytes())
 }
 ```
+
+At daemon startup, `ProbeCapabilities` requires project selection, sandbox, and
+stream-JSON support. `PreflightCanaryCheck` then starts one harmless command
+probe per provisioned project with an intentionally invalid turn ID. Startup
+continues only when the native project grant admits the call to the workspace
+PreToolUse hook and that hook denies it. Native rejection, command execution, an
+unrecognized output shape, or timeout fails the preflight. The probe and project
+provisioner do not read or rewrite global AGY permission settings.
 
 ---
 

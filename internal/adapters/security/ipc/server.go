@@ -36,6 +36,7 @@ type Server struct {
 	subagents  ports.SubagentDispatcherPort
 	listener   net.Listener
 	actionLn   net.Listener
+	authToken  string
 	logger     *slog.Logger
 	mu         sync.RWMutex
 	running    bool
@@ -59,6 +60,13 @@ func NewServer(manager ports.SecurityManagerPort, addr string, logger *slog.Logg
 		manager:    manager,
 		logger:     logger,
 	}
+}
+
+// SetAuthToken sets the expected bearer token for IPC requests.
+func (s *Server) SetAuthToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authToken = token
 }
 
 // SetPolicyEngine configures the centralized policy evaluator for IPC actions.
@@ -226,6 +234,21 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, actionOnly
 		if !actionOnly && s.actionAddr != s.addr {
 			s.writeActionError(conn, action, fmt.Errorf("forbidden: IPC actions are accepted only on the action endpoint"))
 			return
+		}
+		s.mu.RLock()
+		expectedToken := s.authToken
+		s.mu.RUnlock()
+		if expectedToken != "" {
+			token, _ := raw["auth_token"].(string)
+			if token == "" {
+				if p, ok := raw["params"].(map[string]interface{}); ok {
+					token, _ = p["auth_token"].(string)
+				}
+			}
+			if token != expectedToken {
+				s.writeActionError(conn, action, fmt.Errorf("unauthorized: missing or invalid security IPC auth token"))
+				return
+			}
 		}
 		turnID, _ := raw["turn_id"].(string)
 		if turnID == "" {
@@ -709,6 +732,16 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 		return HookResponse{
 			Decision: string(domain.DecisionDeny),
 			Reason:   "Security Manager is not initialized (Default-Deny)",
+		}, nil
+	}
+
+	s.mu.RLock()
+	expectedToken := s.authToken
+	s.mu.RUnlock()
+	if expectedToken != "" && req.AuthToken != expectedToken {
+		return HookResponse{
+			Decision: string(domain.DecisionDeny),
+			Reason:   "unauthorized: missing or invalid security IPC auth token",
 		}, nil
 	}
 

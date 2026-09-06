@@ -2,7 +2,7 @@
 
 > **Document status:** Canonical
 > **Code authority:** `cmd/agyent/run.go`, `internal/core`, `internal/adapters`
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 `agyent` is a Go gateway that maps authenticated Telegram conversations to local
 AGY CLI executions. It supports multiple agent workspaces, project/conversation
@@ -33,7 +33,8 @@ flowchart LR
     H --> A[AGY CLI]
     A --> M[MCP plugin processes]
 
-    H --> B[EventBus]
+    H -->|progress events| B[EventBus]
+    E -->|one terminal event per turn| B
     B --> T
 
     C[Scheduler/heartbeat] --> X
@@ -85,7 +86,9 @@ sequenceDiagram
     Policy-->>Execution: allow or deny
     Execution->>Security: register TurnSecurityContext
     Execution->>AGY: batch or stream execution
-    AGY-->>Bus: stream lifecycle events
+    AGY-->>Bus: init, delta and tool progress events
+    AGY-->>Engine: result or typed execution outcome
+    Engine-->>Bus: one terminal result, interruption or error event
     Bus-->>Telegram: throttled edits, result, errors and artifacts
     Execution->>Security: unregister active turn
 ```
@@ -98,9 +101,9 @@ Important boundaries:
   or session. Do not infer ownership from a path or client-supplied name.
 - `execution.Service` is the common chokepoint for normal, scheduled, compacting,
   reflecting, and other AGY turns once the related service is wired.
-- Streaming output is routed by session-scoped events and delivered by the
-  Telegram throttler. Failure paths must emit a terminal event or return an error
-  that the caller delivers.
+- Streaming progress is routed by session-scoped events. The engine owns the
+  single terminal event for each turn; channel throttlers deduplicate it by
+  session and turn before delivery.
 
 ## 4. Security control and execution planes
 

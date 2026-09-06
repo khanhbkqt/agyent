@@ -425,6 +425,64 @@ func TestEngine_StreamingTurnExecution_EmitsStreamErrorOnCancelledContext(t *tes
 	assert.Contains(t, payload.Error, "context deadline exceeded")
 }
 
+func TestEngine_StreamingNativeDenialEmitsOneConversationalTerminalResult(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	eng.SetStreamingEnabled(true)
+	require.NoError(t, eng.Start(context.Background()))
+
+	runner.mu.Lock()
+	runner.streamFunc = func(context.Context, domain.ExecutionRequest, string) (*domain.ExecutionResult, error) {
+		result := &domain.ExecutionResult{
+			Success: false,
+			Outcome: domain.StatusNativePermissionDenied,
+			Error:   "native permission denial: AGY rejected tool execution (denied_actions)",
+		}
+		return result, domain.NewExecutionOutcomeError(
+			domain.StatusNativePermissionDenied,
+			result.Error,
+			nil,
+		)
+	}
+	runner.mu.Unlock()
+
+	var resultCount atomic.Int32
+	var errorCount atomic.Int32
+	var terminalResult atomic.Pointer[domain.StreamResultPayload]
+	unsubResult := eng.EventBus().SubscribeSync(domain.EventStreamResult, func(_ context.Context, evt domain.Event) error {
+		payload := evt.Payload.(domain.StreamResultPayload)
+		terminalResult.Store(&payload)
+		resultCount.Add(1)
+		return nil
+	})
+	defer unsubResult()
+	unsubError := eng.EventBus().SubscribeSync(domain.EventStreamError, func(context.Context, domain.Event) error {
+		errorCount.Add(1)
+		return nil
+	})
+	defer unsubError()
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-native-denial",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "run a protected command",
+	}
+	err := eng.HandleDebouncedMessage(context.Background(), msg)
+	require.Error(t, err)
+
+	assert.Equal(t, int32(1), resultCount.Load())
+	assert.Equal(t, int32(0), errorCount.Load())
+	result := terminalResult.Load()
+	require.NotNil(t, result)
+	assert.Equal(t, string(domain.StatusNativePermissionDenied), result.Status)
+	assert.Equal(t, "Thao tác chưa được thực hiện vì cấu hình quyền của AGY chưa cho phép chạy tự động.", result.Response)
+	assert.NotEmpty(t, result.TurnID)
+}
+
 func TestEngine_NewAgentBootstrapFlow(t *testing.T) {
 	eng, runner, _, store, _, cleanup := setupTestEngine(t)
 	defer cleanup()
@@ -1858,6 +1916,3 @@ func TestEngine_ExecuteTurn_LongResponseDeliveredIntact(t *testing.T) {
 	assert.Equal(t, longResponse, sent[0].Text, "Outbound response text must be delivered 100% intact without any in-memory truncation")
 	assert.NotContains(t, sent[0].Text, "Output truncated:")
 }
-
-
-

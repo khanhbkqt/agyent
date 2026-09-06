@@ -14,9 +14,9 @@
 
 ## Context
 
-Managed AGY guest agents currently share the daemon user's process and filesystem
-view. The runner selects `outside-of-project`, does not request AGY's sandbox,
-and current hook/path/command enforcement has gaps documented in
+Managed AGY guest agents originally shared the daemon user's process and filesystem
+view. The runner selected `outside-of-project`, did not request AGY's sandbox,
+and hook/path/command enforcement had gaps documented in
 [AGY project-scoped security isolation](../agy-project-scoped-security-isolation.md).
 Global AGY native permission grants would permit unattended work but would also
 make that permission available outside an individual worker's scope.

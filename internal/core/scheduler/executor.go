@@ -87,7 +87,9 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	// Invalidate session grants and ensure workspace security hooks
 	if e.securityManager != nil {
 		defer e.securityManager.ClearSessionGrants(sessionKey)
-		_ = e.securityManager.EnsureWorkspaceHooks(agentWS)
+		if hookErr := e.securityManager.EnsureWorkspaceHooks(agentWS); hookErr != nil {
+			return nil, fmt.Errorf("scheduler: failed to provision workspace security hooks: %w", hookErr)
+		}
 	}
 
 	// Dynamic MCP mounting for this scheduled turn
@@ -198,6 +200,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 				Provider:  provider,
 				SubjectID: task.CreatedBy,
 				AccountID: task.AgentName,
+				TenantID:  "default",
 			}
 		} else {
 			principal = domain.Principal{

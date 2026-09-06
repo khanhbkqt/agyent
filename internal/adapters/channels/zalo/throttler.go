@@ -12,6 +12,8 @@ type Throttler struct {
 	minDelay   time.Duration
 	lastSentMu sync.Mutex
 	lastSent   map[string]time.Time
+	terminalMu sync.Mutex
+	terminal   map[string]time.Time
 }
 
 // NewThrottler creates a new outbound message throttler for Zalo.
@@ -23,7 +25,30 @@ func NewThrottler(client *Client, minDelay time.Duration) *Throttler {
 		client:   client,
 		minDelay: minDelay,
 		lastSent: make(map[string]time.Time),
+		terminal: make(map[string]time.Time),
 	}
+}
+
+const terminalEventRetention = 30 * time.Minute
+
+func (t *Throttler) acceptTerminalEvent(sessionKey, turnID string) bool {
+	if sessionKey == "" || turnID == "" {
+		return true
+	}
+	now := time.Now()
+	key := sessionKey + "\x00" + turnID
+	t.terminalMu.Lock()
+	defer t.terminalMu.Unlock()
+	for existingKey, seenAt := range t.terminal {
+		if now.Sub(seenAt) > terminalEventRetention {
+			delete(t.terminal, existingKey)
+		}
+	}
+	if _, exists := t.terminal[key]; exists {
+		return false
+	}
+	t.terminal[key] = now
+	return true
 }
 
 // SendThrottled sends a message with per-chat interval throttling and automatic chunking.

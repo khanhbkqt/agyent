@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/core/auth`, `internal/core/execution`, `internal/adapters/security`, hook bridge CLI
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This document provides the comprehensive technical specification for the **Universal AI Security Gateway & Guardrails Subsystem** in **agyent**. It details the multi-layer defense-in-depth model, Antigravity Native Hook Bridge (`PreToolUse`), non-blocking Human-In-The-Loop (HITL) state machine, filesystem jailing, sub-agent governance, sliding-window DLP, indirect prompt injection filtering, frictionless UX, and configuration schema.
 
@@ -11,7 +11,11 @@ This document provides the comprehensive technical specification for the **Unive
 ## 1. Executive Summary & Threat Modeling
 
 ### 1.1. The Vulnerability of Unrestricted Autonomous Agents
-By default, autonomous agent harnesses run subprocesses with `--dangerously-skip-permissions`, granting the Large Language Model (LLM) unrestricted access to the host operating system. This presents critical threat vectors:
+An unattended AGY process needs native permission grants before a tool call can
+reach agyent's policy hook. A global grant or the dangerous skip flag would make
+that authority ambient across unrelated sessions. Managed runs therefore use a
+dedicated AGY project grant, `--sandbox`, one admitted workspace, and the
+authenticated PreToolUse hook. This design addresses the following threats:
 
 1. **Remote Code Execution (RCE) & Destructive Operations:** Hallucinated or injected prompts executing `rm -rf /`, `mkfs`, `powershell -enc`, `dd`, or `diskpart`.
 2. **Path Traversal & Sensitive Data Exfiltration:** Unauthorized reads or overrides of SSH keys (`~/.ssh/id_rsa`), cloud credentials (`~/.aws/credentials`), host secrets (`/etc/shadow`), or the gateway database (`~/.agyent/agyent.db`).
@@ -104,10 +108,13 @@ flowchart TB
   - **`write_to_file` / `replace_file_content` / `view_file`:** Evaluates TargetFile against Filesystem Jail.
   - **`read_url_content` / `search_web`:** Evaluates URL against SSRF and DNS Rebinding rules.
   - **`invoke_subagent` / `define_subagent`:** Evaluates Sub-agent roles and depth limits.
-- **Three Policy Decisions:**
+- **Three internal policy decisions:**
   - **`allow`:** Tool executes immediately.
   - **`deny`:** Execution is halted; AGY receives `{ "decision": "deny", "reason": "..." }` and returns the denial to the model context.
-  - **`ask` (HITL):** Tool execution pauses; Gateway triggers Telegram interactive approval card.
+  - **`ask` (HITL):** The Gateway triggers the channel approval flow and waits
+    for its bounded result. The hook returns only final `allow` or `deny` to
+    headless AGY. Missing HITL delivery, timeout, cancellation, or unavailable
+    approval port becomes `deny`; raw `ask` never crosses the hook boundary.
 
 ### Checkpoint 4: Sub-Agent Governance & Anti-Fork Bomb Quotas
 - **Sub-Agent Creation Interception (`define_subagent` & `invoke_subagent`):**
@@ -146,7 +153,7 @@ flowchart TB
 | **Tool Interception Latency** | Hook execution overhead slows down agent responsiveness. | **Local IPC path:** `agyent hook-bridge` connects to the gateway over a Unix domain socket or Windows transport; measure latency in the target environment rather than treating a fixed number as guaranteed. |
 | **Session State Deadlocks** | Holding session FIFO mutex while waiting for Telegram HITL blocks administrative queries. | **Non-Blocking Turn Suspend:** Session enters `WAITING_HITL` state; user can issue `/status` or `/cancel`; new conversational turns are safely queued until current turn is resolved or aborted. |
 | **Prefix KV-Cache Preservation** | Dynamic security context injected at Levels 0–3 invalidates the otherwise stable prefix. | **Level 4 Injection Invariant:** Dynamic security notices (e.g., granted permissions) are appended strictly at Level 4. Measure cache behavior for the configured provider. |
-| **Blast Radius & Host Isolation** | Global hook pollution breaking host IDE or external developer CLI sessions. | **Workspace-Scoped Hook Mounting:** Hook configuration is isolated strictly to `<workspaceDir>/.agents/hooks.json` and protected from write access via PathJail, leaving `~/.gemini/config/` pristine. |
+| **Blast Radius & Host Isolation** | Global hook or permission pollution breaking unrelated AGY sessions. | **Workspace and project scope:** Hooks live under `<workspaceDir>/.agents/hooks.json`; native grants live in the dedicated project record. Global hook and permission settings are not rewritten. |
 | **Subprocess Zombie Leaks** | Subagent processes surviving unexpected Gateway crashes or timeouts. | **Kernel Job Object Watchdog:** Enforce OS Job Objects on Windows (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and POSIX process groups (`syscall.SIGKILL` to negative PID). |
 
 ---

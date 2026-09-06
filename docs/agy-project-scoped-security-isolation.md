@@ -9,9 +9,10 @@
 This document describes the design and runtime implementation for isolating managed AGY guest
 agents without Docker. It uses AGY's project-local permission store as a per-agent **native
 grant scope**, while keeping agyent's authenticated hook/IPC path as the
-authorization decision point. An AGY project ID is bound to execution identity,
-filesystem boundary, tenant boundary, trusted registry, execution admission,
-hook/IPC binding, and OS terminal sandbox.
+authorization decision point. An AGY project ID is bound by agyent to execution
+identity, tenant-owned registry state, an execution admission, one workspace,
+hook/IPC identity, and AGY's terminal sandbox. The project ID scopes AGY native
+grants; it is not by itself a filesystem or tenant isolation boundary.
 
 The design applies to every managed worker, including subagents. The owner or
 administrator agent is a separate, explicitly provisioned trust tier; it must
@@ -32,10 +33,13 @@ authenticated turn
   -> sandboxed tool process only after both gates allow
 ```
 
-The diagram is conceptual. The proposed registry and provisioning components do
-not exist yet. Today the [AGY runner](../internal/adapters/harness/agy/runner.go)
-and [subagent executor](../internal/adapters/subagent/executor.go) use
-`--project outside-of-project`; the runner does not request `--sandbox`.
+The registry, admission ticket, project provisioner, scoped runner launch, native
+denial parser, and startup canary are implemented. The project provisioner adds
+explicit canonical workspace grants for file tools while retaining transport
+grants needed to reach agyent policy. The startup canary proves that each
+project's command grant reaches the fail-closed workspace hook without executing
+the command. Linux and Windows OS-boundary validation and the remaining
+acceptance matrix below are still rollout gates.
 
 AGY's project-local configuration is a control-plane resource. It is stored
 outside the agent workspace and is writable only by the agyent controller
@@ -103,14 +107,15 @@ release gates, not assumed compatibility. In particular, the sandbox's process,
 filesystem, network, shell, and configuration visibility must be measured on
 each supported platform before a worker tier is enabled there.
 
-## Security gaps to remove before migration
+## Remaining security gaps
 
 The existing architecture has useful pieces, but they are insufficient as the
 native boundary described above:
 
-- The current runner can still receive `DangerouslySkipPermissions` for a
-  privileged caller. [Execution service policy](../internal/core/execution/service.go)
-  must remove that managed-agent escape hatch.
+- Legacy request and configuration types still contain
+  `DangerouslySkipPermissions` for compatibility. The current AGY runner ignores
+  that field and never emits the CLI flag; removing the public field requires a
+  separate configuration migration.
 - The current path-jail configuration resolves `.` while the daemon is starting.
   [Path-jail construction](../internal/adapters/security/pathjail/pathjail.go)
   therefore risks authorizing a daemon-current-directory path rather than the
@@ -127,13 +132,13 @@ native boundary described above:
 - Unknown AGY tools are currently allowed by the security manager. The target
   policy defaults them to deny until their argument schema, resource model, and
   tests are registered.
-- AGY can report a headless native denial as a completed process result with
-  `denied_actions`. [Batch parsing](../internal/adapters/harness/agy/parser.go)
-  and streaming parsing must surface that state as a denied turn, not successful
-  work.
+- Per-platform sandbox containment, immutable hook ownership, and data-store and
+  transcript isolation still require the full acceptance matrix. The startup
+  canary verifies native-grant-to-hook routing only; it does not prove those OS
+  boundaries.
 
-These are remediation requirements, not claims that the linked implementation
-already has the proposed behaviour.
+These are remaining remediation requirements. The implemented project and turn
+contracts are authoritative in the linked code and tests.
 
 ## Target trust model and invariants
 
@@ -386,7 +391,7 @@ controls that keep that dependency from silently widening a worker's reach.
 - [Plugin isolation standard](plugin-developer-and-isolation-standard.md) defines
   the existing APIS-4D and plugin-isolation requirements.
 - [ADR 0002](adr/0002-agy-project-scoped-worker-isolation.md) records the
-  proposed cross-platform trust-boundary decision and alternatives.
+  accepted cross-platform trust-boundary decision and alternatives.
 - [AGY runner](../internal/adapters/harness/agy/runner.go),
   [security manager](../internal/adapters/security/manager.go),
   [path jail](../internal/adapters/security/pathjail/pathjail.go),

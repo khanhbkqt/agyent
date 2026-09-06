@@ -71,18 +71,22 @@ func ParseOutput(stdoutBytes, stderrBytes []byte) (*domain.ExecutionResult, erro
 
 	// 3. Handle native AGY headless permission denials / denied_actions
 	if len(payload.DeniedActions) > 0 || payload.Status == "DENIED" {
+		outcome := classifyDeniedOutcome(payload.DeniedActions, payload.Error)
 		errMsg := payload.Error
 		if errMsg == "" {
-			errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
+			errMsg = "AGY rejected tool execution (denied_actions)"
 		}
+		outcomeErr := domain.NewExecutionOutcomeError(outcome, errMsg, nil)
 		return &domain.ExecutionResult{
 			Success:        false,
+			Outcome:        outcome,
 			ConversationID: payload.ConversationID,
 			ResponseText:   payload.Response,
 			DurationSec:    payload.DurationSeconds,
+			NumTurns:       payload.NumTurns,
 			Usage:          usage,
-			Error:          errMsg,
-		}, fmt.Errorf("native permission denial: %s", errMsg)
+			Error:          outcomeErr.Error(),
+		}, outcomeErr
 	}
 
 	return &domain.ExecutionResult{
@@ -90,9 +94,21 @@ func ParseOutput(stdoutBytes, stderrBytes []byte) (*domain.ExecutionResult, erro
 		ConversationID: payload.ConversationID,
 		ResponseText:   payload.Response,
 		DurationSec:    payload.DurationSeconds,
+		NumTurns:       payload.NumTurns,
 		Usage:          usage,
 		Error:          payload.Error,
 	}, nil
+}
+
+func classifyDeniedOutcome(deniedActions []any, errText string) domain.ExecutionOutcome {
+	encoded, _ := json.Marshal(deniedActions)
+	evidence := strings.ToLower(errText + " " + string(encoded))
+	for _, marker := range []string{"pre-tool hook", "security gate", "policy denied", "denied by policy", "rejected by user"} {
+		if strings.Contains(evidence, marker) {
+			return domain.StatusPolicyDenied
+		}
+	}
+	return domain.StatusNativePermissionDenied
 }
 
 // extractLastJSONPayload scans backwards from the end of the byte slice to locate the root JSON envelope.

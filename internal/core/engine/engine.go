@@ -1289,7 +1289,15 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
-	hasFailed := execErr != nil || (execResult != nil && !execResult.Success)
+	hasFailed := execErr != nil || execResult == nil || !execResult.Success
+	outcome := domain.ExecutionOutcomeFromError(execErr)
+	if execResult != nil && execResult.Outcome != "" {
+		outcome = execResult.Outcome
+	}
+	if hasFailed && outcome == "" && !isInterrupted {
+		outcome = domain.StatusExecutionFailed
+	}
+	isDenied := outcome == domain.StatusNativePermissionDenied || outcome == domain.StatusPolicyDenied
 	errMsg = ""
 	if hasFailed {
 		if execErr != nil {
@@ -1307,15 +1315,58 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 		if hasFailed {
 			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventErrorOccurred, errMsg))
-			if isStream {
+		}
+
+		if isStream {
+			conversationID := session.GetActiveConversationID()
+			if execResult != nil && execResult.ConversationID != "" {
+				conversationID = execResult.ConversationID
+			}
+			switch {
+			case isInterrupted:
+				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
+					SessionKey:     sessionKey,
+					ConversationID: conversationID,
+					TurnID:         turnID,
+					Reason:         "Preempted by incoming user message",
+					Timestamp:      time.Now(),
+				}))
+			case isDenied:
+				response := denialResponse(outcome, execResult)
+				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+					SessionKey:      sessionKey,
+					ConversationID:  conversationID,
+					TurnID:          turnID,
+					Status:          string(outcome),
+					Outcome:         outcome,
+					Response:        response,
+					DurationSeconds: executionDuration(execResult),
+					NumTurns:        executionNumTurns(execResult),
+					Usage:           executionUsage(execResult),
+					Artifacts:       executionArtifacts(execResult),
+				}))
+			case hasFailed:
 				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
 					SessionKey:     sessionKey,
-					ConversationID: session.GetActiveConversationID(),
+					ConversationID: conversationID,
 					TurnID:         turnID,
 					Error:          errMsg,
 				}))
+			default:
+				_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+					SessionKey:      sessionKey,
+					ConversationID:  conversationID,
+					TurnID:          turnID,
+					Status:          domain.StatusSuccess,
+					Response:        execResult.ResponseText,
+					DurationSeconds: execResult.DurationSec,
+					NumTurns:        execResult.NumTurns,
+					Usage:           execResult.Usage,
+					Artifacts:       execResult.Artifacts,
+				}))
 			}
-		} else {
+		}
+		if !hasFailed {
 			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventPostExecution, execResult))
 		}
 	}
@@ -1334,15 +1385,22 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				outCtx, outCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				defer outCancel()
 				failureMsg := errMsg
+				if isDenied {
+					failureMsg = denialResponse(outcome, execResult)
+				}
 				if failureMsg == "" {
 					failureMsg = "Turn execution encountered an internal error."
+				}
+				messageText := fmt.Sprintf("⚠️ Execution failed: %s", failureMsg)
+				if isDenied {
+					messageText = failureMsg
 				}
 				_ = e.channel.Send(outCtx, domain.OutboundMessage{
 					Channel:          msg.Channel,
 					BotID:            msg.BotID,
 					ChatID:           msg.Chat.ID,
 					ThreadID:         msg.Chat.ThreadID,
-					Text:             fmt.Sprintf("⚠️ Execution failed: %s", failureMsg),
+					Text:             messageText,
 					ReplyToMessageID: msg.ID,
 				})
 			}
@@ -1354,6 +1412,44 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	return nil
+}
+
+func denialResponse(outcome domain.ExecutionOutcome, result *domain.ExecutionResult) string {
+	if result != nil && strings.TrimSpace(result.ResponseText) != "" {
+		return result.ResponseText
+	}
+	if outcome == domain.StatusPolicyDenied {
+		return "Thao tác chưa được thực hiện vì chính sách bảo mật của agyent đã từ chối yêu cầu."
+	}
+	return "Thao tác chưa được thực hiện vì cấu hình quyền của AGY chưa cho phép chạy tự động."
+}
+
+func executionDuration(result *domain.ExecutionResult) float64 {
+	if result == nil {
+		return 0
+	}
+	return result.DurationSec
+}
+
+func executionNumTurns(result *domain.ExecutionResult) int {
+	if result == nil {
+		return 0
+	}
+	return result.NumTurns
+}
+
+func executionUsage(result *domain.ExecutionResult) domain.TokenUsage {
+	if result == nil {
+		return domain.TokenUsage{}
+	}
+	return result.Usage
+}
+
+func executionArtifacts(result *domain.ExecutionResult) []domain.Attachment {
+	if result == nil {
+		return nil
+	}
+	return result.Artifacts
 }
 
 func (e *Engine) registerActiveTurn(sessionKey string, turnID string, cancel context.CancelFunc) {

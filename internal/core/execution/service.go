@@ -178,6 +178,14 @@ func (s *Service) ExecuteTurn(
 	agentGen := 1
 	hostID := "local-host"
 	configNamespace := "default"
+	canonReqWS := req.WorkspaceDir
+	if canonReqWS != "" {
+		if resolved, err := filepath.EvalSymlinks(canonReqWS); err == nil {
+			canonReqWS = resolved
+		}
+		canonReqWS = filepath.Clean(canonReqWS)
+		req.WorkspaceDir = canonReqWS
+	}
 
 	if s.storage != nil {
 		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, agentName, hostID, configNamespace)
@@ -185,8 +193,15 @@ func (s *Service) ExecuteTurn(
 			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
 				return nil, fmt.Errorf("%w: AGY project mapping for agent %q is %s", ports.ErrAccessDenied, agentName, mapping.Status)
 			}
-			if mapping.WorkspaceDir != "" && req.WorkspaceDir != "" {
-				if filepath.Clean(mapping.WorkspaceDir) != filepath.Clean(req.WorkspaceDir) {
+			canonMapWS := mapping.WorkspaceDir
+			if canonMapWS != "" {
+				if resolved, err := filepath.EvalSymlinks(canonMapWS); err == nil {
+					canonMapWS = resolved
+				}
+				canonMapWS = filepath.Clean(canonMapWS)
+			}
+			if canonMapWS != "" && canonReqWS != "" {
+				if canonMapWS != canonReqWS {
 					return nil, fmt.Errorf("%w: workspace directory mismatch: admitted=%q requested=%q", ports.ErrAccessDenied, mapping.WorkspaceDir, req.WorkspaceDir)
 				}
 			}
@@ -204,7 +219,7 @@ func (s *Service) ExecuteTurn(
 				ExecutionHostID:      hostID,
 				AGYConfigNamespaceID: configNamespace,
 				AGYProjectID:         agyProjectID,
-				WorkspaceDir:         filepath.Clean(req.WorkspaceDir),
+				WorkspaceDir:         canonReqWS,
 				Status:               domain.AGYProjectStatusActive,
 				CreatedAt:            time.Now(),
 			}

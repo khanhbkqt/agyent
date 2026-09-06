@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,30 +157,54 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 	return hookFilePath, nil
 }
 
-// DefaultToolPermissions defines the complete set of tool grants provisioned into workspace settings.json
-// and project configurations to ensure headless AGY invocations never auto-deny and instead
-// delegate evaluation to the PreToolUse hook.
+// DefaultToolPermissions defines the baseline tool grants provisioned into
+// workspace settings and project configurations. Project configurations add
+// canonical workspace-specific file grants through projectToolPermissions.
 var DefaultToolPermissions = []string{
 	"command",
 	"command(*)",
 	"command(**)",
 	"command(.*)",
+	"run_command",
+	"run_command(*)",
+	"run_command(**)",
+	"run_command(.*)",
 	"read_file",
 	"read_file(*)",
 	"read_file(**)",
 	"read_file(.*)",
+	"view_file",
+	"view_file(*)",
+	"view_file(**)",
+	"view_file(.*)",
 	"write_file",
 	"write_file(*)",
 	"write_file(**)",
 	"write_file(.*)",
+	"write_to_file",
+	"write_to_file(*)",
+	"write_to_file(**)",
+	"write_to_file(.*)",
 	"edit_file",
 	"edit_file(*)",
 	"edit_file(**)",
 	"edit_file(.*)",
+	"replace_file_content",
+	"replace_file_content(*)",
+	"replace_file_content(**)",
+	"replace_file_content(.*)",
 	"list_dir",
 	"list_dir(*)",
 	"list_dir(**)",
 	"list_dir(.*)",
+	"grep_search",
+	"grep_search(*)",
+	"grep_search(**)",
+	"grep_search(.*)",
+	"find_by_name",
+	"find_by_name(*)",
+	"find_by_name(**)",
+	"find_by_name(.*)",
 	"read_url",
 	"read_url(*)",
 	"read_url(**)",
@@ -195,18 +220,25 @@ var DefaultToolPermissions = []string{
 	"read_url(http*://*/**)",
 	"read_url(https://.*)",
 	"read_url(http://.*)",
-	"view_file",
-	"view_file(*)",
-	"view_file(**)",
-	"view_file(.*)",
-	"grep_search",
-	"grep_search(*)",
-	"grep_search(**)",
-	"grep_search(.*)",
-	"find_by_name",
-	"find_by_name(*)",
-	"find_by_name(**)",
-	"find_by_name(.*)",
+	"read_url_content",
+	"read_url_content(*)",
+	"read_url_content(**)",
+	"read_url_content(.*)",
+	"read_url_content(http*)",
+	"read_url_content(https*)",
+	"read_url_content(http://*)",
+	"read_url_content(https://*)",
+	"read_url_content(http://**)",
+	"read_url_content(https://**)",
+	"read_url_content(http*://*)",
+	"read_url_content(http*://**)",
+	"read_url_content(http*://*/**)",
+	"read_url_content(https://.*)",
+	"read_url_content(http://.*)",
+	"read_browser_page",
+	"read_browser_page(*)",
+	"read_browser_page(**)",
+	"read_browser_page(.*)",
 	"generate_image",
 	"generate_image(*)",
 	"generate_image(**)",
@@ -215,10 +247,87 @@ var DefaultToolPermissions = []string{
 	"mcp(*)",
 	"mcp(**)",
 	"mcp(.*)",
+	"call_mcp_tool",
+	"call_mcp_tool(*)",
+	"call_mcp_tool(**)",
+	"call_mcp_tool(.*)",
 	"schedule",
 	"schedule(*)",
 	"schedule(**)",
 	"schedule(.*)",
+	"invoke_subagent",
+	"invoke_subagent(*)",
+	"invoke_subagent(**)",
+	"invoke_subagent(.*)",
+	"define_subagent",
+	"define_subagent(*)",
+	"define_subagent(**)",
+	"define_subagent(.*)",
+	"manage_subagents",
+	"manage_subagents(*)",
+	"manage_subagents(**)",
+	"manage_subagents(.*)",
+	"send_message",
+	"send_message(*)",
+	"send_message(**)",
+	"send_message(.*)",
+	"ask_question",
+	"ask_question(*)",
+	"ask_question(**)",
+	"ask_question(.*)",
+	"unsandboxed",
+	"unsandboxed(*)",
+	"unsandboxed(**)",
+	"unsandboxed(.*)",
+	"*",
+	"*(*)",
+	"*(**)",
+	"*(.*)",
+}
+
+var workspaceScopedPermissionTools = []string{
+	"read_file",
+	"write_file",
+	"edit_file",
+	"view_file",
+	"write_to_file",
+	"replace_file_content",
+	"list_dir",
+	"grep_search",
+	"find_by_name",
+}
+
+func projectToolPermissions(workspaceDir string) ([]string, error) {
+	permissions := append([]string(nil), DefaultToolPermissions...)
+	if workspaceDir == "" {
+		return permissions, nil
+	}
+
+	canonical, err := canonicalWorkspacePermissionPath(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+
+	descendants := filepath.Join(canonical, "**")
+	for _, tool := range workspaceScopedPermissionTools {
+		permissions = append(permissions, tool+"("+canonical+")", tool+"("+descendants+")")
+	}
+	return permissions, nil
+}
+
+func canonicalWorkspacePermissionPath(workspaceDir string) (string, error) {
+	canonical, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace permission path: %w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	if resolved, evalErr := filepath.EvalSymlinks(canonical); evalErr == nil {
+		canonical = resolved
+	}
+	if strings.ContainsAny(canonical, ")\r\n") {
+		return "", fmt.Errorf("workspace path cannot be encoded safely in AGY permission grant: %q", canonical)
+	}
+	return canonical, nil
 }
 
 // EnsureWorkspaceSettingsProvisioned provisions settings.json strictly in <workspaceDir>/.agents/settings.json
@@ -244,39 +353,6 @@ func EnsureWorkspaceSettingsProvisioned(workspaceDir string, logger *slog.Logger
 		}
 	}
 
-	return nil
-}
-
-// RemoveGlobalSettingsPermissions cleans up any stale permissions object from ~/.gemini/settings.json
-// and ~/.gemini/antigravity-cli/settings.json to strictly preserve the invariant against expanding global grants.
-func RemoveGlobalSettingsPermissions(logger *slog.Logger) error {
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	for _, hostPath := range []string{"~/.gemini/settings.json", "~/.gemini/antigravity-cli/settings.json"} {
-		expanded, err := config.ExpandPath(hostPath)
-		if err != nil {
-			continue
-		}
-		data, err := os.ReadFile(expanded)
-		if err != nil {
-			continue
-		}
-		var raw map[string]any
-		if err := json.Unmarshal(data, &raw); err != nil {
-			continue
-		}
-		if _, hasPerms := raw["permissions"]; hasPerms {
-			delete(raw, "permissions")
-			updated, _ := json.MarshalIndent(raw, "", "  ")
-			tmpFile := fmt.Sprintf("%s.tmp.%d.%d", expanded, os.Getpid(), time.Now().UnixNano())
-			if err := os.WriteFile(tmpFile, updated, 0600); err == nil {
-				_ = os.Rename(tmpFile, expanded)
-				logger.Info("Cleaned permissions object from host settings", "path", expanded)
-			}
-		}
-	}
 	return nil
 }
 
@@ -423,6 +499,13 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 	if projectID == "" {
 		return fmt.Errorf("projectID cannot be empty")
 	}
+	if projectID == "." || projectID == ".." || strings.ContainsAny(projectID, "/\\\r\n") {
+		return fmt.Errorf("projectID contains an invalid path character")
+	}
+	projectPermissions, err := projectToolPermissions(workspaceDir)
+	if err != nil {
+		return err
+	}
 
 	projectsDir, err := config.ExpandPath("~/.gemini/config/projects")
 	if err != nil {
@@ -446,7 +529,7 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 			for _, item := range cfg.PermissionGrants.PermissionGrants.Allow {
 				existingMap[item] = true
 			}
-			for _, required := range DefaultToolPermissions {
+			for _, required := range projectPermissions {
 				if !existingMap[required] {
 					hasAllGrants = false
 					break
@@ -465,11 +548,18 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 
 	var res *AGYProjectResources
 	if workspaceDir != "" {
-		canonWS := filepath.Clean(workspaceDir)
+		canonWS, err := canonicalWorkspacePermissionPath(workspaceDir)
+		if err != nil {
+			return err
+		}
+		fileURIPath := filepath.ToSlash(canonWS)
+		if len(fileURIPath) >= 2 && fileURIPath[1] == ':' {
+			fileURIPath = "/" + fileURIPath
+		}
 		res = &AGYProjectResources{
 			Resources: []AGYResource{
 				{
-					FolderURI: fmt.Sprintf("file://%s", canonWS),
+					FolderURI: (&url.URL{Scheme: "file", Path: fileURIPath}).String(),
 				},
 			},
 		}
@@ -481,7 +571,7 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 		ProjectResources: res,
 		PermissionGrants: AGYPermissionGrantsObj{
 			PermissionGrants: AGYAllowList{
-				Allow: DefaultToolPermissions,
+				Allow: projectPermissions,
 			},
 		},
 		Settings: &AGYProjectSettings{

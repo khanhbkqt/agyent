@@ -197,14 +197,19 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		sessionKey = turnCtx.SessionKey
 	}
 
-	// 0. If Preset is Unrestricted -> Allow 100% of tool calls immediately with full autonomy
+	// 0. If Preset is Unrestricted -> Allow 100% of tool calls only for authenticated SuperAdmin/System
 	if preset == domain.PresetUnrestricted {
-		m.recordApproved()
-		return domain.SecurityDecision{
-			Decision:  domain.DecisionAllow,
-			Reason:    "🛡️ [Security Preset: Unrestricted]: Tool call permitted with full autonomy",
-			LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
-		}, nil
+		if hasTurn && turnCtx.Principal.SubjectID != "" && turnCtx.Principal.Kind != domain.PrincipalSystem && turnCtx.Principal.SubjectID != "superadmin" && turnCtx.Principal.SubjectID != "admin" {
+			// Non-admin worker agents cannot run in unrestricted mode; downgrade to balanced preset
+			preset = domain.PresetBalanced
+		} else {
+			m.recordApproved()
+			return domain.SecurityDecision{
+				Decision:  domain.DecisionAllow,
+				Reason:    "🛡️ [Security Preset: Unrestricted]: Tool call permitted with full autonomy for administrator",
+				LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
+			}, nil
+		}
 	}
 
 	bundle := m.getEvaluatorBundle(preset)
@@ -248,23 +253,45 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			targetPath, _ = req.Args["targetFile"].(string)
 		}
 		if targetPath == "" {
-			targetPath, _ = req.Args["AbsolutePath"].(string)
-		}
-		if targetPath == "" {
 			targetPath, _ = req.Args["DirectoryPath"].(string)
 		}
 		if targetPath == "" {
-			targetPath, _ = req.Args["SearchPath"].(string)
+			targetPath, _ = req.Args["directory_path"].(string)
 		}
 		if targetPath == "" {
 			targetPath, _ = req.Args["SearchDirectory"].(string)
 		}
 		if targetPath == "" {
+			targetPath, _ = req.Args["search_directory"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["SearchPath"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["search_path"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["Path"].(string)
+		}
+		if targetPath == "" {
 			targetPath, _ = req.Args["path"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["AbsolutePath"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["absolute_path"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["FilePath"].(string)
 		}
 		if targetPath == "" {
 			targetPath, _ = req.Args["file_path"].(string)
 		}
+		if targetPath == "" {
+			targetPath = "."
+		}
+
 		isWrite := req.ToolName == "write_to_file" || req.ToolName == "replace_file_content"
 		if isWrite && preset == domain.PresetReadOnly {
 			decision = domain.SecurityDecision{
@@ -297,7 +324,17 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 
 	case "read_url_content":
 		urlStr, _ := req.Args["Url"].(string)
-		decision, err = bundle.networkEval.EvaluateURL(urlStr)
+		if urlStr == "" {
+			urlStr, _ = req.Args["url"].(string)
+		}
+		if urlStr == "" {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   "🛡️ [Security Gate]: Missing required URL parameter for read_url_content",
+			}
+		} else {
+			decision, err = bundle.networkEval.EvaluateURL(urlStr)
+		}
 
 	case "read_browser_page":
 		urlStr, _ := req.Args["Url"].(string)
@@ -314,7 +351,16 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}
 
 	case "web_search":
-		if domainStr, ok := req.Args["domain"].(string); ok && domainStr != "" {
+		query, _ := req.Args["query"].(string)
+		if query == "" {
+			query, _ = req.Args["Query"].(string)
+		}
+		if strings.TrimSpace(query) == "" {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   "🛡️ [Security Gate]: Empty search query rejected",
+			}
+		} else if domainStr, ok := req.Args["domain"].(string); ok && domainStr != "" {
 			decision, err = bundle.networkEval.EvaluateURL("https://" + domainStr)
 		} else {
 			decision = domain.SecurityDecision{
@@ -345,10 +391,15 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		if action == "" {
 			action, _ = req.Args["action"].(string)
 		}
-		if preset == domain.PresetReadOnly && (action == "kill" || action == "kill_all") {
+		if preset == domain.PresetReadOnly {
 			decision = domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
 				Reason:   fmt.Sprintf("🛡️ [Security Gate]: Subagent management action %q is forbidden under Read Only security preset", action),
+			}
+		} else if preset == domain.PresetWorkspaceOnly && action == "dispatch" && bundle.cfg.Subagents.MaxCascadeDepth == 0 {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   "🛡️ [Security Gate]: Subagent cascading dispatch is disabled in workspace_only security preset",
 			}
 		} else {
 			decision = domain.SecurityDecision{
@@ -499,6 +550,14 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		return domain.SecurityDecision{
 			Decision:  domain.DecisionAllow,
 			Reason:    "Approved by administrator",
+			LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
+		}, nil
+	}
+	if decision.Decision == domain.DecisionAsk {
+		m.recordBlocked()
+		return domain.SecurityDecision{
+			Decision:  domain.DecisionDeny,
+			Reason:    "🛡️ [Security Gate]: Interactive approval channel is unavailable; action denied",
 			LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
 		}, nil
 	}

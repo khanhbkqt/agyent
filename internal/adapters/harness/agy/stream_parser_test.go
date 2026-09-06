@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,10 +94,10 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Equal(t, "ACTIVE", toolEvts[0].State)
 		assert.Equal(t, "DONE", toolEvts[1].State)
 
-		require.NotNil(t, resultEvt)
-		assert.Equal(t, 150, resultEvt.Usage.TotalTokens)
-		assert.Equal(t, 80, resultEvt.Usage.CacheReadTokens)
-		assert.Equal(t, 80.0, resultEvt.Usage.CacheHitRatio())
+		assert.Nil(t, resultEvt, "terminal result emission belongs to the turn coordinator")
+		assert.Equal(t, 150, res.Usage.TotalTokens)
+		assert.Equal(t, 80, res.Usage.CacheReadTokens)
+		assert.Equal(t, 80.0, res.Usage.CacheHitRatio())
 	})
 
 	t.Run("TC-BRG-04_AbruptSubprocessTerminationWithoutResult", func(t *testing.T) {
@@ -122,9 +123,7 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Contains(t, err.Error(), "incomplete stream")
 
 		mu.Lock()
-		require.NotNil(t, errEvt)
-		assert.Equal(t, "telegram:999", errEvt.SessionKey)
-		assert.Contains(t, errEvt.Error, "terminated abruptly")
+		assert.Nil(t, errEvt, "parser returns failures to the turn coordinator")
 		mu.Unlock()
 	})
 
@@ -202,9 +201,7 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 
 		mu.Lock()
 		defer mu.Unlock()
-		require.NotNil(t, interruptedEvt)
-		assert.Equal(t, "telegram:interrupted", interruptedEvt.SessionKey)
-		assert.Equal(t, "c-interrupted", interruptedEvt.ConversationID)
+		assert.Nil(t, interruptedEvt, "interruption emission belongs to the turn coordinator")
 	})
 
 	t.Run("TC-BRG-07_ReturnsImmediatelyOnResultWithoutWaitingForEOF", func(t *testing.T) {
@@ -281,7 +278,7 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Equal(t, "turn-test-xyz", initTurnID)
 		assert.Equal(t, "turn-test-xyz", deltaTurnID)
 		assert.Equal(t, "turn-test-xyz", toolTurnID)
-		assert.Equal(t, "turn-test-xyz", resultTurnID)
+		assert.Empty(t, resultTurnID, "parser must not emit a terminal result")
 		assert.Equal(t, "turn-test-xyz", res.TurnID)
 	})
 
@@ -331,16 +328,51 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.GreaterOrEqual(t, count, 6, "Milestone must be pinged periodically during silent tool execution")
 	})
 
-	t.Run("TC-BRG-Denial_EmitsErrorAndFailsClosed", func(t *testing.T) {
+	t.Run("TC-BRG-Denial_ReturnsTypedPolicyDenial", func(t *testing.T) {
 		sampleNDJSON := `
 {"event":"init","conversation_id":"c-denied"}
 {"event":"result","result":{"conversation_id":"c-denied","status":"DENIED","error":"permission denied by policy","denied_actions":["run_command"]}}
 `
 		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:denied", strings.NewReader(sampleNDJSON))
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "native permission denial")
+		assert.Equal(t, domain.StatusPolicyDenied, domain.ExecutionOutcomeFromError(err))
 		require.NotNil(t, res)
 		assert.Equal(t, "DENIED", res.Status)
-		assert.Equal(t, "permission denied by policy", res.Error)
+		assert.Equal(t, domain.StatusPolicyDenied, res.Outcome)
+		assert.Equal(t, "policy denial: permission denied by policy", res.Error)
 	})
+}
+
+func TestStreamParser_ReturnsTerminalOutcomeWithoutEmittingTerminalEvent(t *testing.T) {
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	var terminalEvents atomic.Int32
+	for _, eventType := range []domain.EventType{
+		domain.EventStreamResult,
+		domain.EventStreamError,
+		domain.EventStreamInterrupted,
+	} {
+		bus.SubscribeSync(eventType, func(context.Context, domain.Event) error {
+			terminalEvents.Add(1)
+			return nil
+		})
+	}
+
+	parser := agy.NewStreamParser(bus)
+	parser.SetTurnID("turn-single-owner")
+
+	result, err := parser.ParseAndEmitStream(context.Background(), "telegram:single-owner", strings.NewReader(
+		`{"event":"result","result":{"conversation_id":"conv-1","status":"SUCCESS","response":"done"}}`+"\n",
+	))
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(0), terminalEvents.Load(), "the turn coordinator owns terminal stream events")
+
+	result, err = parser.ParseAndEmitStream(context.Background(), "telegram:single-owner", strings.NewReader(
+		`{"event":"result","result":{"conversation_id":"conv-1","status":"DENIED","denied_actions":[{"action":"command"}]}}`+"\n",
+	))
+	require.Error(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, int32(0), terminalEvents.Load(), "denials must be returned, not emitted by the parser")
 }

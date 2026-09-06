@@ -759,6 +759,13 @@ func TestZaloAdapter_StreamingSupport_ErrorAndInterrupted(t *testing.T) {
 	// 1. Test EventStreamError delivery
 	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
 		SessionKey: "zalo:err_token:chat_err_456",
+		TurnID:     "turn_err_1",
+		Error:      "LLM context window exceeded",
+	}))
+	require.NoError(t, err)
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+		SessionKey: "zalo:err_token:chat_err_456",
+		TurnID:     "turn_err_1",
 		Error:      "LLM context window exceeded",
 	}))
 	require.NoError(t, err)
@@ -770,6 +777,7 @@ func TestZaloAdapter_StreamingSupport_ErrorAndInterrupted(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond)
 
 	mu.Lock()
+	assert.Len(t, sentMessages, 1, "duplicate terminal event must be delivered once")
 	assert.Equal(t, "chat_err_456", sentMessages[0].ChatID)
 	assert.Contains(t, sentMessages[0].Text, "LLM context window exceeded")
 	mu.Unlock()

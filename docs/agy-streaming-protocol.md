@@ -1,8 +1,8 @@
 # AGY Streaming Protocol Specification & Real-Time Interaction Architecture
 
 > **Document status:** Reference
-> **Code authority:** AGY stream parser, EventBus, Telegram delivery throttler
-> **Last verified:** 2026-09-05
+> **Code authority:** AGY stream parser and runner, core engine, EventBus, channel delivery adapters
+> **Last verified:** 2026-09-06
 
 This document provides a comprehensive technical specification of the **Bidirectional NDJSON Stream-JSON Protocol** in the Antigravity CLI (`agy`), event-driven stream parsing, and real-time delivery architecture for **`agyent`**.
 
@@ -305,6 +305,7 @@ type ToolInfoPayload struct {
     Name       string                 `json:"name"`
     Parameters map[string]interface{} `json:"parameters"`
     Output     interface{}            `json:"output,omitempty"`
+    Error      interface{}            `json:"error,omitempty"`
 }
 
 type ResultPayload struct {
@@ -339,6 +340,17 @@ flowchart LR
    - `🎨 Generating image illustration...`
    - `⚡ Running go test ./...`
 3. **Instant Finalization:** On `result` event, flushes all remaining text and finalizes the message with action buttons and attachments.
+
+### Terminal event ownership
+
+The stream parser and runner emit progress only (`init`, text delta, and tool
+state). They return the final result or a typed error to the core engine. The
+engine is the only component that emits `EventStreamResult`,
+`EventStreamInterrupted`, or `EventStreamError`, so one turn has one terminal
+event. Delivery adapters retain a `(session_key, turn_id)` deduplication guard
+for delayed or repeated delivery. Native and policy denials are delivered as a
+conversational result; when AGY produced no response text, the engine supplies a
+short explanation instead of exposing an adapter error stack.
 
 ---
 

@@ -131,4 +131,24 @@ func TestEvaluateParsedCommandPolicy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, domain.DecisionAllow, dec.Decision)
 	})
+
+	t.Run("Process enumeration in Workspace-Only mode is Denied", func(t *testing.T) {
+		for _, cmdStr := range []string{"ps aux", "top -b", "pm2 list", "env", "printenv", "lsof -i"} {
+			parsed := security.ParseCommandPipeline(cmdStr)
+			dec, err := security.EvaluateParsedCommandPolicy(parsed, cmdStr, domain.PresetWorkspaceOnly, sensitiveRe, blacklist, whitelist)
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, dec.Decision, "Command %s should be denied in workspace_only", cmdStr)
+			assert.Contains(t, dec.Reason, "Workspace Only")
+		}
+	})
+
+	t.Run("Control-plane file manipulation in commands is Denied", func(t *testing.T) {
+		for _, cmdStr := range []string{"chmod 777 .agents/hooks.json", "cat > .agents/hooks.json", "rm -rf ~/.gemini/config", "cp secret ~/.ssh/id_rsa"} {
+			parsed := security.ParseCommandPipeline(cmdStr)
+			dec, err := security.EvaluateParsedCommandPolicy(parsed, cmdStr, domain.PresetWorkspaceOnly, sensitiveRe, blacklist, whitelist)
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, dec.Decision, "Command %s should be denied due to control-plane path reference", cmdStr)
+			assert.Contains(t, dec.Reason, "Control Plane Protection")
+		}
+	})
 }

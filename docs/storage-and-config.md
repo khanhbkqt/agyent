@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/config/config.go`, `internal/adapters/storage/sqlite`, SQLite migrations
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This document describes stable behavior and points to the current schema/defaults.
 The Go structs and migration files are authoritative; do not copy this document's
@@ -122,9 +122,10 @@ With the default `storage.agents_dir: ~/.agyent`:
 missing persona files from the earlier `~/.agyent/agents/workspace` location into
 the current default workspace without overwriting existing files.
 
-Project workspaces can point elsewhere. The resolved workspace is passed to AGY
-with `--project outside-of-project --add-dir <workspace>` and through APIS-4D
-identity variables.
+Project workspaces can point elsewhere. The execution service binds the resolved
+workspace to the agent's stored AGY project mapping and admission ticket. The
+runner passes `--project <admitted-project> --sandbox --add-dir <workspace>` and
+the APIS-4D identity variables.
 
 ## 5. SQLite connection model
 

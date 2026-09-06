@@ -109,7 +109,6 @@ func parseZaloSessionKey(sessionKey string) (chatID string, threadID int64, botI
 	return
 }
 
-
 // NewAdapter initializes a new Zalo channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort) (*Adapter, error) {
 	if cfg == nil {
@@ -839,6 +838,9 @@ func (a *Adapter) onStreamResult(ctx context.Context, evt domain.Event) error {
 	if !strings.HasPrefix(p.SessionKey, "zalo:") {
 		return nil
 	}
+	if !a.throttler.acceptTerminalEvent(p.SessionKey, p.TurnID) {
+		return nil
+	}
 
 	var chatID string
 	var threadID int64
@@ -923,6 +925,9 @@ func (a *Adapter) onStreamError(ctx context.Context, evt domain.Event) error {
 	if !strings.HasPrefix(p.SessionKey, "zalo:") {
 		return nil
 	}
+	if !a.throttler.acceptTerminalEvent(p.SessionKey, p.TurnID) {
+		return nil
+	}
 
 	var chatID string
 	var botID int64
@@ -962,6 +967,9 @@ func (a *Adapter) onStreamInterrupted(ctx context.Context, evt domain.Event) err
 	if !strings.HasPrefix(p.SessionKey, "zalo:") {
 		return nil
 	}
+	if !a.throttler.acceptTerminalEvent(p.SessionKey, p.TurnID) {
+		return nil
+	}
 
 	val, loaded := a.streamSessions.LoadAndDelete(p.SessionKey)
 	if !loaded {
@@ -994,4 +1002,3 @@ func (a *Adapter) onStreamInterrupted(ctx context.Context, evt domain.Event) err
 		ConversationID: p.ConversationID,
 	})
 }
-

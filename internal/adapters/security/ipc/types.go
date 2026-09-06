@@ -2,6 +2,7 @@ package ipc
 
 // HookRequest is the wire format passed between agyent-hook and the IPC server.
 type HookRequest struct {
+	AuthToken      string       `json:"auth_token,omitempty"`
 	TurnID         string       `json:"turn_id,omitempty"`
 	HookType       string       `json:"hook_type"` // "pre", "post"
 	ToolCall       HookToolCall `json:"toolCall"`

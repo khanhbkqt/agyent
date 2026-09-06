@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/adapters/subagent`, subagent domain/ports/repository, engine tools
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This document provides a comprehensive technical architecture and engineering specification for the **Sub-Agent Background Dispatching and Non-Blocking Multi-Agent Subsystem** in **`agyent`**.
 
@@ -227,9 +227,11 @@ type SubagentDispatcherPort interface {
 ## 5. Subprocess Execution & Live Stream Protocol
 
 ### 5.1. Isolated Subprocess Spawning
-Background tasks spawn a dedicated child process with explicit flags:
+Background tasks resolve the trusted AGY project mapping for their agent and
+spawn a dedicated child process with the same project/workspace/sandbox
+boundary as foreground turns:
 ```bash
-agy --output-format stream-json --project outside-of-project --add-dir <workspace_dir> --mode accept-edits --model flash --effort low --dangerously-skip-permissions
+agy --input-format stream-json --output-format stream-json --project <agent_project_id> --sandbox --add-dir <workspace_dir> --mode accept-edits
 ```
 
 ### 5.2. NDJSON Stream Interception & Live Telemetry

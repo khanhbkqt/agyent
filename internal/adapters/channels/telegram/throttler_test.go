@@ -530,6 +530,31 @@ func TestThrottler_TurnRaceCondition_StaleTurnDoesNotKillActiveTurn(t *testing.T
 	assert.Equal(t, 0, throttler.ActiveSessionsCount(), "Turn 2 must cleanly finalize and clean up")
 }
 
+func TestThrottler_DeduplicatesTerminalErrorsBySessionAndTurn(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_terminal_dedup")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+
+	payload := domain.StreamErrorPayload{
+		SessionKey:     "telegram:445566:0",
+		ConversationID: "conv-dedup",
+		TurnID:         "turn-dedup",
+		Error:          "synthetic failure",
+	}
+	require.NoError(t, throttler.OnStreamError(context.Background(), domain.NewEvent(domain.EventStreamError, payload)))
+	require.NoError(t, throttler.OnStreamError(context.Background(), domain.NewEvent(domain.EventStreamError, payload)))
+
+	mockServer.mu.Lock()
+	defer mockServer.mu.Unlock()
+	require.Len(t, mockServer.SentMessages, 1)
+	assert.Contains(t, mockServer.SentMessages[0].Text, "synthetic failure")
+}
+
 // TC-THR-12: Transient Server Error (5xx) Retry Succeeds
 func TestThrottler_TransientServerErrorRetry(t *testing.T) {
 	mockServer := NewMockTelegramServer("token_thr_12")
@@ -951,4 +976,3 @@ func TestThrottler_ImageOnlyDoesNotInjectWarning(t *testing.T) {
 	assert.Empty(t, mockServer.SentMessages, "No warning or empty text message should be sent for image-only turn")
 	mockServer.mu.Unlock()
 }
-

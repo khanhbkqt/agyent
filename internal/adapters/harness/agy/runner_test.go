@@ -120,7 +120,7 @@ func runMockAGYHelper() {
 		os.Exit(0)
 
 	case "verify_project_sandbox_flags":
-		var hasProject, hasSandbox, hasAddDir bool
+		var hasProject, hasSandbox, hasAddDir, hasDangerousSkip bool
 		for i, arg := range args {
 			if arg == "--project" && i+1 < len(args) && args[i+1] == "agy-proj-alpha-99" {
 				hasProject = true
@@ -131,8 +131,11 @@ func runMockAGYHelper() {
 			if arg == "--add-dir" && i+1 < len(args) && args[i+1] != "" {
 				hasAddDir = true
 			}
+			if arg == "--dangerously-skip-permissions" {
+				hasDangerousSkip = true
+			}
 		}
-		if !hasProject || !hasSandbox || !hasAddDir {
+		if !hasProject || !hasSandbox || !hasAddDir || hasDangerousSkip {
 			fmt.Fprintf(os.Stderr, "missing expected project sandbox flags, args: %v\n", args)
 			os.Exit(1)
 		}
@@ -856,4 +859,3 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 		assert.Contains(t, res.ResponseText, "Print timeout stream verified: 2400s")
 	})
 }
-

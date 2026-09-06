@@ -30,16 +30,15 @@ type streamControlEntry struct {
 // Harness implements ports.RunnerPort to execute AGY CLI subprocesses with STDIN streaming,
 // cross-platform process tree cleanup, JSON boundary extraction, and artifacts detection.
 type Harness struct {
-	binaryPath                 string
-	defaultTimeout             time.Duration
-	defaultEffort              string
-	defaultMode                string
-	dangerouslySkipPermissions bool
-	graceTimeout               time.Duration
-	modelAliases               map[string]string
-	watcher                    *SnapshotWatcher
-	eventBus                   ports.EventBusPort
-	activeStreams              sync.Map // map[string]*streamControlEntry
+	binaryPath     string
+	defaultTimeout time.Duration
+	defaultEffort  string
+	defaultMode    string
+	graceTimeout   time.Duration
+	modelAliases   map[string]string
+	watcher        *SnapshotWatcher
+	eventBus       ports.EventBusPort
+	activeStreams  sync.Map // map[string]*streamControlEntry
 }
 
 // NewHarness constructs a new Harness runner adapter from AGYConfig.
@@ -67,15 +66,14 @@ func NewHarness(cfg config.AGYConfig, bus ...ports.EventBusPort) *Harness {
 	}
 
 	return &Harness{
-		binaryPath:                 cfg.BinaryPath,
-		defaultTimeout:             timeout,
-		defaultEffort:              effort,
-		defaultMode:                mode,
-		dangerouslySkipPermissions: cfg.DangerouslySkipPermissions,
-		graceTimeout:               graceTimeout,
-		modelAliases:               cfg.ModelAliases,
-		watcher:                    NewSnapshotWatcher(),
-		eventBus:                   eb,
+		binaryPath:     cfg.BinaryPath,
+		defaultTimeout: timeout,
+		defaultEffort:  effort,
+		defaultMode:    mode,
+		graceTimeout:   graceTimeout,
+		modelAliases:   cfg.ModelAliases,
+		watcher:        NewSnapshotWatcher(),
+		eventBus:       eb,
 	}
 }
 
@@ -184,7 +182,10 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	)
 
 	// 2. Execute process with JobGuard process tree isolation
-	jobGuard, _ := CreateProcessJobGuard()
+	jobGuard, err := CreateProcessJobGuard()
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to initialize process job guard: %v", ports.ErrProcessExecution, err)
+	}
 	if jobGuard != nil {
 		defer jobGuard.Close()
 	}
@@ -193,7 +194,11 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		return nil, fmt.Errorf("%w: failed to start agy process: %v", ports.ErrProcessExecution, err)
 	}
 	if jobGuard != nil && cmd.Process != nil {
-		_ = jobGuard.AttachProcess(cmd.Process)
+		if attachErr := jobGuard.AttachProcess(cmd.Process); attachErr != nil {
+			slog.ErrorContext(ctx, "Failed to attach process to JobGuard", slog.String("error", attachErr.Error()))
+			_ = killProcessTree(cmd)
+			return nil, fmt.Errorf("%w: failed to attach process to JobGuard: %v", ports.ErrProcessExecution, attachErr)
+		}
 	}
 
 	runErr := cmd.Wait()
@@ -202,10 +207,14 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if execCtx.Err() != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 			slog.ErrorContext(ctx, "AGY execution timed out", slog.Duration("timeout", timeout), slog.String("workspace", req.WorkspaceDir))
-			return nil, fmt.Errorf("agy execution timed out after %v: %w", timeout, execCtx.Err())
+			return nil, domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("AGY execution timed out after %v", timeout),
+				execCtx.Err(),
+			)
 		}
 		slog.WarnContext(ctx, "AGY execution cancelled", slog.String("workspace", req.WorkspaceDir))
-		return nil, fmt.Errorf("agy execution cancelled: %w", execCtx.Err())
+		return nil, domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "AGY execution cancelled", execCtx.Err())
 	}
 
 	// 4. Parse JSON boundary output
@@ -219,10 +228,17 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		if errors.Is(parseErr, ports.ErrConversationNotFound) {
 			return nil, parseErr
 		}
-		if runErr != nil {
-			return nil, fmt.Errorf("%w: process error (%v), stderr: %s", ports.ErrProcessExecution, runErr, stderrBuf.String())
+		if outcome := domain.ExecutionOutcomeFromError(parseErr); outcome == domain.StatusNativePermissionDenied || outcome == domain.StatusPolicyDenied {
+			return res, parseErr
 		}
-		return nil, parseErr
+		if runErr != nil {
+			return res, domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("process error (%v), stderr: %s", runErr, stderrBuf.String()),
+				ports.ErrProcessExecution,
+			)
+		}
+		return res, parseErr
 	}
 
 	// 5. Detect artifacts created or modified during the run
@@ -394,7 +410,11 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	// Start subprocess with JobGuard process tree isolation
-	jobGuard, _ := CreateProcessJobGuard()
+	jobGuard, err := CreateProcessJobGuard()
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to initialize process job guard", slog.String("error", err.Error()))
+		return nil, fmt.Errorf("%w: failed to initialize process job guard: %v", ports.ErrProcessExecution, err)
+	}
 	if jobGuard != nil {
 		defer jobGuard.Close()
 	}
@@ -404,7 +424,11 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		return nil, fmt.Errorf("%w: failed to start agy process: %v", ports.ErrProcessExecution, err)
 	}
 	if jobGuard != nil && cmd.Process != nil {
-		_ = jobGuard.AttachProcess(cmd.Process)
+		if attachErr := jobGuard.AttachProcess(cmd.Process); attachErr != nil {
+			slog.ErrorContext(ctx, "Failed to attach process to JobGuard", slog.String("error", attachErr.Error()))
+			_ = killProcessTree(cmd)
+			return nil, fmt.Errorf("%w: failed to attach process to JobGuard: %v", ports.ErrProcessExecution, attachErr)
+		}
 	}
 
 	// Write initial turn payload to stdin pipe with synchronization
@@ -495,21 +519,17 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 				slog.String("session_key", sessionKey),
 				slog.String("stderr", stderrBuf.String()),
 			)
-			timeoutErr = fmt.Errorf("agy stream execution timed out after %v without milestone activity: %w", timeout, context.DeadlineExceeded)
+			timeoutErr = domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("AGY stream execution timed out after %v without milestone activity", timeout),
+				context.DeadlineExceeded,
+			)
 		} else {
 			slog.WarnContext(ctx, "AGY stream execution cancelled",
 				slog.String("session_key", sessionKey),
 				slog.String("stderr", stderrBuf.String()),
 			)
-			timeoutErr = fmt.Errorf("agy stream execution cancelled: %w", execCtx.Err())
-		}
-		if h.eventBus != nil {
-			_ = h.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
-				SessionKey:     sessionKey,
-				ConversationID: req.ConversationID,
-				TurnID:         req.TurnID,
-				Error:          timeoutErr.Error(),
-			}))
+			timeoutErr = domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "AGY stream execution cancelled", execCtx.Err())
 		}
 		return nil, timeoutErr
 	}
@@ -520,31 +540,23 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			slog.String("error", parseErr.Error()),
 			slog.String("stderr", stderrBuf.String()),
 		)
-		if h.eventBus != nil && !errors.Is(parseErr, ports.ErrConversationNotFound) {
-			_ = h.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
-				SessionKey:     sessionKey,
-				ConversationID: req.ConversationID,
-				Error:          parseErr.Error(),
-			}))
-		}
 		if errors.Is(parseErr, ports.ErrConversationNotFound) {
 			return nil, parseErr
 		}
-		if waitErr != nil {
-			return nil, fmt.Errorf("%w: process error (%v), stderr: %s", ports.ErrProcessExecution, waitErr, stderrBuf.String())
+		if outcome := domain.ExecutionOutcomeFromError(parseErr); outcome == domain.StatusNativePermissionDenied || outcome == domain.StatusPolicyDenied {
+			return executionResultFromStream(streamRes), parseErr
 		}
-		return nil, parseErr
+		if waitErr != nil {
+			return executionResultFromStream(streamRes), domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("process error (%v), stderr: %s", waitErr, stderrBuf.String()),
+				ports.ErrProcessExecution,
+			)
+		}
+		return executionResultFromStream(streamRes), parseErr
 	}
 
-	res := &domain.ExecutionResult{
-		Success:        streamRes.Status == "SUCCESS",
-		ConversationID: streamRes.ConversationID,
-		ResponseText:   streamRes.Response,
-		DurationSec:    streamRes.DurationSeconds,
-		Usage:          streamRes.Usage,
-		Error:          streamRes.Error,
-		Artifacts:      streamRes.Artifacts,
-	}
+	res := executionResultFromStream(streamRes)
 	if streamRes.Status == "INTERRUPTED" && res.Error == "" {
 		res.Error = "INTERRUPTED"
 	}
@@ -568,6 +580,23 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	return res, nil
+}
+
+func executionResultFromStream(streamRes *domain.StreamResultPayload) *domain.ExecutionResult {
+	if streamRes == nil {
+		return nil
+	}
+	return &domain.ExecutionResult{
+		Success:        streamRes.Status == "SUCCESS",
+		Outcome:        streamRes.Outcome,
+		ConversationID: streamRes.ConversationID,
+		ResponseText:   streamRes.Response,
+		DurationSec:    streamRes.DurationSeconds,
+		NumTurns:       streamRes.NumTurns,
+		Usage:          streamRes.Usage,
+		Error:          streamRes.Error,
+		Artifacts:      streamRes.Artifacts,
+	}
 }
 
 // InterruptStream signals an active streaming turn to gracefully finish its current tool/sub-turn and exit.
@@ -673,9 +702,25 @@ func (h *Harness) ListAvailableModels(ctx context.Context) ([]domain.ModelCapabi
 	return domain.ListAvailableModels(), nil
 }
 
-// buildCommandEnv constructs a subprocess environment injecting APIS-4D isolation variables.
+// buildCommandEnv constructs a subprocess environment injecting APIS-4D isolation variables
+// using a strictly sanitized environment variable whitelist to prevent leaking host secrets.
 func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []string {
-	envList := append(os.Environ(), "NO_COLOR=1", "TERM=dumb")
+	safeKeys := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true, "TMP": true,
+		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "USER": true, "LOGNAME": true,
+		"SHELL": true, "TERM": true, "NO_COLOR": true, "SYSTEMROOT": true, "COMSPEC": true,
+		"PATHEXT": true, "WINDIR": true, "APPDATA": true, "LOCALAPPDATA": true,
+		"GO_WANT_MOCK_AGY_HELPER": true, "MOCK_SCENARIO": true,
+	}
+
+	var envList []string
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) > 0 && safeKeys[strings.ToUpper(parts[0])] {
+			envList = append(envList, env)
+		}
+	}
+	envList = append(envList, "NO_COLOR=1", "TERM=dumb")
 	if req.AgentName != "" {
 		envList = append(envList, "AGYENT_AGENT_NAME="+req.AgentName)
 	}
@@ -691,6 +736,9 @@ func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []str
 	}
 	if req.UserID != "" {
 		envList = append(envList, "AGYENT_USER_ID="+req.UserID)
+	}
+	if req.TurnID != "" {
+		envList = append(envList, "AGYENT_TURN_ID="+req.TurnID)
 	}
 	for k, v := range req.Env {
 		if k != "" {

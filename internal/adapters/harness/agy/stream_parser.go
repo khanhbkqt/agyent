@@ -48,6 +48,7 @@ type ToolInfoPayload struct {
 	Name       string                 `json:"name"`
 	Parameters map[string]interface{} `json:"parameters"`
 	Output     interface{}            `json:"output,omitempty"`
+	Error      interface{}            `json:"error,omitempty"`
 }
 
 type ResultPayload struct {
@@ -243,6 +244,9 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 						}
 						params = step.ToolInfo.Parameters
 						output = step.ToolInfo.Output
+						if output == nil {
+							output = step.ToolInfo.Error
+						}
 					}
 
 					if step.State == "DONE" {
@@ -302,34 +306,16 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					Artifacts:       artifacts,
 				}
 				if len(res.DeniedActions) > 0 || res.Status == "DENIED" {
+					outcome := classifyDeniedOutcome(res.DeniedActions, res.Error)
 					errMsg := res.Error
 					if errMsg == "" {
-						errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
+						errMsg = "AGY rejected tool execution (denied_actions)"
 					}
+					outcomeErr := domain.NewExecutionOutcomeError(outcome, errMsg, nil)
 					lastResult.Status = "DENIED"
-					lastResult.Error = errMsg
-					if p.eventBus != nil {
-						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
-							SessionKey:     sessionKey,
-							ConversationID: conversationID,
-							TurnID:         p.turnID,
-							Error:          errMsg,
-						}))
-					}
-					return lastResult, fmt.Errorf("native permission denial: %s", errMsg)
-				}
-				if p.eventBus != nil {
-					if res.Status == "INTERRUPTED" {
-						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
-							SessionKey:     sessionKey,
-							ConversationID: conversationID,
-							TurnID:         p.turnID,
-							Reason:         "Preempted by incoming user message",
-							Timestamp:      time.Now(),
-						}))
-					} else {
-						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
-					}
+					lastResult.Outcome = outcome
+					lastResult.Error = outcomeErr.Error()
+					return lastResult, outcomeErr
 				}
 			} else {
 				lastResult = &domain.StreamResultPayload{
@@ -338,52 +324,25 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					TurnID:         p.turnID,
 					Status:         "SUCCESS",
 				}
-				if p.eventBus != nil {
-					_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, *lastResult))
-				}
 			}
 			return lastResult, nil
 
 		case "error":
 			hasResult = true
-			errPayload := domain.StreamErrorPayload{
-				SessionKey:     sessionKey,
-				ConversationID: conversationID,
-				TurnID:         p.turnID,
-				Error:          rawEvt.Error,
-			}
-			if p.eventBus != nil {
-				_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, errPayload))
-			}
 			if convNotFoundRegex.MatchString(rawEvt.Error) {
 				return nil, fmt.Errorf("%w: %s", ports.ErrConversationNotFound, rawEvt.Error)
 			}
-			return nil, fmt.Errorf("stream execution failed: %s", rawEvt.Error)
+			return nil, domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, rawEvt.Error, nil)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		if p.eventBus != nil {
-			_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
-				SessionKey:     sessionKey,
-				ConversationID: conversationID,
-				Error:          fmt.Sprintf("scanner error: %v", err),
-			}))
-		}
-		return nil, fmt.Errorf("stream scanner error: %w", err)
+		return nil, domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "stream scanner error", err)
 	}
 
 	// Mid-stream crash guard: If stream completed without a result event
 	if !hasResult {
-		errPayload := domain.StreamErrorPayload{
-			SessionKey:     sessionKey,
-			ConversationID: conversationID,
-			Error:          "subprocess stream terminated abruptly without result event",
-		}
-		if p.eventBus != nil {
-			_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, errPayload))
-		}
-		return nil, errors.New("stream parser: incomplete stream without result event")
+		return nil, domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "stream parser: incomplete stream without result event", nil)
 	}
 
 	return lastResult, nil

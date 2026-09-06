@@ -69,6 +69,8 @@ type DeliveryThrottler struct {
 	generationCounter atomic.Uint64
 	sessions          sync.Map // map[string]*StreamSession
 	mu                sync.RWMutex
+	terminalMu        sync.Mutex
+	terminalEvents    map[string]time.Time
 }
 
 // NewDeliveryThrottler creates a new DeliveryThrottler.
@@ -86,7 +88,34 @@ func NewDeliveryThrottler(bot *gotgbot.Bot, mediaMgr *MediaManager, throttleInte
 		mediaMgr:        mediaMgr,
 		throttleSeconds: throttleIntervalSec,
 		streamingOn:     streamingOn,
+		terminalEvents:  make(map[string]time.Time),
 	}
+}
+
+const terminalEventRetention = 30 * time.Minute
+
+// acceptTerminalEvent guarantees that a turn can finalize its channel stream
+// only once, even if an adapter or delayed EventBus delivery repeats the event.
+func (dt *DeliveryThrottler) acceptTerminalEvent(sessionKey, turnID string) bool {
+	if sessionKey == "" || turnID == "" {
+		return true
+	}
+
+	now := time.Now()
+	key := sessionKey + "\x00" + turnID
+	dt.terminalMu.Lock()
+	defer dt.terminalMu.Unlock()
+
+	for existingKey, seenAt := range dt.terminalEvents {
+		if now.Sub(seenAt) > terminalEventRetention {
+			delete(dt.terminalEvents, existingKey)
+		}
+	}
+	if _, exists := dt.terminalEvents[key]; exists {
+		return false
+	}
+	dt.terminalEvents[key] = now
+	return true
 }
 
 func (dt *DeliveryThrottler) getBot(botID int64) *gotgbot.Bot {
@@ -263,6 +292,9 @@ func (dt *DeliveryThrottler) OnStreamResult(ctx context.Context, evt domain.Even
 	if !ok {
 		return nil
 	}
+	if !dt.acceptTerminalEvent(p.SessionKey, p.TurnID) {
+		return nil
+	}
 
 	val, exists := dt.sessions.Load(p.SessionKey)
 	if !exists {
@@ -327,6 +359,9 @@ func (dt *DeliveryThrottler) OnStreamInterrupted(ctx context.Context, evt domain
 	if !ok {
 		return nil
 	}
+	if !dt.acceptTerminalEvent(p.SessionKey, p.TurnID) {
+		return nil
+	}
 
 	val, exists := dt.sessions.Load(p.SessionKey)
 	if !exists {
@@ -362,6 +397,9 @@ func (dt *DeliveryThrottler) OnStreamInterrupted(ctx context.Context, evt domain
 func (dt *DeliveryThrottler) OnStreamError(ctx context.Context, evt domain.Event) error {
 	p, ok := evt.Payload.(domain.StreamErrorPayload)
 	if !ok {
+		return nil
+	}
+	if !dt.acceptTerminalEvent(p.SessionKey, p.TurnID) {
 		return nil
 	}
 
