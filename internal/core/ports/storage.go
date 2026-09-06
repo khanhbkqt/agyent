@@ -102,6 +102,16 @@ type AuditStore = AuditRepository
 type ConversationStore = ConversationRepository
 type SubagentStore = SubagentRepository
 type ScheduleStore = ScheduleRepository
+type InFlightTurnStore = InFlightTurnRepository
+
+// InFlightTurnRepository defines persistence operations for tracking and recovering active conversation turns.
+type InFlightTurnRepository interface {
+	SaveInFlightTurn(ctx context.Context, turn *domain.InFlightTurn) error
+	GetInFlightTurn(ctx context.Context, turnID string) (*domain.InFlightTurn, error)
+	UpdateInFlightTurnStatus(ctx context.Context, turnID string, status domain.TurnStatus, errMsg string) error
+	ListInterruptedTurns(ctx context.Context) ([]domain.InFlightTurn, error)
+	PurgeInFlightTurns(ctx context.Context, retentionDays int) (int64, error)
+}
 
 // ConversationRepository defines persistence and lifecycle operations for multi-conversation management.
 type ConversationRepository interface {
@@ -134,6 +144,7 @@ type StoragePort interface {
 	ConversationRepository
 	SubagentRepository
 	ScheduleRepository
+	InFlightTurnRepository
 
 	// Close gracefully closes any open database connections.
 	Close() error

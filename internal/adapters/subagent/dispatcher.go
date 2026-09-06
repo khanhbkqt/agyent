@@ -109,6 +109,9 @@ func (d *SubagentDispatcher) Start(ctx context.Context) error {
 		if recCount, err := d.storage.ReconcileStaleCancellingTasks(ctx); err == nil && recCount > 0 {
 			slog.Info("reconciled stale subagent tasks on startup", "count", recCount)
 		}
+		if runCount, err := d.storage.ReconcileStaleRunningTasks(ctx); err == nil && runCount > 0 {
+			slog.Info("reconciled stale running subagent tasks on startup", "count", runCount)
+		}
 	}
 
 	for i := 0; i < d.config.MaxConcurrentWorkers; i++ {

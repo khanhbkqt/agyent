@@ -24,6 +24,7 @@ type SubagentRepository interface {
 	TransitionTaskToCancelled(ctx context.Context, id string) error
 	TransitionTaskStatus(ctx context.Context, id string, fromStatus, toStatus domain.SubagentTaskStatus) (bool, error)
 	ReconcileStaleCancellingTasks(ctx context.Context) (int64, error)
+	ReconcileStaleRunningTasks(ctx context.Context) (int64, error)
 	PurgeSubagentTasks(ctx context.Context, olderThanDays int) (int64, error)
 }
 

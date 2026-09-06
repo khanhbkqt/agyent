@@ -219,6 +219,16 @@ type AgentProfileConfig struct {
 	Description    string `yaml:"description" json:"description"`
 }
 
+// RecoveryConfig controls turn auto-recovery and crash resilience.
+type RecoveryConfig struct {
+	Enabled                 bool   `yaml:"enabled" json:"enabled"`
+	Mode                    string `yaml:"mode" json:"mode"` // "auto" | "notify_only" | "disabled"
+	MaxRetries              int    `yaml:"max_retries" json:"max_retries"`
+	MaxConcurrentRecoveries int    `yaml:"max_concurrent_recoveries" json:"max_concurrent_recoveries"`
+	RetentionDays           int    `yaml:"retention_days" json:"retention_days"`
+	SubagentsAutoResume     bool   `yaml:"subagents_auto_resume" json:"subagents_auto_resume"`
+}
+
 // Config represents the complete runtime configuration of agyent.
 type Config struct {
 	Server    ServerConfig                  `yaml:"server" json:"server"`
@@ -231,12 +241,21 @@ type Config struct {
 	Evolution EvolutionConfig               `yaml:"evolution" json:"evolution"`
 	Subagent  SubagentConfig                `yaml:"subagent" json:"subagent"`
 	Security  SecurityConfig                `yaml:"security" json:"security"`
+	Recovery  RecoveryConfig                `yaml:"recovery" json:"recovery"`
 	Agents    map[string]AgentProfileConfig `yaml:"agents" json:"agents"`
 }
 
 // DefaultConfig returns a new Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
+		Recovery: RecoveryConfig{
+			Enabled:                 true,
+			Mode:                    "auto",
+			MaxRetries:              1,
+			MaxConcurrentRecoveries: 2,
+			RetentionDays:           7,
+			SubagentsAutoResume:     true,
+		},
 		Server: ServerConfig{
 			Host: "127.0.0.1",
 			Port: 8080,

@@ -88,6 +88,9 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		}
 		fmt.Printf("🤖 AGY Binary:    %s (Streaming: %t)\n", cfg.AGY.BinaryPath, cfg.AGY.StreamingEnabled)
 		fmt.Printf("🛡️ Security:      Preset '%s' (HITL Timeout: %ds)\n", cfg.Security.Preset, cfg.Security.ApprovalTimeoutSeconds)
+		if cfg.Recovery.Enabled {
+			fmt.Printf("🔄 Auto-Recovery: Mode '%s' (Max Retries: %d, Concurrency: %d)\n", cfg.Recovery.Mode, cfg.Recovery.MaxRetries, cfg.Recovery.MaxConcurrentRecoveries)
+		}
 		fmt.Printf("📁 Agents Dir:    %s\n", cfg.Storage.AgentsDir)
 		fmt.Printf("💾 SQLite DB:     %s (WAL Mode)\n", cfg.Storage.DBPath)
 		fmt.Printf("📝 Log Level:     %s (Format: %s)\n", logLevel, logFormat)

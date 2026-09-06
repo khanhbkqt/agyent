@@ -89,6 +89,17 @@ func (e *Engine) runJanitorPass(ctx context.Context) {
 		}
 	}
 
+	// 3. Purge expired in-flight turn records older than retentionDays
+	if e.storage != nil {
+		retentionDays := 7
+		if e.cfg != nil && e.cfg.Recovery.RetentionDays > 0 {
+			retentionDays = e.cfg.Recovery.RetentionDays
+		}
+		if purgedTurns, err := e.storage.PurgeInFlightTurns(ctx, retentionDays); err == nil && purgedTurns > 0 {
+			slog.InfoContext(ctx, "Janitor purged expired in-flight turns", slog.Int64("purged_turns", purgedTurns))
+		}
+	}
+
 	if purgedLocks > 0 {
 		slog.InfoContext(ctx, "Janitor cleaned up stale lock files", slog.Int("purged_locks", purgedLocks))
 	}

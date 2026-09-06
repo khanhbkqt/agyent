@@ -24,7 +24,7 @@ func (s *SQLiteStore) GetSubagentTask(ctx context.Context, id string) (*domain.S
 		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 		       status, current_step, current_tool, progress_message, pending_question,
 		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-		       created_at, updated_at
+		       retry_count, max_retries, created_at, updated_at
 		FROM subagent_tasks
 		WHERE id = ?
 	`
@@ -43,7 +43,7 @@ func (s *SQLiteStore) GetSubagentTask(ctx context.Context, id string) (*domain.S
 		&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
 		&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
 		&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
-		&createdAt, &updatedAt,
+		&t.RetryCount, &t.MaxRetries, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -75,7 +75,7 @@ func (s *SQLiteStore) GetSubagentTaskScoped(ctx context.Context, sessionKey, id 
 		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 		       status, current_step, current_tool, progress_message, pending_question,
 		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-		       created_at, updated_at
+		       retry_count, max_retries, created_at, updated_at
 		FROM subagent_tasks
 		WHERE id = ? AND parent_session_key = ?
 	`
@@ -94,7 +94,7 @@ func (s *SQLiteStore) GetSubagentTaskScoped(ctx context.Context, sessionKey, id 
 		&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
 		&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
 		&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
-		&createdAt, &updatedAt,
+		&t.RetryCount, &t.MaxRetries, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -132,7 +132,7 @@ func (s *SQLiteStore) ListSubagentTasks(ctx context.Context, parentSessionKey st
 		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 		       status, current_step, current_tool, progress_message, pending_question,
 		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-		       created_at, updated_at
+		       retry_count, max_retries, created_at, updated_at
 		FROM subagent_tasks
 		WHERE parent_session_key = ?
 		ORDER BY created_at DESC
@@ -161,7 +161,7 @@ func (s *SQLiteStore) ListSubagentTasks(ctx context.Context, parentSessionKey st
 			&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
 			&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
 			&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
-			&createdAt, &updatedAt,
+			&t.RetryCount, &t.MaxRetries, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan subagent task row: %w", err)
 		}
@@ -189,7 +189,7 @@ func (s *SQLiteStore) ListActiveSubagentTasks(ctx context.Context, parentSession
 		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 		       status, current_step, current_tool, progress_message, pending_question,
 		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-		       created_at, updated_at
+		       retry_count, max_retries, created_at, updated_at
 		FROM subagent_tasks
 		WHERE parent_session_key = ? AND status IN ('PENDING', 'RUNNING', 'WAITING_FOR_INPUT')
 		ORDER BY created_at ASC
@@ -217,7 +217,7 @@ func (s *SQLiteStore) ListActiveSubagentTasks(ctx context.Context, parentSession
 			&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
 			&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
 			&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
-			&createdAt, &updatedAt,
+			&t.RetryCount, &t.MaxRetries, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan active subagent task row: %w", err)
 		}
@@ -249,7 +249,7 @@ func (s *SQLiteStore) ListPendingSubagentTasks(ctx context.Context, limit int) (
 		       agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 		       status, current_step, current_tool, progress_message, pending_question,
 		       result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-		       created_at, updated_at
+		       retry_count, max_retries, created_at, updated_at
 		FROM subagent_tasks
 		WHERE status = 'PENDING'
 		ORDER BY created_at ASC
@@ -278,7 +278,7 @@ func (s *SQLiteStore) ListPendingSubagentTasks(ctx context.Context, limit int) (
 			&t.AgentName, &t.ProjectName, &t.Title, &t.Prompt, &t.Model, &t.Effort, &t.WorkspaceMode, &cbModeStr,
 			&statusStr, &t.CurrentStep, &t.CurrentTool, &t.ProgressMessage, &t.PendingQuestion,
 			&t.ResultSummary, &artifactsJSON, &t.ErrorMessage, &t.Usage.TotalTokens, &t.DurationSeconds,
-			&createdAt, &updatedAt,
+			&t.RetryCount, &t.MaxRetries, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan pending subagent task row: %w", err)
 		}
@@ -315,6 +315,9 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 	if task.Status == "" {
 		task.Status = domain.TaskStatusPending
 	}
+	if task.MaxRetries <= 0 {
+		task.MaxRetries = 1
+	}
 
 	query := `
 		INSERT INTO subagent_tasks (
@@ -322,8 +325,8 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 			agent_name, project_name, title, prompt, model, effort, workspace_mode, callback_mode,
 			status, current_step, current_tool, progress_message, pending_question,
 			result_summary, artifacts_json, error_message, total_tokens, duration_seconds,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			retry_count, max_retries, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			parent_session_key = excluded.parent_session_key,
 			parent_conversation_id = excluded.parent_conversation_id,
@@ -346,6 +349,8 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 			error_message = excluded.error_message,
 			total_tokens = excluded.total_tokens,
 			duration_seconds = excluded.duration_seconds,
+			retry_count = excluded.retry_count,
+			max_retries = excluded.max_retries,
 			updated_at = excluded.updated_at
 	`
 
@@ -355,7 +360,7 @@ func (s *SQLiteStore) SaveSubagentTask(ctx context.Context, task *domain.Subagen
 		task.AgentName, task.ProjectName, task.Title, task.Prompt, task.Model, task.Effort, task.WorkspaceMode, string(task.CallbackMode),
 		string(task.Status), task.CurrentStep, task.CurrentTool, task.ProgressMessage, task.PendingQuestion,
 		task.ResultSummary, marshalArtifacts(task.Artifacts), task.ErrorMessage, task.Usage.TotalTokens, task.DurationSeconds,
-		timeToMilli(task.CreatedAt), timeToMilli(task.UpdatedAt),
+		task.RetryCount, task.MaxRetries, timeToMilli(task.CreatedAt), timeToMilli(task.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save subagent task %s: %w", task.ID, err)
@@ -584,6 +589,46 @@ func (s *SQLiteStore) ReconcileStaleCancellingTasks(ctx context.Context) (int64,
 	res, err := s.writer().ExecContext(ctx, query, nowMs)
 	if err != nil {
 		return 0, fmt.Errorf("failed to reconcile stale cancelling tasks: %w", err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+// ReconcileStaleRunningTasks recovers tasks stuck in RUNNING after daemon crash or unexpected shutdown.
+// It fails tasks that have exceeded max_retries, and re-queues retryable tasks to PENDING with retry_count incremented.
+func (s *SQLiteStore) ReconcileStaleRunningTasks(ctx context.Context) (int64, error) {
+	nowMs := timeToMilli(time.Now())
+
+	// 1. Mark tasks that exceeded max_retries as FAILED
+	failQuery := `
+		UPDATE subagent_tasks
+		SET status = 'FAILED',
+		    error_message = 'Subagent task exceeded maximum retry attempts across daemon restarts',
+		    updated_at = ?
+		WHERE status = 'RUNNING' AND retry_count >= max_retries
+	`
+	if _, err := s.writer().ExecContext(ctx, failQuery, nowMs); err != nil {
+		return 0, fmt.Errorf("failed to fail stale subagent tasks: %w", err)
+	}
+
+	// 2. Re-queue retryable RUNNING tasks to PENDING
+	requeueQuery := `
+		UPDATE subagent_tasks
+		SET status = 'PENDING',
+		    retry_count = retry_count + 1,
+		    current_tool = '',
+		    current_step = 0,
+		    progress_message = 'Re-queued automatically after daemon restart',
+		    updated_at = ?
+		WHERE status = 'RUNNING' AND retry_count < max_retries
+	`
+	res, err := s.writer().ExecContext(ctx, requeueQuery, nowMs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reconcile stale running tasks: %w", err)
 	}
 
 	rows, err := res.RowsAffected()

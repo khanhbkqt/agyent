@@ -48,6 +48,8 @@ type SubagentTask struct {
 	ResultSummary        string               `json:"result_summary"`
 	Artifacts            []Attachment         `json:"artifacts,omitempty"`
 	ErrorMessage         string               `json:"error_message,omitempty"`
+	RetryCount           int                  `json:"retry_count"`
+	MaxRetries           int                  `json:"max_retries"`
 	Usage                TokenUsage           `json:"usage"`
 	DurationSeconds      float64              `json:"duration_seconds"`
 	CreatedAt            time.Time            `json:"created_at"`

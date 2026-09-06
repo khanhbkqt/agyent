@@ -245,6 +245,9 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 	e.subscribeSchedulerEvents()
 
+	// 2.2. Start background Turn Auto-Recovery Worker
+	e.startRecoveryWorker(e.ctx)
+
 	// 2. Consume from inbound queue and ingest into Debouncer
 	e.wg.Add(1)
 	concurrency.SafeGo(func() {
@@ -798,6 +801,33 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
+	// 5.2. Persist in-flight turn for crash resilience and auto-recovery
+	if e.storage != nil {
+		inboundMsgID, _ := strconv.ParseInt(msg.ID, 10, 64)
+		_ = e.storage.SaveInFlightTurn(turnCtx, &domain.InFlightTurn{
+			TurnID:           turnID,
+			SessionKey:       sessionKey,
+			ConversationID:   session.GetActiveConversationID(),
+			AgentName:        agent.Name,
+			ProjectName:      session.ActiveProject,
+			Channel:          msg.Channel,
+			ChatID:           msg.Chat.ID,
+			ThreadID:         strconv.FormatInt(msg.Chat.ThreadID, 10),
+			InboundMessageID: inboundMsgID,
+			BotID:            msg.BotID,
+			UserID:           msg.Sender.ID,
+			UserName:         msg.Sender.Username,
+			Prompt:           msg.Text,
+			IsEphemeral:      isEphemeral,
+			Status:           domain.TurnStatusExecuting,
+			RetryCount:       0,
+			MaxRetries:       1,
+			RecoveryMode:     "auto",
+			CreatedAt:        time.Now(),
+			UpdatedAt:        time.Now(),
+		})
+	}
+
 	// 6. Context Resolution & Plugin Assembly
 	var promptText string
 	var activeMCPServers []domain.MCPServerConfig
@@ -1284,6 +1314,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			}
 		} else {
 			_ = e.eventBus.SyncEmit(emitCtx, domain.NewEvent(domain.EventPostExecution, execResult))
+		}
+	}
+
+	if e.storage != nil {
+		if hasFailed {
+			_ = e.storage.UpdateInFlightTurnStatus(context.WithoutCancel(turnCtx), turnID, domain.TurnStatusFailed, errMsg)
+		} else {
+			_ = e.storage.UpdateInFlightTurnStatus(context.WithoutCancel(turnCtx), turnID, domain.TurnStatusCompleted, "")
 		}
 	}
 

@@ -65,6 +65,7 @@ some intentionally preserve context from earlier milestones.
 | Ownership | [Agent ownership and multi-bot](agent-ownership-and-multi-bot-architecture.md) | auth policy, agent repository, Telegram adapter |
 | Zalo channel | [Zalo channel adapter](zalo-channel-architecture.md) | Zalo adapter, composite mux, config and doctor |
 | Subagents | [Subagent architecture](subagent-architecture.md) | subagent adapter, ports and repository |
+| Turn recovery | [Turn auto-recovery & crash resilience](turn-recovery-and-resilience-architecture.md) | `internal/core/engine`, `internal/adapters/storage/sqlite`, `internal/adapters/subagent` |
 | Evolution | [Self-learning and evolution](agent-self-learning-and-evolution-architecture.md) | evolution adapter and engine integration |
 
 ## Proposed designs
