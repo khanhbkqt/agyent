@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.39] - 2026-09-06
+
+### Fixed
+- **Live EventBus Streaming & Typing Heartbeat for Turn Auto-Recovery (`engine`, `channels/telegram`):**
+  - **Live Streaming on Recovery:** Enabled real-time EventBus streaming (`isStreaming = true`) during turn auto-recovery, allowing Telegram `DeliveryThrottler` to render live streaming tokens, tool actions, and typing indicators as soon as daemon reboots.
+  - **Typing Heartbeat:** Added persistent background typing heartbeat during batch/non-streaming recovery runs to eliminate silent UI freezes on Telegram.
+  - **Full Context Level 0–4 Assembly:** Guaranteed full Foundation, Soul, Identity, Memory, Directives, and Skills injection for recovered turns where `ConversationID` was not yet initialized before the daemon crashed.
+  - **Outbound Message Routing Metadata:** Populated complete `AgentName`, `SessionKey`, and `ThreadID` in all recovery messages, ensuring flawless multi-bot routing.
+  - **Telegram HTTP 400 Safe Fallback:** Automatically cleared `opts.ReplyParameters` on Telegram 400 errors (such as `replied message not found` from old rebooted sessions), guaranteeing message delivery.
+
+---
+
 ## [1.0.38] - 2026-09-06
 
 ### Fixed
