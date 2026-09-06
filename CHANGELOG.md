@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.32] - 2026-09-06
+
+### Fixed
+- **Zalo Long-Polling 408 Request Timeout Backoff Loop (`channels/zalo`):**
+  - Resolved issue where Zalo Bot Platform long-polling idle timeouts (HTTP 408 or JSON error code 408 / "Request timeout") were treated as network failures, triggering exponential backoff sleep up to 16 seconds in `pollBotUpdates`.
+  - Introduced `APIError` and `IsTimeoutError` to classify long-polling idle timeouts and return empty updates `[]ZaloUpdate{}` without error, enabling continuous real-time message ingress.
+  - Added defense-in-depth in `pollBotUpdates` to prevent backoff sleep on any timeout condition.
+
+---
+
 ## [1.0.31] - 2026-09-06
 
 ### Fixed
