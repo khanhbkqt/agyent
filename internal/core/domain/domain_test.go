@@ -458,20 +458,27 @@ func TestSecurityPresetHierarchy(t *testing.T) {
 	// PresetLevel verification
 	assert.Equal(t, 0, domain.PresetLevel(domain.PresetUnrestricted))
 	assert.Equal(t, 1, domain.PresetLevel(domain.PresetDeveloper))
-	assert.Equal(t, 2, domain.PresetLevel(domain.PresetBalanced))
-	assert.Equal(t, 2, domain.PresetLevel("")) // default fallback
-	assert.Equal(t, 3, domain.PresetLevel(domain.PresetStrict))
-	assert.Equal(t, 4, domain.PresetLevel(domain.PresetReadOnly))
+	assert.Equal(t, 2, domain.PresetLevel(domain.PresetWorkspaceOnly))
+	assert.Equal(t, 3, domain.PresetLevel(domain.PresetBalanced))
+	assert.Equal(t, 3, domain.PresetLevel("")) // default fallback
+	assert.Equal(t, 4, domain.PresetLevel(domain.PresetStrict))
+	assert.Equal(t, 5, domain.PresetLevel(domain.PresetReadOnly))
 
 	// CanSwitchPreset - monotonic upgrade rule
-	// From balanced (level 2)
+	// From balanced (level 3)
 	assert.False(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetUnrestricted))
 	assert.False(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetDeveloper))
+	assert.False(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetWorkspaceOnly))
 	assert.True(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetBalanced))
 	assert.True(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetStrict))
 	assert.True(t, domain.CanSwitchPreset(domain.PresetBalanced, domain.PresetReadOnly))
 
-	// From strict (level 3)
+	// From workspace_only (level 2)
+	assert.False(t, domain.CanSwitchPreset(domain.PresetWorkspaceOnly, domain.PresetDeveloper))
+	assert.True(t, domain.CanSwitchPreset(domain.PresetWorkspaceOnly, domain.PresetBalanced))
+	assert.True(t, domain.CanSwitchPreset(domain.PresetWorkspaceOnly, domain.PresetReadOnly))
+
+	// From strict (level 4)
 	assert.False(t, domain.CanSwitchPreset(domain.PresetStrict, domain.PresetBalanced))
 	assert.True(t, domain.CanSwitchPreset(domain.PresetStrict, domain.PresetReadOnly))
 

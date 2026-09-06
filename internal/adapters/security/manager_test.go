@@ -627,7 +627,7 @@ func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
 	// 3. Different binary ('curl') still triggers HITL
 	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
 		hitlCalls++
-		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowAllSession}, nil
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowSession}, nil
 	}
 	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
 		SessionKey: sessionKey,
@@ -638,24 +638,24 @@ func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
 	assert.Equal(t, domain.DecisionAllow, dec.Decision)
 	assert.Equal(t, 2, hitlCalls)
 
-	// 4. Wildcard '*' grant from AllowAllSession allows any subsequent tool/command
+	// 4. Another 'curl' command uses base command grant without asking again
 	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
 		SessionKey: sessionKey,
 		ToolName:   "run_command",
-		Args:       map[string]interface{}{"CommandLine": "pip install requests"},
+		Args:       map[string]interface{}{"CommandLine": "curl -s https://api.github.com/zen"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAllow, dec.Decision)
-	assert.Equal(t, 2, hitlCalls, "Wildcard grant must allow subsequent commands without HITL")
+	assert.Equal(t, 2, hitlCalls, "Base command grant must allow same binary without HITL")
 
-	// 5. Inviolable Hard Guardrails check: Self-escalation and destructive commands are STILL BLOCKED despite wildcard grant!
+	// 5. Inviolable Hard Guardrails check: Self-escalation and destructive commands are STILL BLOCKED despite session grant!
 	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
 		SessionKey: sessionKey,
 		ToolName:   "run_command",
 		Args:       map[string]interface{}{"CommandLine": "rm -rf /"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Destructive commands must remain denied despite wildcard grant")
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Destructive commands must remain denied")
 
 	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
 		SessionKey: sessionKey,
@@ -663,7 +663,7 @@ func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
 		Args:       map[string]interface{}{"CommandLine": "pkill agyent"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Self-escalation tampering must remain denied despite wildcard grant")
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Self-escalation tampering must remain denied")
 
 	// 6. Test ClearSessionGrants: Invalidation clears all grants for the session
 	mgr.ClearSessionGrants(sessionKey)
@@ -680,4 +680,155 @@ func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 3, hitlCalls, "After ClearSessionGrants, sensitive command must trigger HITL again")
+}
+
+func TestSecurityManager_WorkspaceOnlyPreset(t *testing.T) {
+	tempWS := t.TempDir()
+	cfg := config.GetEffectiveSecurityPreset("workspace_only")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+
+	// 1. File write inside workspace -> Allowed
+	wsFile := filepath.Join(tempWS, "index.js")
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "write_to_file",
+		WorkspaceDir: tempWS,
+		Args:         map[string]interface{}{"TargetFile": wsFile},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 2. File write outside workspace -> Denied by PathJail
+	outerFile := "/etc/hosts"
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "write_to_file",
+		WorkspaceDir: tempWS,
+		Args:         map[string]interface{}{"TargetFile": outerFile},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Path Jail")
+
+	// 3. Command inside workspace with Cwd inside workspace -> Allowed
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "git status",
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 4. Command with Cwd outside workspace -> Denied by PathJail
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "ls -la",
+			"Cwd":         "/tmp",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "outside active workspace")
+
+	// 5. Destructive / blacklisted command inside workspace -> Denied
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "rm -rf /",
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+}
+
+func TestSecurityManager_ScriptPreInspectionAndBase64Deobfuscation(t *testing.T) {
+	tempWS := t.TempDir()
+	cfg := config.GetEffectiveSecurityPreset("workspace_only")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+
+	// 1. Script containing plaintext forbidden path reference (e.g. ~/.ssh/id_rsa) -> Denied
+	plainScript := filepath.Join(tempWS, "attack_plain.py")
+	err := os.WriteFile(plainScript, []byte(`
+with open("/Users/victim/.ssh/id_rsa", "r") as f:
+    print(f.read())
+`), 0644)
+	require.NoError(t, err)
+
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "python3 attack_plain.py",
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Script Pre-Inspection")
+	assert.Contains(t, dec.Reason, ".ssh")
+
+	// 2. JavaScript file with Base64-obfuscated Buffer.from payload pointing to /etc/shadow -> Denied
+	b64Payload := "L2V0Yy9zaGFkb3c=" // base64 for "/etc/shadow"
+	jsScript := filepath.Join(tempWS, "attack_b64.js")
+	err = os.WriteFile(jsScript, []byte(fmt.Sprintf(`
+const fs = require('fs');
+const path = Buffer.from("%s", "base64").toString();
+console.log(fs.readFileSync(path));
+`, b64Payload)), 0644)
+	require.NoError(t, err)
+
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "node attack_b64.js",
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Obfuscation Detection")
+	assert.Contains(t, dec.Reason, "/etc/shadow")
+
+	// 3. Inline shell command with base64 decoded destructive payload (rm -rf /) -> Denied
+	rmB64 := "cm0gLXJmIC8=" // base64 for "rm -rf /"
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": fmt.Sprintf("echo '%s' | base64 -d | sh", rmB64),
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Obfuscation Detection")
+
+	// 4. Safe legitimate script (e.g. hello world / workspace operations) -> Allowed
+	safeScript := filepath.Join(tempWS, "safe.py")
+	err = os.WriteFile(safeScript, []byte(`
+import os
+print("Hello from workspace agent!")
+`), 0644)
+	require.NoError(t, err)
+
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "run_command",
+		WorkspaceDir: tempWS,
+		Args: map[string]interface{}{
+			"CommandLine": "python3 safe.py",
+			"Cwd":         tempWS,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
 }

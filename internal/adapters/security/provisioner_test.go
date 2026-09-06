@@ -39,22 +39,20 @@ func TestEnsureWorkspaceHooksProvisionedHandlesJSONNull(t *testing.T) {
 	assert.Contains(t, string(data), "agyent-security-gate")
 }
 
-func TestEnsureAGYProjectProvisioned(t *testing.T) {
+func TestEnsureWorkspaceSettingsProvisioned(t *testing.T) {
 	ws := t.TempDir()
-	projID := "agy-proj-unit-test"
-
-	err := EnsureAGYProjectProvisioned(projID, "unit_test_agent", ws, nil)
+	err := EnsureWorkspaceSettingsProvisioned(ws, nil)
 	require.NoError(t, err)
 
-	projectsDir, err := filepath.Abs(filepath.Join(os.Getenv("HOME"), ".gemini/config/projects"))
+	agentsSettings := filepath.Join(ws, ".agents", "settings.json")
+	data, err := os.ReadFile(agentsSettings)
 	require.NoError(t, err)
-	filePath := filepath.Join(projectsDir, projID+".json")
-	defer func() { _ = os.Remove(filePath) }()
-
-	data, err := os.ReadFile(filePath)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), projID)
-	assert.Contains(t, string(data), "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER")
-	assert.Contains(t, string(data), ws)
 	assert.Contains(t, string(data), "command")
+	assert.Contains(t, string(data), "permissions")
+
+	geminiSettings := filepath.Join(ws, ".gemini", "settings.json")
+	geminiData, err := os.ReadFile(geminiSettings)
+	require.NoError(t, err)
+	assert.Contains(t, string(geminiData), "command")
 }
+

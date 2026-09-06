@@ -428,6 +428,43 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 			},
 		}
 
+	case "workspace_only", "workspace":
+		return SecurityConfig{
+			Enabled:                true,
+			Preset:                 "workspace_only",
+			Mode:                   "autonomous",
+			ApprovalTimeoutSeconds: 60,
+			AgentConfigManagement: AgentConfigManagementConfig{
+				Enabled:         false,
+				RequireApproval: true,
+			},
+			Commands: CommandGuardrailConfig{
+				Enabled:         true,
+				CustomBlacklist: []string{`(?i)rm\s+-rf\s+/`, `(?i)mkfs`, `(?i)format\s+[a-z]:`},
+			},
+			Filesystem: FilesystemGuardrailConfig{
+				EnforceWorkspaceJail: true,
+				AllowedPaths:         []string{"."},
+				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.agyent/config.yaml", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
+			},
+			Subagents: SubagentGuardrailConfig{
+				MaxConcurrentWorkers: 3,
+				MaxCascadeDepth:      1,
+			},
+			Network: NetworkGuardrailConfig{
+				BlockCloudMetadata:   true,
+				BlockPrivateNetworks: true,
+				PreventDNSRebinding:  true,
+			},
+			DLP: DLPConfig{
+				Enabled:             true,
+				RedactionMode:       "strict",
+				SlidingWindowBytes:  64,
+				SanitizeToolOutputs: true,
+				WhitelistedEnvKeys:  []string{"PORT", "HOST", "NODE_ENV", "APP_NAME", "DATABASE_URL"},
+			},
+		}
+
 	case "strict":
 		return SecurityConfig{
 			Enabled:                true,

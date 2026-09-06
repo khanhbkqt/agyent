@@ -63,7 +63,7 @@ and switch security presets for the entire gateway or specific agent profiles wi
 	}
 
 	securityPresetCmd = &cobra.Command{
-		Use:     "preset [unrestricted|developer|balanced|strict|read_only]",
+		Use:     "preset [unrestricted|developer|workspace_only|balanced|strict|read_only]",
 		Aliases: []string{"set-preset", "mode"},
 		Short:   "View or set the security preset for the gateway or a specific agent",
 		Long: `View or update the security preset. When called with a preset mode argument, updates both config.yaml 
@@ -190,15 +190,16 @@ func runSetPreset(cmd *cobra.Command, mode string, agentName string) error {
 
 	// Validate mode
 	validPresets := map[string]bool{
-		"unrestricted": true,
-		"developer":    true,
-		"balanced":     true,
-		"strict":       true,
-		"read_only":    true,
+		"unrestricted":   true,
+		"developer":      true,
+		"workspace_only": true,
+		"balanced":       true,
+		"strict":         true,
+		"read_only":      true,
 	}
 
 	if !validPresets[mode] {
-		return fmt.Errorf("invalid security preset %q. Allowed options: unrestricted, developer, balanced, strict, read_only", mode)
+		return fmt.Errorf("invalid security preset %q. Allowed options: unrestricted, developer, workspace_only, balanced, strict, read_only", mode)
 	}
 
 	cfg, err := config.Load(cfgFile)
@@ -313,16 +314,24 @@ func runListPresets(cmd *cobra.Command) error {
 			description: "Full developer workflow inside repo, HITL for critical system-level modifications",
 		},
 		{
-			name:        "balanced",
+			name:        "workspace_only",
 			level:       2,
+			autonomy:    "Autonomous",
+			jail:        "Enforced",
+			hitl:        "Forbidden Paths Only",
+			description: "Standard agent containment: autonomous inside workspace, all outer paths strictly denied",
+		},
+		{
+			name:        "balanced",
+			level:       3,
 			autonomy:    "Medium",
 			jail:        "Enforced",
 			hitl:        "Shell / Out-of-jail",
-			description: "Default standard containment: workspace jailing, HITL for commands and outer files",
+			description: "Standard containment: workspace jailing, HITL for sensitive commands and outer files",
 		},
 		{
 			name:        "strict",
-			level:       3,
+			level:       4,
 			autonomy:    "Low",
 			jail:        "Enforced",
 			hitl:        "Non-whitelisted",
@@ -330,7 +339,7 @@ func runListPresets(cmd *cobra.Command) error {
 		},
 		{
 			name:        "read_only",
-			level:       4,
+			level:       5,
 			autonomy:    "Zero-Write",
 			jail:        "Enforced",
 			hitl:        "All Writes Denied",

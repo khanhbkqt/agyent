@@ -2,8 +2,14 @@ package ports
 
 import (
 	"context"
+	"errors"
 
 	"agyent/internal/core/domain"
+)
+
+var (
+	// ErrExecutionRefused indicates that execution was refused due to missing admission, revoked mapping, or uninitialized policy/security.
+	ErrExecutionRefused = errors.New("execution refused")
 )
 
 // ExecutionServicePort defines the unified, authorized execution chokepoint for all AGY CLI operations.

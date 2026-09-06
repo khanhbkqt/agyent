@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -171,12 +172,23 @@ func (s *Service) ExecuteTurn(
 	}
 
 	agyProjectID := "agy-proj-" + agentName
+	if tenantID != "" && tenantID != "default" {
+		agyProjectID = fmt.Sprintf("agy-proj-%s-%s", tenantID, agentName)
+	}
 	agentGen := 1
+	hostID := "local-host"
+	configNamespace := "default"
+
 	if s.storage != nil {
-		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, agentName)
+		mapping, err := s.storage.GetAGYProjectMapping(ctx, tenantID, agentName, hostID, configNamespace)
 		if err == nil && mapping != nil {
 			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
 				return nil, fmt.Errorf("%w: AGY project mapping for agent %q is %s", ports.ErrAccessDenied, agentName, mapping.Status)
+			}
+			if mapping.WorkspaceDir != "" && req.WorkspaceDir != "" {
+				if filepath.Clean(mapping.WorkspaceDir) != filepath.Clean(req.WorkspaceDir) {
+					return nil, fmt.Errorf("%w: workspace directory mismatch: admitted=%q requested=%q", ports.ErrAccessDenied, mapping.WorkspaceDir, req.WorkspaceDir)
+				}
 			}
 			if mapping.AGYProjectID != "" && mapping.AGYProjectID != "agy-proj-" {
 				agyProjectID = mapping.AGYProjectID
@@ -189,14 +201,16 @@ func (s *Service) ExecuteTurn(
 				TenantID:             tenantID,
 				AgentName:            agentName,
 				AgentGeneration:      1,
-				ExecutionHostID:      "local",
-				AGYConfigNamespaceID: "default",
+				ExecutionHostID:      hostID,
+				AGYConfigNamespaceID: configNamespace,
 				AGYProjectID:         agyProjectID,
-				WorkspaceDir:         req.WorkspaceDir,
+				WorkspaceDir:         filepath.Clean(req.WorkspaceDir),
 				Status:               domain.AGYProjectStatusActive,
 				CreatedAt:            time.Now(),
 			}
-			_ = s.storage.SaveAGYProjectMapping(ctx, mapping)
+			if saveErr := s.storage.SaveAGYProjectMapping(ctx, mapping); saveErr != nil {
+				return nil, fmt.Errorf("failed to save AGY project mapping: %w", saveErr)
+			}
 		} else if err != nil {
 			return nil, fmt.Errorf("failed to retrieve AGY project mapping: %w", err)
 		}
@@ -207,8 +221,8 @@ func (s *Service) ExecuteTurn(
 		TenantID:             tenantID,
 		AgentName:            req.AgentName,
 		AgentGeneration:      agentGen,
-		ExecutionHostID:      "local",
-		AGYConfigNamespaceID: "default",
+		ExecutionHostID:      hostID,
+		AGYConfigNamespaceID: configNamespace,
 		AGYProjectID:         agyProjectID,
 		WorkspaceDir:         req.WorkspaceDir,
 		TurnID:               turnID,

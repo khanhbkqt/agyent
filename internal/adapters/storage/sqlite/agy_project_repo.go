@@ -11,32 +11,38 @@ import (
 	"agyent/internal/core/ports"
 )
 
-// GetAGYProjectMapping retrieves the active AGY project mapping for the given tenant and agent.
-func (s *SQLiteStore) GetAGYProjectMapping(ctx context.Context, tenantID, agentName string) (*domain.AGYProjectMapping, error) {
+// GetAGYProjectMapping retrieves the active AGY project mapping for the given tenant, agent, host, and config namespace.
+func (s *SQLiteStore) GetAGYProjectMapping(ctx context.Context, tenantID, agentName, hostID, configNamespace string) (*domain.AGYProjectMapping, error) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	if agentName == "" {
 		agentName = "agyent"
 	}
+	if hostID == "" {
+		hostID = "local-host"
+	}
+	if configNamespace == "" {
+		configNamespace = "default"
+	}
 
 	query := `
 		SELECT tenant_id, agent_name, agent_generation, execution_host_id, agy_config_namespace_id,
 		       agy_project_id, workspace_dir, status, created_at, updated_at
 		FROM agy_project_registry
-		WHERE tenant_id = ? AND agent_name = ?
+		WHERE tenant_id = ? AND agent_name = ? AND execution_host_id = ? AND agy_config_namespace_id = ?
 		ORDER BY agent_generation DESC, updated_at DESC
 		LIMIT 1
 	`
 
 	var (
-		tID, aName, hostID, nsID, projID, wsDir, status string
-		gen                                             int
-		createdAt, updatedAt                            FlexTime
+		tID, aName, hID, nsID, projID, wsDir, status string
+		gen                                          int
+		createdAt, updatedAt                         FlexTime
 	)
 
-	err := s.reader().QueryRowContext(ctx, query, tenantID, agentName).Scan(
-		&tID, &aName, &gen, &hostID, &nsID, &projID, &wsDir, &status, &createdAt, &updatedAt,
+	err := s.reader().QueryRowContext(ctx, query, tenantID, agentName, hostID, configNamespace).Scan(
+		&tID, &aName, &gen, &hID, &nsID, &projID, &wsDir, &status, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -49,7 +55,7 @@ func (s *SQLiteStore) GetAGYProjectMapping(ctx context.Context, tenantID, agentN
 		TenantID:             tID,
 		AgentName:            aName,
 		AgentGeneration:      gen,
-		ExecutionHostID:      hostID,
+		ExecutionHostID:      hID,
 		AGYConfigNamespaceID: nsID,
 		AGYProjectID:         projID,
 		WorkspaceDir:         wsDir,
@@ -69,6 +75,12 @@ func (s *SQLiteStore) SaveAGYProjectMapping(ctx context.Context, mapping *domain
 	}
 	if mapping.AgentName == "" {
 		mapping.AgentName = "agyent"
+	}
+	if mapping.ExecutionHostID == "" {
+		mapping.ExecutionHostID = "local-host"
+	}
+	if mapping.AGYConfigNamespaceID == "" {
+		mapping.AGYConfigNamespaceID = "default"
 	}
 	if mapping.AgentGeneration <= 0 {
 		mapping.AgentGeneration = 1
@@ -116,22 +128,28 @@ func (s *SQLiteStore) SaveAGYProjectMapping(ctx context.Context, mapping *domain
 	return nil
 }
 
-// RevokeAGYProjectMapping marks any active AGY project mapping for the tenant and agent as revoked.
-func (s *SQLiteStore) RevokeAGYProjectMapping(ctx context.Context, tenantID, agentName string) error {
+// RevokeAGYProjectMapping marks any active AGY project mapping for the tenant, agent, host, and config namespace as revoked.
+func (s *SQLiteStore) RevokeAGYProjectMapping(ctx context.Context, tenantID, agentName, hostID, configNamespace string) error {
 	if tenantID == "" {
 		tenantID = "default"
 	}
 	if agentName == "" {
 		agentName = "agyent"
 	}
+	if hostID == "" {
+		hostID = "local-host"
+	}
+	if configNamespace == "" {
+		configNamespace = "default"
+	}
 
 	query := `
 		UPDATE agy_project_registry
 		SET status = 'REVOKED', updated_at = ?
-		WHERE tenant_id = ? AND agent_name = ? AND status != 'REVOKED'
+		WHERE tenant_id = ? AND agent_name = ? AND execution_host_id = ? AND agy_config_namespace_id = ? AND status != 'REVOKED'
 	`
 
-	_, err := s.writer().ExecContext(ctx, query, time.Now().UnixMilli(), tenantID, agentName)
+	_, err := s.writer().ExecContext(ctx, query, time.Now().UnixMilli(), tenantID, agentName, hostID, configNamespace)
 	if err != nil {
 		return fmt.Errorf("failed to revoke agy project mapping for agent %s: %w", agentName, err)
 	}

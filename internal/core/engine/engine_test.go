@@ -960,22 +960,43 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	assert.Contains(t, lastSent.Text, "sec_agent")
 	assert.NotNil(t, lastSent.InlineKeyboard)
 
-	// Verify inline keyboard only contains valid presets (balanced, strict, read_only)
+	// Verify inline keyboard contains all valid presets for SuperAdmin
 	var callbackDataList []string
 	for _, row := range lastSent.InlineKeyboard {
 		for _, btn := range row {
 			callbackDataList = append(callbackDataList, btn.CallbackData)
 		}
 	}
+	assert.Contains(t, callbackDataList, "sec:preset:unrestricted")
+	assert.Contains(t, callbackDataList, "sec:preset:developer")
+	assert.Contains(t, callbackDataList, "sec:preset:workspace_only")
 	assert.Contains(t, callbackDataList, "sec:preset:balanced")
 	assert.Contains(t, callbackDataList, "sec:preset:strict")
 	assert.Contains(t, callbackDataList, "sec:preset:read_only")
-	assert.NotContains(t, callbackDataList, "sec:preset:unrestricted")
-	assert.NotContains(t, callbackDataList, "sec:preset:developer")
 
-	// 2. Try illegal downgrade: /security preset developer
+	// 2. Admin switches preset: /security preset workspace_only
 	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
 		ID:        "msg-sec-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security preset workspace_only",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Security preset successfully switched to")
+	assert.Contains(t, lastSent.Text, "workspace_only")
+
+	// Verify agent updated in database
+	dbAgent, err := store.GetAgent(ctx, "sec_agent")
+	require.NoError(t, err)
+	assert.Equal(t, domain.PresetWorkspaceOnly, dbAgent.SecurityPreset)
+
+	// 3. Admin switches preset: /security preset developer
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-3",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
 		Sender:    adminUser,
@@ -985,64 +1006,27 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	require.NoError(t, err)
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
-
-	// 3. Valid upgrade: /security preset strict
-	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
-		ID:        "msg-sec-3",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Sender:    adminUser,
-		Chat:      chat,
-		Text:      "/security preset strict",
-	})
-	require.NoError(t, err)
-	sent = channel.GetSentMessages()
-	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Security preset successfully switched to")
-	assert.Contains(t, lastSent.Text, "strict")
+	assert.Contains(t, lastSent.Text, "developer")
 
-	// Verify agent updated in database
-	dbAgent, err := store.GetAgent(ctx, "sec_agent")
+	dbAgent, err = store.GetAgent(ctx, "sec_agent")
 	require.NoError(t, err)
-	assert.Equal(t, domain.PresetStrict, dbAgent.SecurityPreset)
+	assert.Equal(t, domain.PresetDeveloper, dbAgent.SecurityPreset)
 
-	// 4. Send /security again, keyboard now only has strict and read_only
+	// 4. Non-admin user tries to change preset -> Denied
+	nonAdminUser := domain.SenderUser{ID: "stranger-999", Username: "stranger"}
 	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
 		ID:        "msg-sec-4",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
-		Sender:    adminUser,
+		Sender:    nonAdminUser,
 		Chat:      chat,
-		Text:      "/security",
+		Text:      "/security preset unrestricted",
 	})
 	require.NoError(t, err)
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
-
-	var callbackDataListStrict []string
-	for _, row := range lastSent.InlineKeyboard {
-		for _, btn := range row {
-			callbackDataListStrict = append(callbackDataListStrict, btn.CallbackData)
-		}
-	}
-	assert.NotContains(t, callbackDataListStrict, "sec:preset:balanced")
-	assert.Contains(t, callbackDataListStrict, "sec:preset:strict")
-	assert.Contains(t, callbackDataListStrict, "sec:preset:read_only")
-
-	// 5. Try illegal downgrade: /security preset balanced
-	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
-		ID:        "msg-sec-5",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Sender:    adminUser,
-		Chat:      chat,
-		Text:      "/security preset balanced",
-	})
-	require.NoError(t, err)
-	sent = channel.GetSentMessages()
-	lastSent = sent[len(sent)-1]
-	assert.Contains(t, lastSent.Text, "Cannot downgrade security preset")
+	assert.Contains(t, lastSent.Text, "Unauthorized: Only administrators can modify security gateway settings")
 }
 
 func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {

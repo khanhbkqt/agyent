@@ -241,11 +241,14 @@ Session grants are bound strictly to the lifetime of the active session rather t
 +-------------------+---------------------------------------------------------+----------------------+
 | Preset            | Operational Behavior                                    | Target Environment   |
 +-------------------+---------------------------------------------------------+----------------------+
-| 🔓 unrestricted   | Full Autonomy. Unrestricted shell execution, broad path  | Trusted Local VPS,   |
+| 🔓 unrestricted   | Full Autonomy. Unrestricted shell execution, broad path | Trusted Local VPS,   |
 |                   | access, zero HITL prompts, audit-only DLP.              | Autonomous Agents    |
 +-------------------+---------------------------------------------------------+----------------------+
-| 🛠️ developer       | Relaxed. Auto-allows standard dev tools; blocks OS     | Local Workstation    |
-|                   | destruction; broad path access.                         |                      |
+| 🛠️ developer       | Relaxed. Auto-allows standard dev tools; blocks OS      | Local Workstation    |
+|                   | destruction; broad path access across ~.                |                      |
++-------------------+---------------------------------------------------------+----------------------+
+| 📁 workspace_only | Standard Agent. Autonomous file & command execution     | General AI Agents,   |
+|                   | strictly confined inside workspace; outer paths denied. | Project Automation   |
 +-------------------+---------------------------------------------------------+----------------------+
 | 🛡️ balanced       | [DEFAULT] Auto-allows safe build/test/git; prompts via  | VPS, Small Team      |
 |                   | Telegram for unfamiliar commands; strict workspace jail.| Shared Server        |
@@ -253,17 +256,17 @@ Session grants are bound strictly to the lifetime of the active session rather t
 | 🔒 strict         | Hardened. Whitelist-only execution; all other actions   | Production Servers,  |
 |                   | denied; zero network egress to private IPs.             | Multi-tenant Hosts   |
 +-------------------+---------------------------------------------------------+----------------------+
-| 📖 read_only      | Blocks the configured file-write and shell paths;       | Code Auditing,       |
-|                   | commands. Read-only codebase exploration only.          | Research Sub-agents  |
+| 📖 read_only      | Blocks file modifications and terminal executions.      | Code Auditing,       |
+|                   | Read-only codebase exploration and search only.         | Research Sub-agents  |
 +-------------------+---------------------------------------------------------+----------------------+
 ```
 
-### Monotonic Security Profile Upgrade Rule (Per-Agent Guardrail)
-Each agent is provisioned with a baseline `security_preset` stored in SQLite (`agents.security_preset`), defaulting to `balanced`. To prevent privilege escalation:
-- **Monotonic Progression:** An agent can only be transitioned to equal or higher security levels ($\text{Level}(Target) \ge \text{Level}(Baseline)$):
-  $$\text{unrestricted (0)} \rightarrow \text{developer (1)} \rightarrow \text{balanced (2)} \rightarrow \text{strict (3)} \rightarrow \text{read\_only (4)}$$
-- **Downgrade Rejection:** Any attempt to switch an agent to a less secure level than its baseline via `/security preset <mode>` is rejected with a descriptive error.
-- **Dynamic Keyboard Filtering:** The interactive `/security` dashboard dynamically filters its Inline Keyboard to only render buttons for valid presets ($\ge \text{baseline}$), preventing accidental misconfiguration.
+### Security Profile Control & Hierarchy
+Each agent is provisioned with a `security_preset` stored in SQLite (`agents.security_preset`), defaulting to `balanced`.
+- **Preset Hierarchy:**
+  $$\text{unrestricted (0)} \rightarrow \text{developer (1)} \rightarrow \text{workspace\_only (2)} \rightarrow \text{balanced (3)} \rightarrow \text{strict (4)} \rightarrow \text{read\_only (5)}$$
+- **SuperAdmin Dynamic Control:** Authenticated SuperAdmins on Telegram have full administrative control to switch any agent's preset freely to any level (`/security preset <mode>` or via the interactive dashboard buttons).
+- **Anti-Self-Escalation:** AI agents and sub-agents remain strictly barred from modifying security configurations or self-escalating privileges through tool execution or subshells.
 
 ---
 
@@ -271,9 +274,9 @@ Each agent is provisioned with a baseline `security_preset` stored in SQLite (`a
 
 | Slash Command | Description | Permission | Example Usage |
 | :--- | :--- | :--- | :--- |
-| `/security` (or `/sec`) | View current security dashboard, active agent, preset, jail, and metrics with dynamic preset buttons. | Admin Only | `/security` |
-| `/security preset <mode>` | Switch active agent's security preset (enforces monotonic upgrade $\ge$ baseline). | Admin Only | `/security preset strict` |
-| `/security grant <scope> [ttl]` | Temporarily grant Agent permission to edit configs or run setup tools (e.g. 15m). | Admin Only | `/security grant config 15m` |
+| `/security` (or `/sec`) | View current security dashboard, active agent, preset, jail, and metrics with preset buttons. | Admin Only | `/security` |
+| `/security preset <mode>` | Switch active agent's security preset (`unrestricted`, `developer`, `workspace_only`, `balanced`, `strict`, `read_only`). | Admin Only | `/security preset workspace_only` |
+| `/security grant <command>` | Temporarily grant permission for a specific shell command in active session. | Admin Only | `/security grant python3` |
 | `/security redact <mode>` | Switch redaction mode (`strict`, `permissive`, `audit_only`). | Admin Only | `/security redact permissive` |
 | `/whitelist add <cmd\|path>` | Add a temporary or persistent whitelist entry directly from chat. | Admin Only | `/whitelist add "npm run build"` |
 | `/audit [limit]` | Inspect the most recent intercepted and blocked security events. | Admin Only | `/audit 10` |

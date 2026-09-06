@@ -100,25 +100,14 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	defer cancel()
 
 	// Build CLI arguments
-	projectID := "outside-of-project"
-	useSandbox := false
-	if req.Admission != nil && req.Admission.AGYProjectID != "" {
-		projectID = req.Admission.AGYProjectID
-		useSandbox = true
-	} else if req.AgentName != "" {
-		projectID = "agy-proj-" + req.AgentName
-		useSandbox = true
+	if req.Admission == nil || req.Admission.AGYProjectID == "" {
+		return nil, fmt.Errorf("%w: missing or invalid execution admission ticket", ports.ErrExecutionRefused)
 	}
+	projectID := req.Admission.AGYProjectID
 
-	args := []string{"--output-format", "json", "--project", projectID}
-	if useSandbox {
-		args = append(args, "--sandbox")
-	}
+	args := []string{"--output-format", "json", "--project", projectID, "--sandbox"}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
-	}
-	if req.DangerouslySkipPermissions {
-		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
 		args = append(args, "--conversation", req.ConversationID)
@@ -293,25 +282,14 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	}
 
 	// Build CLI arguments for streaming
-	projectID := "outside-of-project"
-	useSandbox := false
-	if req.Admission != nil && req.Admission.AGYProjectID != "" {
-		projectID = req.Admission.AGYProjectID
-		useSandbox = true
-	} else if req.AgentName != "" {
-		projectID = "agy-proj-" + req.AgentName
-		useSandbox = true
+	if req.Admission == nil || req.Admission.AGYProjectID == "" {
+		return nil, fmt.Errorf("%w: missing or invalid execution admission ticket", ports.ErrExecutionRefused)
 	}
+	projectID := req.Admission.AGYProjectID
 
-	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", projectID}
-	if useSandbox {
-		args = append(args, "--sandbox")
-	}
+	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--project", projectID, "--sandbox"}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
-	}
-	if req.DangerouslySkipPermissions {
-		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
 		args = append(args, "--conversation", req.ConversationID)

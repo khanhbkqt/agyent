@@ -364,3 +364,36 @@ func EvaluateParsedCommandPolicy(
 		Reason:   "Command permitted under active security profile",
 	}, nil
 }
+
+// ExtractScriptFileReferences extracts referenced local script filenames from command invocations
+// (e.g., python3 foo.py, bash ./run.sh, node app.js, perl script.pl, ./myscript.sh).
+func ExtractScriptFileReferences(parsedCmds []ParsedCommand) []string {
+	var scripts []string
+	for _, pcmd := range parsedCmds {
+		execLower := strings.ToLower(pcmd.Executable)
+		switch execLower {
+		case "python", "python3", "py", "sh", "bash", "zsh", "dash", "ksh", "node", "nodejs", "ts-node", "deno", "bun", "perl", "ruby", "php":
+			for _, arg := range pcmd.Args {
+				if strings.HasPrefix(arg, "-") {
+					continue
+				}
+				// Potential script file path
+				if strings.HasSuffix(arg, ".py") || strings.HasSuffix(arg, ".sh") || strings.HasSuffix(arg, ".bash") ||
+					strings.HasSuffix(arg, ".js") || strings.HasSuffix(arg, ".ts") || strings.HasSuffix(arg, ".mjs") ||
+					strings.HasSuffix(arg, ".cjs") || strings.HasSuffix(arg, ".pl") || strings.HasSuffix(arg, ".rb") ||
+					strings.HasSuffix(arg, ".php") || strings.Contains(arg, "/") || strings.Contains(arg, `\`) {
+					scripts = append(scripts, arg)
+				}
+			}
+		default:
+			// Check direct script invocation like ./script.sh or ./foo.py
+			if strings.HasPrefix(pcmd.Raw, "./") || strings.HasPrefix(pcmd.Raw, ".\\") || strings.HasSuffix(execLower, ".sh") || strings.HasSuffix(execLower, ".py") {
+				fields := strings.Fields(pcmd.Raw)
+				if len(fields) > 0 {
+					scripts = append(scripts, fields[0])
+				}
+			}
+		}
+	}
+	return scripts
+}

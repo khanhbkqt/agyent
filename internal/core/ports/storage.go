@@ -135,9 +135,9 @@ type ConversationRepository interface {
 
 // AGYProjectRegistryRepository defines persistence operations for per-agent AGY project mappings.
 type AGYProjectRegistryRepository interface {
-	GetAGYProjectMapping(ctx context.Context, tenantID, agentName string) (*domain.AGYProjectMapping, error)
+	GetAGYProjectMapping(ctx context.Context, tenantID, agentName, hostID, configNamespace string) (*domain.AGYProjectMapping, error)
 	SaveAGYProjectMapping(ctx context.Context, mapping *domain.AGYProjectMapping) error
-	RevokeAGYProjectMapping(ctx context.Context, tenantID, agentName string) error
+	RevokeAGYProjectMapping(ctx context.Context, tenantID, agentName, hostID, configNamespace string) error
 }
 
 // StoragePort is the unified interface combining all repositories and lifecycle management.

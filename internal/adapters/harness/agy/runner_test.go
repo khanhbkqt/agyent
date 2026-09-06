@@ -105,7 +105,7 @@ func runMockAGYHelper() {
 	case "verify_workspace_flags":
 		var hasProject, hasAddDir bool
 		for i, arg := range args {
-			if arg == "--project" && i+1 < len(args) && args[i+1] == "outside-of-project" {
+			if arg == "--project" && i+1 < len(args) && args[i+1] != "" {
 				hasProject = true
 			}
 			if arg == "--add-dir" && i+1 < len(args) && args[i+1] != "" {
@@ -228,6 +228,37 @@ func newTestHarness(scenario string, timeoutSeconds int) *agy.Harness {
 	return agy.NewHarness(cfg)
 }
 
+func testAdmission(agentName, workspace string) *domain.ExecutionAdmission {
+	if agentName == "" {
+		agentName = "test-agent"
+	}
+	return &domain.ExecutionAdmission{
+		AdmissionID:  "adm-test-1",
+		AgentName:    agentName,
+		AGYProjectID: "agy-proj-" + agentName,
+		WorkspaceDir: workspace,
+		TurnID:       "turn-test-1",
+	}
+}
+
+func TestHarness_UnadmittedRequest_FailsClosed(t *testing.T) {
+	harness := newTestHarness("success", 5)
+	req := domain.ExecutionRequest{
+		Prompt:       "hello without admission",
+		WorkspaceDir: t.TempDir(),
+	}
+
+	res, err := harness.Execute(context.Background(), req)
+	assert.Nil(t, res)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ports.ErrExecutionRefused))
+
+	resStream, errStream := harness.ExecuteStream(context.Background(), req, "test-session")
+	assert.Nil(t, resStream)
+	require.Error(t, errStream)
+	assert.True(t, errors.Is(errStream, ports.ErrExecutionRefused))
+}
+
 func TestHarness_TC_RUN_01_HugeSTDINPrompt(t *testing.T) {
 	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
 	t.Setenv("MOCK_SCENARIO", "large_stdin")
@@ -241,6 +272,7 @@ func TestHarness_TC_RUN_01_HugeSTDINPrompt(t *testing.T) {
 	req := domain.ExecutionRequest{
 		Prompt:       hugePrompt,
 		WorkspaceDir: tempDir,
+		Admission:    testAdmission("test-agent", tempDir),
 	}
 
 	res, err := harness.Execute(context.Background(), req)
@@ -261,6 +293,7 @@ func TestHarness_TC_RUN_02_ProcessTreeTimeout(t *testing.T) {
 		Prompt:       "test timeout",
 		WorkspaceDir: tempDir,
 		Timeout:      300 * time.Millisecond, // 300ms timeout
+		Admission:    testAdmission("test-agent", tempDir),
 	}
 
 	start := time.Now()
@@ -287,6 +320,7 @@ func TestHarness_TC_RUN_03_ContextCancelAbort(t *testing.T) {
 	req := domain.ExecutionRequest{
 		Prompt:       "test cancel",
 		WorkspaceDir: tempDir,
+		Admission:    testAdmission("test-agent", tempDir),
 	}
 
 	res, err := harness.Execute(ctx, req)
@@ -302,9 +336,11 @@ func TestHarness_TC_RUN_04_InvalidBinaryPath(t *testing.T) {
 	}
 	harness := agy.NewHarness(cfg)
 
+	tempDir := t.TempDir()
 	req := domain.ExecutionRequest{
 		Prompt:       "hello",
-		WorkspaceDir: t.TempDir(),
+		WorkspaceDir: tempDir,
+		Admission:    testAdmission("test-agent", tempDir),
 	}
 
 	res, err := harness.Execute(context.Background(), req)
@@ -324,6 +360,7 @@ func TestHarness_ArtifactsDetectionDuringExecution(t *testing.T) {
 	req := domain.ExecutionRequest{
 		Prompt:       "generate artifacts",
 		WorkspaceDir: tempDir,
+		Admission:    testAdmission("test-agent", tempDir),
 	}
 
 	res, err := harness.Execute(context.Background(), req)
@@ -354,6 +391,7 @@ func TestHarness_WorkspaceIsolationFlags(t *testing.T) {
 	req := domain.ExecutionRequest{
 		Prompt:       "verify workspace isolation",
 		WorkspaceDir: tempDir,
+		Admission:    testAdmission("iso-agent", tempDir),
 	}
 
 	res, err := harness.Execute(context.Background(), req)
@@ -433,6 +471,7 @@ func TestHarness_TC_CONC_01_50SubprocessWorkersStress(t *testing.T) {
 				WorkspaceDir:   tempDir,
 				Effort:         "low",
 				Mode:           "accept-edits",
+				Admission:      testAdmission(fmt.Sprintf("worker-%d", idx), tempDir),
 			}
 
 			res, err := harness.Execute(context.Background(), req)
@@ -541,12 +580,14 @@ func TestHarness_APIS4D_EnvironmentInjection(t *testing.T) {
 	t.Setenv("MOCK_SCENARIO", "verify_apis4d_env")
 
 	h := newTestHarness("verify_apis4d_env", 10)
+	tempDir := t.TempDir()
 	req := domain.ExecutionRequest{
 		Prompt:       "test apis4d environment",
-		WorkspaceDir: t.TempDir(),
+		WorkspaceDir: tempDir,
 		AgentName:    "cyber_agent",
 		SessionKey:   "telegram:chat-sec-99",
 		UserID:       "user-tenant-888",
+		Admission:    testAdmission("cyber_agent", tempDir),
 		Env: map[string]string{
 			"CUSTOM_INJECTED_VAR": "apis4d_val",
 		},
@@ -602,6 +643,7 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 			Prompt:       "say 999",
 			WorkspaceDir: sandboxDir,
 			Effort:       "low",
+			Admission:    testAdmission("real-agent", sandboxDir),
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -630,6 +672,7 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 			ConversationID: conversationID,
 			WorkspaceDir:   sandboxDir,
 			Effort:         "low",
+			Admission:      testAdmission("real-agent", sandboxDir),
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -653,6 +696,7 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 			WorkspaceDir:               mediaSandbox,
 			Effort:                     "low",
 			DangerouslySkipPermissions: true,
+			Admission:                  testAdmission("real-agent", mediaSandbox),
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -682,6 +726,7 @@ func TestHarness_TC_REAL_01_To_03_RealAGY_Execution(t *testing.T) {
 			WorkspaceDir:               imageSandbox,
 			Effort:                     "low",
 			DangerouslySkipPermissions: true,
+			Admission:                  testAdmission("real-agent", imageSandbox),
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -734,12 +779,14 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 
 	// Harness is configured with DefaultEffort: "high"
 	harness := newTestHarness("verify_claude_flags", 5)
+	tempDir := t.TempDir()
 
 	t.Run("Sonnet alias is normalized to claude-sonnet-4-6 and effort is stripped", func(t *testing.T) {
 		req := domain.ExecutionRequest{
-			Prompt: "hello sonnet",
-			Model:  "sonnet",
-			Effort: "high",
+			Prompt:    "hello sonnet",
+			Model:     "sonnet",
+			Effort:    "high",
+			Admission: testAdmission("claude-test", tempDir),
 		}
 		res, err := harness.Execute(context.Background(), req)
 		require.NoError(t, err)
@@ -750,9 +797,10 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 
 	t.Run("Opus alias is normalized to claude-opus-4-6-thinking and effort is stripped", func(t *testing.T) {
 		req := domain.ExecutionRequest{
-			Prompt: "hello opus",
-			Model:  "opus",
-			Effort: "high",
+			Prompt:    "hello opus",
+			Model:     "opus",
+			Effort:    "high",
+			Admission: testAdmission("claude-test", tempDir),
 		}
 		res, err := harness.Execute(context.Background(), req)
 		require.NoError(t, err)
@@ -768,11 +816,13 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 
 	// Harness configured with DefaultTimeoutSeconds: 3000 (3000s)
 	harness := newTestHarness("verify_print_timeout_flags", 3000)
+	tempDir := t.TempDir()
 
 	t.Run("Execute batch mode forwards --print-timeout from request", func(t *testing.T) {
 		req := domain.ExecutionRequest{
-			Prompt:  "test timeout",
-			Timeout: 3000 * time.Second,
+			Prompt:    "test timeout",
+			Timeout:   3000 * time.Second,
+			Admission: testAdmission("timeout-agent", tempDir),
 		}
 		res, err := harness.Execute(context.Background(), req)
 		require.NoError(t, err)
@@ -783,7 +833,8 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 
 	t.Run("Execute batch mode falls back to defaultTimeout when req.Timeout is 0", func(t *testing.T) {
 		req := domain.ExecutionRequest{
-			Prompt: "test timeout fallback",
+			Prompt:    "test timeout fallback",
+			Admission: testAdmission("timeout-agent", tempDir),
 		}
 		res, err := harness.Execute(context.Background(), req)
 		require.NoError(t, err)
@@ -794,8 +845,9 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 
 	t.Run("ExecuteStream mode forwards --print-timeout", func(t *testing.T) {
 		req := domain.ExecutionRequest{
-			Prompt:  "test timeout stream",
-			Timeout: 2400 * time.Second,
+			Prompt:    "test timeout stream",
+			Timeout:   2400 * time.Second,
+			Admission: testAdmission("timeout-agent", tempDir),
 		}
 		res, err := harness.ExecuteStream(context.Background(), req, "test-stream-timeout")
 		require.NoError(t, err)

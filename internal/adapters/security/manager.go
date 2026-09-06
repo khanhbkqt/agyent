@@ -2,8 +2,10 @@ package security
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -231,7 +233,11 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 				break
 			}
 		}
-		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, bundle)
+		ws := req.WorkspaceDir
+		if ws == "" && hasTurn {
+			ws = turnCtx.WorkspaceDir
+		}
+		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, ws, cwd, bundle)
 
 	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
 		targetPath, _ := req.Args["TargetFile"].(string)
@@ -293,6 +299,20 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		urlStr, _ := req.Args["Url"].(string)
 		decision, err = bundle.networkEval.EvaluateURL(urlStr)
 
+	case "read_browser_page":
+		urlStr, _ := req.Args["Url"].(string)
+		if urlStr == "" {
+			urlStr, _ = req.Args["url"].(string)
+		}
+		if urlStr != "" {
+			decision, err = bundle.networkEval.EvaluateURL(urlStr)
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Browser substrate page inspection permitted",
+			}
+		}
+
 	case "web_search":
 		if domainStr, ok := req.Args["domain"].(string); ok && domainStr != "" {
 			decision, err = bundle.networkEval.EvaluateURL("https://" + domainStr)
@@ -303,14 +323,74 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			}
 		}
 
-	case "invoke_subagent", "define_subagent":
-		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
+	case "manage_task":
+		action, _ := req.Args["Action"].(string)
+		if action == "" {
+			action, _ = req.Args["action"].(string)
+		}
+		if preset == domain.PresetReadOnly && (action == "kill" || action == "send_input") {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate]: Task action %q is forbidden under Read Only security preset", action),
+			}
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Task management substrate permitted",
+			}
+		}
 
-	case "manage_subagents", "send_message", "ask_question", "schedule", "manage_task", "generate_image", "read_browser_page":
+	case "manage_subagents":
+		action, _ := req.Args["Action"].(string)
+		if action == "" {
+			action, _ = req.Args["action"].(string)
+		}
+		if preset == domain.PresetReadOnly && (action == "kill" || action == "kill_all") {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate]: Subagent management action %q is forbidden under Read Only security preset", action),
+			}
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Subagent lifecycle substrate permitted",
+			}
+		}
+
+	case "generate_image":
+		if preset == domain.PresetReadOnly {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   "🛡️ [Security Gate]: Image generation and file creation is forbidden under Read Only security preset",
+			}
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Image generation substrate permitted",
+			}
+		}
+
+	case "schedule":
+		if preset == domain.PresetReadOnly {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   "🛡️ [Security Gate]: Schedule creation is forbidden under Read Only security preset",
+			}
+		} else {
+			decision = domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Scheduler substrate permitted",
+			}
+		}
+
+	case "send_message", "ask_question":
 		decision = domain.SecurityDecision{
 			Decision: domain.DecisionAllow,
-			Reason:   "Registered system substrate tool permitted",
+			Reason:   "Substrate communication permitted",
 		}
+
+	case "invoke_subagent", "define_subagent":
+		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
 
 	default:
 		// Check if it's an MCP tool (starts with mcp__ or call_mcp_tool)
@@ -433,7 +513,135 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	return decision, nil
 }
 
-func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey string, role string, cmd string, bundle *presetEvaluators) (domain.SecurityDecision, error) {
+var (
+	base64JSBufferRegex    = regexp.MustCompile(`(?i)Buffer\.from\(\s*['"]([A-Za-z0-9+/=]{8,})['"]\s*,\s*['"]base64['"]\s*\)`)
+	base64AtobRegex        = regexp.MustCompile(`(?i)atob\(\s*['"]([A-Za-z0-9+/=]{8,})['"]\s*\)`)
+	base64PythonRegex      = regexp.MustCompile(`(?i)b64decode\(\s*(?:b)?['"]([A-Za-z0-9+/=]{8,})['"]\s*\)`)
+	base64ShellPipeRegex   = regexp.MustCompile(`(?i)echo\s+['"]?([A-Za-z0-9+/=]{8,})['"]?\s*\|\s*base64\s+-(?:d|-decode)`)
+	base64GenericBlobRegex = regexp.MustCompile(`[A-Za-z0-9+/]{16,}={0,2}`)
+)
+
+func scanDeobfuscatedPayloads(content string, targetName string, bundle *presetEvaluators) (domain.SecurityDecision, bool) {
+	var candidates []string
+
+	for _, m := range base64JSBufferRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, m[1])
+		}
+	}
+	for _, m := range base64AtobRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, m[1])
+		}
+	}
+	for _, m := range base64PythonRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, m[1])
+		}
+	}
+	for _, m := range base64ShellPipeRegex.FindAllStringSubmatch(content, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, m[1])
+		}
+	}
+	for _, blob := range base64GenericBlobRegex.FindAllString(content, 20) {
+		candidates = append(candidates, blob)
+	}
+
+	forbiddenMarkers := []string{
+		".ssh", ".aws", ".gnupg", ".kube", "config.yaml", "agyent.db", "hooks.json",
+		"/etc/shadow", "/etc/passwd", "/etc/sudoers", "/private/etc",
+	}
+
+	for _, cand := range candidates {
+		trimmed := strings.TrimSpace(cand)
+		if len(trimmed)%4 != 0 {
+			trimmed += strings.Repeat("=", 4-(len(trimmed)%4))
+		}
+		decodedBytes, err := base64.StdEncoding.DecodeString(trimmed)
+		if err != nil {
+			continue
+		}
+		decodedStr := string(decodedBytes)
+		decodedLower := strings.ToLower(decodedStr)
+
+		// 1. Check forbidden markers in decoded payload
+		for _, marker := range forbiddenMarkers {
+			if strings.Contains(decodedLower, marker) {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Gate - Obfuscation Detection]: Target '%s' contains Base64-obfuscated reference to forbidden path '%s'", targetName, marker),
+				}, true
+			}
+		}
+
+		// 2. Check blacklist patterns in decoded payload
+		for _, bl := range bundle.blacklistPatterns {
+			if bl.MatchString(decodedStr) {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Gate - Obfuscation Detection]: Target '%s' contains Base64-obfuscated destructive command '%s'", targetName, bl.String()),
+				}, true
+			}
+		}
+
+		// 3. Check anti-self-escalation in decoded payload
+		if strings.Contains(decodedLower, "agyent") && (strings.Contains(decodedLower, "config.yaml") || strings.Contains(decodedLower, "agyent.db") || strings.Contains(decodedLower, "pkill") || strings.Contains(decodedLower, "killall")) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Obfuscation Detection]: Target '%s' contains Base64-obfuscated attack against gateway control-plane", targetName),
+			}, true
+		}
+	}
+
+	return domain.SecurityDecision{}, false
+}
+
+func inspectScriptContent(scriptPath string, data []byte, bundle *presetEvaluators) (domain.SecurityDecision, bool) {
+	content := string(data)
+	contentLower := strings.ToLower(content)
+
+	// 1. Anti-self-escalation & gateway tamper check
+	if strings.Contains(contentLower, "agyent") && (strings.Contains(contentLower, "config.yaml") || strings.Contains(contentLower, "agyent.db") || strings.Contains(contentLower, "hooks.json") || strings.Contains(contentLower, "pkill") || strings.Contains(contentLower, "killall")) {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   fmt.Sprintf("🛡️ [Security Gate - Script Pre-Inspection]: Script '%s' references protected gateway configuration or control-plane resources", scriptPath),
+		}, true
+	}
+
+	// 2. Forbidden path references
+	forbiddenMarkers := []string{
+		".ssh", ".aws", ".gnupg", ".kube", "config.yaml", "agyent.db", "hooks.json",
+		"/etc/shadow", "/etc/passwd", "/etc/sudoers", "/private/etc",
+	}
+	for _, marker := range forbiddenMarkers {
+		if strings.Contains(contentLower, marker) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Script Pre-Inspection]: Script '%s' contains forbidden path reference '%s'", scriptPath, marker),
+			}, true
+		}
+	}
+
+	// 3. Destructive blacklist patterns
+	for _, bl := range bundle.blacklistPatterns {
+		if bl.MatchString(content) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Script Pre-Inspection]: Script '%s' contains forbidden destructive pattern '%s'", scriptPath, bl.String()),
+			}, true
+		}
+	}
+
+	// 4. De-obfuscate Base64 payloads and inspect inside
+	if dec, violated := scanDeobfuscatedPayloads(content, scriptPath, bundle); violated {
+		return dec, true
+	}
+
+	return domain.SecurityDecision{}, false
+}
+
+func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey string, role string, cmd string, ws string, cwd string, bundle *presetEvaluators) (domain.SecurityDecision, error) {
 	if cmd == "" {
 		return domain.SecurityDecision{Decision: domain.DecisionDeny, Reason: "Empty command"}, nil
 	}
@@ -474,6 +682,11 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}
 	}
 
+	// 1.6. De-obfuscation Check on inline commands
+	if dec, violated := scanDeobfuscatedPayloads(cmd, "inline command", bundle); violated {
+		return dec, nil
+	}
+
 	// 2. Inviolable Hard Guardrail: Check Blacklist Patterns
 	for _, bl := range bundle.blacklistPatterns {
 		if bl.MatchString(cmd) {
@@ -492,30 +705,52 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}
 	}
 
+	// 2.5. Static Script Pre-Inspection: Inspect local script files referenced in commands
+	if ws != "" {
+		scriptRefs := ExtractScriptFileReferences(parsedCmds)
+		for _, sref := range scriptRefs {
+			targetScript := sref
+			if !filepath.IsAbs(targetScript) {
+				if cwd != "" {
+					targetScript = filepath.Join(cwd, targetScript)
+				} else {
+					targetScript = filepath.Join(ws, targetScript)
+				}
+			}
+			targetScript = filepath.Clean(targetScript)
+
+			// Verify script path is within workspace
+			pathDec, pathErr := bundle.pathjailEval.EvaluatePath(ws, targetScript, false, false)
+			if pathErr != nil || pathDec.Decision == domain.DecisionDeny {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Gate - Script Pre-Inspection]: Target script '%s' is outside active workspace", sref),
+				}, nil
+			}
+
+			// If file exists on disk, inspect content
+			if info, err := os.Stat(targetScript); err == nil && !info.IsDir() {
+				if info.Size() <= 2*1024*1024 {
+					if data, err := os.ReadFile(targetScript); err == nil {
+						if denial, violated := inspectScriptContent(sref, data, bundle); violated {
+							return denial, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// 3. Check in-memory session grants (Valid for the active session, after hard guardrails pass)
 	m.mu.RLock()
 	grants, hasGrants := m.sessionGrants[sessionKey]
 	m.mu.RUnlock()
 	if hasGrants && len(parsedCmds) > 0 {
-		hasWildcard := false
-		for _, g := range grants {
-			if g.pattern == "*" {
-				hasWildcard = true
-				break
-			}
-		}
-		if hasWildcard {
-			return domain.SecurityDecision{
-				Decision: domain.DecisionAllow,
-				Reason:   "Allowed by active wildcard session permission grant",
-			}, nil
-		}
-
 		allGranted := true
 		for _, pcmd := range parsedCmds {
 			granted := false
 			for _, g := range grants {
-				if g.pattern == "*" || strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern) {
+				if g.pattern != "" && g.pattern != "*" && (strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern)) {
 					granted = true
 					break
 				}
@@ -553,7 +788,7 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 // EvaluateCommand validates shell commands against active rules and session grants.
 func (m *Manager) EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error) {
 	bundle := m.getEvaluatorBundle(m.defaultPreset)
-	return m.evaluateCommandWithBundle(ctx, sessionKey, role, cmd, bundle)
+	return m.evaluateCommandWithBundle(ctx, sessionKey, role, cmd, "", "", bundle)
 }
 
 // EvaluatePath validates file access within workspace boundaries.
@@ -579,6 +814,9 @@ func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, outpu
 
 // GrantSessionPermission adds a permission grant to the session cache for the active session.
 func (m *Manager) GrantSessionPermission(sessionKey string, pattern string) {
+	if pattern == "" || pattern == "*" {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

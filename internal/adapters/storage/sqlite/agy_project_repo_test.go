@@ -25,7 +25,7 @@ func TestAGYProjectRegistry_CRUD(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Initial lookup -> Not Found
-	mapping, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha")
+	mapping, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-mac-01", "ns-default")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ports.ErrNotFound)
 	assert.Nil(t, mapping)
@@ -47,7 +47,7 @@ func TestAGYProjectRegistry_CRUD(t *testing.T) {
 	require.NoError(t, err)
 
 	// 3. Query saved mapping
-	got, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha")
+	got, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-mac-01", "ns-default")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "tenant-1", got.TenantID)
@@ -56,20 +56,29 @@ func TestAGYProjectRegistry_CRUD(t *testing.T) {
 	assert.Equal(t, "/Users/test/workspace-alpha", got.WorkspaceDir)
 	assert.Equal(t, domain.AGYProjectStatusActive, got.Status)
 
+	// 3b. Verify lookup under different tenant/host returns Not Found (Tenant Isolation)
+	diffTenant, err := store.GetAGYProjectMapping(ctx, "tenant-2", "agent-alpha", "host-mac-01", "ns-default")
+	assert.ErrorIs(t, err, ports.ErrNotFound)
+	assert.Nil(t, diffTenant)
+
+	diffHost, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-other", "ns-default")
+	assert.ErrorIs(t, err, ports.ErrNotFound)
+	assert.Nil(t, diffHost)
+
 	// 4. Update mapping
 	got.AGYProjectID = "proj-agy-alpha-456"
 	err = store.SaveAGYProjectMapping(ctx, got)
 	require.NoError(t, err)
 
-	updated, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha")
+	updated, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-mac-01", "ns-default")
 	require.NoError(t, err)
 	assert.Equal(t, "proj-agy-alpha-456", updated.AGYProjectID)
 
 	// 5. Revoke mapping
-	err = store.RevokeAGYProjectMapping(ctx, "tenant-1", "agent-alpha")
+	err = store.RevokeAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-mac-01", "ns-default")
 	require.NoError(t, err)
 
-	revoked, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha")
+	revoked, err := store.GetAGYProjectMapping(ctx, "tenant-1", "agent-alpha", "host-mac-01", "ns-default")
 	require.NoError(t, err)
 	require.NotNil(t, revoked)
 	assert.Equal(t, domain.AGYProjectStatusRevoked, revoked.Status)

@@ -152,13 +152,48 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 				mainLogger.Debug("Synced agent profile to SQLite", "agent", name, "is_public", agentRecord.IsPublic, "preset", agentRecord.SecurityPreset)
 			}
 
-			// Provision Workspace Hooks & AGY Project Grants for this agent
+			// Provision Workspace Hooks, Settings & AGY Project Grants for this agent
 			if ws != "" {
-				_, _ = securityAdapter.EnsureWorkspaceHooksProvisioned(ws, "", mainLogger)
+				if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(ws, "", mainLogger); err != nil {
+					fmt.Fprintf(os.Stderr, "❌ Failed to provision security hooks for agent %q: %v\n", name, err)
+					os.Exit(1)
+				}
+				if err := securityAdapter.EnsureWorkspaceSettingsProvisioned(ws, mainLogger); err != nil {
+					fmt.Fprintf(os.Stderr, "❌ Failed to provision workspace settings for agent %q: %v\n", name, err)
+					os.Exit(1)
+				}
 			}
-			_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-"+name, name, ws, mainLogger)
+			if err := securityAdapter.EnsureAGYProjectProvisioned("agy-proj-"+name, name, ws, mainLogger); err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Failed to provision AGY project for agent %q: %v\n", name, err)
+				os.Exit(1)
+			}
 		}
-		_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-agyent", "agyent", filepath.Join(cfg.Storage.AgentsDir, "workspace"), mainLogger)
+		defaultWs := filepath.Join(cfg.Storage.AgentsDir, "workspace")
+		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(defaultWs, "", mainLogger); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision security hooks for default workspace: %v\n", err)
+			os.Exit(1)
+		}
+		if err := securityAdapter.EnsureWorkspaceSettingsProvisioned(defaultWs, mainLogger); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision workspace settings for default workspace: %v\n", err)
+			os.Exit(1)
+		}
+		if err := securityAdapter.EnsureAGYProjectProvisioned("agy-proj-agyent", "agyent", defaultWs, mainLogger); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision AGY project for default agent: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Probe AGY CLI Capabilities on startup
+		if caps, probeErr := agy.ProbeCapabilities(syncCtx, cfg.AGY.BinaryPath); probeErr != nil {
+			mainLogger.Warn("AGY CLI capability probing returned warning", "binary", cfg.AGY.BinaryPath, "error", probeErr)
+		} else {
+			mainLogger.Info("Probed AGY CLI capabilities",
+				"version", caps.Version,
+				"supports_sandbox", caps.SupportsSandbox,
+				"supports_project_grants", caps.SupportsProjectScopedGrants,
+				"supports_stream_json", caps.SupportsStreamJSON,
+				"platform", caps.Platform,
+			)
+		}
 
 		// 2. Initialize Central EventBus
 		bus := eventbus.NewEventBus(1024, 4)
@@ -195,6 +230,7 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 
 		// 6. Initialize Universal Security Gateway & IPC Host
 		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
+		_ = securityAdapter.RemoveGlobalSettingsPermissions(mainLogger)
 		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
 		channelMux.SetURLSafetyEvaluator(secMgr)
@@ -204,6 +240,10 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")
 		if _, err := securityAdapter.EnsureWorkspaceHooksProvisioned(starterWS, "", mainLogger); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to provision mandatory security hooks for starter workspace: %v\n", err)
+			os.Exit(1)
+		}
+		if err := securityAdapter.EnsureWorkspaceSettingsProvisioned(starterWS, mainLogger); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to provision mandatory workspace settings for starter workspace: %v\n", err)
 			os.Exit(1)
 		}
 

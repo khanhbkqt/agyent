@@ -80,9 +80,14 @@ func (e *taskExecutor) executeTurn(
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	hostID := "local-host"
+	configNamespace := "default"
 	agyProjectID := "agy-proj-sub-" + task.AgentName
+	if tenantID != "" && tenantID != "default" {
+		agyProjectID = fmt.Sprintf("agy-proj-sub-%s-%s", tenantID, task.AgentName)
+	}
 	if e.storage != nil {
-		if mapping, err := e.storage.GetAGYProjectMapping(parentCtx, tenantID, task.AgentName); err == nil && mapping != nil {
+		if mapping, err := e.storage.GetAGYProjectMapping(parentCtx, tenantID, task.AgentName, hostID, configNamespace); err == nil && mapping != nil {
 			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
 				err := fmt.Errorf("subagent execution denied: AGY project mapping is %s", mapping.Status)
 				return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err

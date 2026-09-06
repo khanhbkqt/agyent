@@ -336,10 +336,10 @@ func TestExecuteTurn_ExecutionAdmissionAndProjectScope(t *testing.T) {
 	assert.NotEmpty(t, callReq.Admission.AdmissionID)
 	assert.Equal(t, "tenant-99", callReq.Admission.TenantID)
 	assert.Equal(t, "worker-1", callReq.Admission.AgentName)
-	assert.Equal(t, "agy-proj-worker-1", callReq.Admission.AGYProjectID)
+	assert.Equal(t, "agy-proj-tenant-99-worker-1", callReq.Admission.AGYProjectID)
 	assert.Equal(t, "/tmp/worker-1", callReq.Admission.WorkspaceDir)
 	assert.Equal(t, callReq.TurnID, callReq.Admission.TurnID)
-	assert.Equal(t, "agy-proj-worker-1", callReq.Env["AGYENT_PROJECT_ID"])
+	assert.Equal(t, "agy-proj-tenant-99-worker-1", callReq.Env["AGYENT_PROJECT_ID"])
 	assert.Equal(t, "tg:session-99", callReq.SessionKey)
 	assert.Equal(t, "user-alpha", callReq.UserID)
 }
@@ -350,7 +350,7 @@ type mockStorageWithMapping struct {
 	err     error
 }
 
-func (m *mockStorageWithMapping) GetAGYProjectMapping(ctx context.Context, tenantID, agentName string) (*domain.AGYProjectMapping, error) {
+func (m *mockStorageWithMapping) GetAGYProjectMapping(ctx context.Context, tenantID, agentName, hostID, configNamespace string) (*domain.AGYProjectMapping, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -398,4 +398,39 @@ func TestExecuteTurn_RevokedMappingDenial(t *testing.T) {
 	assert.ErrorIs(t, err, ports.ErrAccessDenied)
 	assert.Contains(t, err.Error(), "QUARANTINED")
 	assert.Empty(t, runner.executeCalls, "runner should never be invoked when mapping is revoked/quarantined")
+}
+
+func TestExecuteTurn_WorkspaceMismatchDenial(t *testing.T) {
+	runner := &mockRunner{}
+	policy := &mockPolicy{}
+	secMgr := newMockSecurityManager()
+	storage := &mockStorageWithMapping{
+		mapping: &domain.AGYProjectMapping{
+			TenantID:     "tenant-1",
+			AgentName:    "worker-1",
+			AGYProjectID: "agy-proj-worker-1",
+			WorkspaceDir: "/tmp/original-workspace",
+			Status:       domain.AGYProjectStatusActive,
+		},
+	}
+	svc := NewService(runner, policy, secMgr, storage, nil, nil)
+
+	principal := domain.Principal{
+		SubjectID: "user-1",
+		Provider:  "telegram",
+		AccountID: "tenant-1",
+		Kind:      domain.PrincipalUser,
+	}
+	req := domain.ExecutionRequest{
+		AgentName:    "worker-1",
+		WorkspaceDir: "/tmp/tampered-workspace",
+		Prompt:       "run something",
+	}
+
+	res, err := svc.ExecuteTurn(context.Background(), principal, req, "tg:s1", false)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assert.ErrorIs(t, err, ports.ErrAccessDenied)
+	assert.Contains(t, err.Error(), "workspace directory mismatch")
+	assert.Empty(t, runner.executeCalls, "runner should never be invoked when workspace directory is mismatched")
 }

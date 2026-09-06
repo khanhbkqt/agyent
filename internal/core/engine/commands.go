@@ -2301,25 +2301,14 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 		switch subcmd {
 		case "preset":
 			if len(args) < 2 {
-				return "⚠️ Usage: `/security preset <unrestricted|developer|balanced|strict|read_only>`", nil
+				return "⚠️ Usage: `/security preset <unrestricted|developer|workspace_only|balanced|strict|read_only>`", nil
 			}
 			preset := domain.SecurityPreset(strings.ToLower(args[1]))
 			switch preset {
-			case domain.PresetUnrestricted, domain.PresetDeveloper, domain.PresetBalanced, domain.PresetStrict, domain.PresetReadOnly:
+			case domain.PresetUnrestricted, domain.PresetDeveloper, domain.PresetWorkspaceOnly, domain.PresetBalanced, domain.PresetStrict, domain.PresetReadOnly:
 				// Valid preset name
 			default:
-				return fmt.Sprintf("⚠️ Invalid security preset: `%s`. Valid options: `unrestricted`, `developer`, `balanced`, `strict`, `read_only`", args[1]), nil
-			}
-
-			// Validate monotonic upgrade rule: cannot switch to less secure level than baseline
-			if !domain.CanSwitchPreset(baselinePreset, preset) {
-				allowedPresets := domain.GetAllowedPresets(baselinePreset)
-				var allowedStrs []string
-				for _, p := range allowedPresets {
-					allowedStrs = append(allowedStrs, fmt.Sprintf("`%s`", p))
-				}
-				return fmt.Sprintf("⛔ **Cannot downgrade security preset:** Agent `%s` current baseline security level is `%s`. You can only switch to equal or more secure presets (allowed: %s).",
-					activeAgentName, baselinePreset, strings.Join(allowedStrs, ", ")), nil
+				return fmt.Sprintf("⚠️ Invalid security preset: `%s`. Valid options: `unrestricted`, `developer`, `workspace_only`, `balanced`, `strict`, `read_only`", args[1]), nil
 			}
 
 			e.securityManager.SetPreset(preset)
@@ -2332,7 +2321,7 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 
 		case "grant":
 			if len(args) < 2 {
-				return "⚠️ Usage: `/security grant <pattern|scope>`", nil
+				return "⚠️ Usage: `/security grant <command>`", nil
 			}
 			pattern := args[1]
 			e.securityManager.GrantSessionPermission(sessionKey, pattern)
@@ -2348,7 +2337,7 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 		}
 	}
 
-	// Default: Show Dashboard with Interactive Preset Switcher Buttons (filtered to >= baseline)
+	// Default: Show Dashboard with Interactive Preset Switcher Buttons
 	summary := e.securityManager.GetDashboardSummary(sessionKey)
 	summary.Preset = baselinePreset
 
@@ -2375,6 +2364,10 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 			Text:         "🛠️ Developer",
 			CallbackData: "sec:preset:developer",
 		},
+		domain.PresetWorkspaceOnly: {
+			Text:         "📁 Workspace Only",
+			CallbackData: "sec:preset:workspace_only",
+		},
 		domain.PresetBalanced: {
 			Text:         "🛡️ Balanced",
 			CallbackData: "sec:preset:balanced",
@@ -2393,13 +2386,11 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 	var currentRow []domain.InlineButton
 
 	for _, p := range domain.AllSecurityPresets {
-		if domain.CanSwitchPreset(baselinePreset, p) {
-			if btn, ok := presetButtons[p]; ok {
-				currentRow = append(currentRow, btn)
-				if len(currentRow) == 2 {
-					keyboard = append(keyboard, currentRow)
-					currentRow = nil
-				}
+		if btn, ok := presetButtons[p]; ok {
+			currentRow = append(currentRow, btn)
+			if len(currentRow) == 2 {
+				keyboard = append(keyboard, currentRow)
+				currentRow = nil
 			}
 		}
 	}

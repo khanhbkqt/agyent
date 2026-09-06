@@ -32,17 +32,19 @@ func ExtractBaseCommand(rawCmd string) string {
 type SecurityPreset string
 
 const (
-	PresetUnrestricted SecurityPreset = "unrestricted"
-	PresetDeveloper    SecurityPreset = "developer"
-	PresetBalanced     SecurityPreset = "balanced"
-	PresetStrict       SecurityPreset = "strict"
-	PresetReadOnly     SecurityPreset = "read_only"
+	PresetUnrestricted   SecurityPreset = "unrestricted"
+	PresetDeveloper      SecurityPreset = "developer"
+	PresetWorkspaceOnly  SecurityPreset = "workspace_only"
+	PresetBalanced       SecurityPreset = "balanced"
+	PresetStrict         SecurityPreset = "strict"
+	PresetReadOnly       SecurityPreset = "read_only"
 )
 
 // AllSecurityPresets lists all supported security presets ordered from least secure to most secure.
 var AllSecurityPresets = []SecurityPreset{
 	PresetUnrestricted,
 	PresetDeveloper,
+	PresetWorkspaceOnly,
 	PresetBalanced,
 	PresetStrict,
 	PresetReadOnly,
@@ -55,14 +57,16 @@ func PresetLevel(preset SecurityPreset) int {
 		return 0
 	case PresetDeveloper:
 		return 1
+	case PresetWorkspaceOnly:
+		return 2
 	case PresetBalanced, "":
-		return 2
-	case PresetStrict:
 		return 3
-	case PresetReadOnly:
+	case PresetStrict:
 		return 4
+	case PresetReadOnly:
+		return 5
 	default:
-		return 2
+		return 3
 	}
 }
 
