@@ -188,3 +188,15 @@ func TestParseOutput_TC_PARS_09_NativeDeniedActions(t *testing.T) {
 	assert.Equal(t, domain.StatusNativePermissionDenied, res.Outcome)
 	assert.Equal(t, "native permission denial: headless permission denied", res.Error)
 }
+
+func TestParseOutput_TC_PARS_10_TTYError(t *testing.T) {
+	stdout := []byte("CLI error: bubbletea: error opening TTY: bubbletea: could not open TTY: open /dev/tty: no such device or address\n")
+	stderr := []byte("")
+
+	res, err := agy.ParseOutput(stdout, stderr)
+	assert.Nil(t, res)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ports.ErrProcessExecution))
+	assert.Contains(t, err.Error(), "headless environment blocked interactive TTY prompt")
+}
+

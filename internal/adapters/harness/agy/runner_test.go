@@ -214,6 +214,27 @@ func runMockAGYHelper() {
 		fmt.Println(string(data))
 		os.Exit(0)
 
+	case "verify_headless_flags":
+		var hasPrint, hasDangerousSkip, hasDisableSlash bool
+		for _, arg := range args {
+			if arg == "--print" {
+				hasPrint = true
+			}
+			if arg == "--dangerously-skip-permissions" {
+				hasDangerousSkip = true
+			}
+			if arg == "--disable-slash-commands" {
+				hasDisableSlash = true
+			}
+		}
+		if !hasPrint || !hasDangerousSkip || !hasDisableSlash {
+			fmt.Fprintf(os.Stderr, "missing expected headless flags: print=%v dangerous=%v slash=%v, args=%v\n",
+				hasPrint, hasDangerousSkip, hasDisableSlash, args)
+			os.Exit(1)
+		}
+		fmt.Println(`{"conversation_id":"c-headless-success","status":"SUCCESS","response":"Headless flags verified","duration_seconds":0.3}`)
+		os.Exit(0)
+
 	default: // "success" or standard
 		fmt.Println(`{"conversation_id":"c-mock-success","status":"SUCCESS","response":"Hello from mock AGY!","duration_seconds":0.8,"num_turns":1,"usage":{"input_tokens":150,"output_tokens":45,"thinking_tokens":20,"total_tokens":215}}`)
 		os.Exit(0)
@@ -859,3 +880,26 @@ func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {
 		assert.Contains(t, res.ResponseText, "Print timeout stream verified: 2400s")
 	})
 }
+
+func TestHarness_HeadlessFlags_DangerouslySkipPermissionsAndPrint(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "verify_headless_flags")
+
+	harness := newTestHarness("verify_headless_flags", 5)
+	tempDir := t.TempDir()
+
+	req := domain.ExecutionRequest{
+		Prompt:                     "test headless flags",
+		WorkspaceDir:               tempDir,
+		DangerouslySkipPermissions: true,
+		Admission:                  testAdmission("headless-agent", tempDir),
+	}
+
+	res, err := harness.Execute(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+	assert.Equal(t, "c-headless-success", res.ConversationID)
+	assert.Contains(t, res.ResponseText, "Headless flags verified")
+}
+

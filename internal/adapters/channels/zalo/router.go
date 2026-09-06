@@ -2,7 +2,9 @@ package zalo
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -173,15 +175,34 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 		attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
 		mimeType := "application/octet-stream"
+		fileName := SanitizeFilename(attachment.FileName)
 		if attachmentType == "photo" || attachmentType == "image" {
 			attachmentType = "image"
 			mimeType = "image/jpeg"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("photo_%d_%s.jpg", time.Now().Unix(), attachment.FileID)
+			}
+		} else if attachmentType == "voice" || attachmentType == "audio" {
+			attachmentType = "audio"
+			mimeType = "audio/ogg"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("audio_%d_%s.ogg", time.Now().Unix(), attachment.FileID)
+			}
+		} else if attachmentType == "video" {
+			mimeType = "video/mp4"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("video_%d_%s.mp4", time.Now().Unix(), attachment.FileID)
+			}
+		} else {
+			if fileName == "file" || fileName == "" {
+				fileName = fmt.Sprintf("doc_%d_%s", time.Now().Unix(), attachment.FileID)
+			}
 		}
 		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
 			Channel:  "zalo",
 			ID:       attachment.FileID,
 			SourceID: attachment.URL,
-			FileName: attachment.FileName,
+			FileName: fileName,
 			MIMEType: mimeType,
 			Size:     attachment.FileSize,
 			Type:     attachmentType,

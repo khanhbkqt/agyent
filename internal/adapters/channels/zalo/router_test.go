@@ -2,6 +2,7 @@ package zalo_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"agyent/internal/core/ports"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testInboundAuthorizer struct {
@@ -332,4 +334,63 @@ func TestZaloRouter_MentionStripping(t *testing.T) {
 	assert.True(t, msg6.IsCommand())
 }
 
+func TestZaloRouter_AttachmentFilenameAndExtensionInference(t *testing.T) {
+	cfg := &config.Config{}
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
 
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "media-msg-multi",
+			From:      zalo.ZaloUser{ID: "user-123"},
+			Chat:      zalo.ZaloChat{ID: "chat-123", Type: "private"},
+			Attachments: []zalo.ZaloAttachment{
+				{
+					Type:   "photo",
+					FileID: "photo123",
+					URL:    "https://cdn.zalo.example/p1",
+				},
+				{
+					Type:   "voice",
+					FileID: "voice456",
+					URL:    "https://cdn.zalo.example/v1",
+				},
+				{
+					Type:   "video",
+					FileID: "video789",
+					URL:    "https://cdn.zalo.example/vid1",
+				},
+				{
+					Type:     "document",
+					FileID:   "doc000",
+					FileName: "custom_report.pdf",
+					URL:      "https://cdn.zalo.example/d1",
+				},
+			},
+		},
+	})
+
+	select {
+	case msg := <-inbound:
+		require.Len(t, msg.AttachmentRefs, 4)
+		assert.Equal(t, "image", msg.AttachmentRefs[0].Type)
+		assert.Equal(t, "image/jpeg", msg.AttachmentRefs[0].MIMEType)
+		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[0].FileName, ".jpg"))
+		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[0].FileName, "photo_"))
+
+		assert.Equal(t, "audio", msg.AttachmentRefs[1].Type)
+		assert.Equal(t, "audio/ogg", msg.AttachmentRefs[1].MIMEType)
+		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[1].FileName, ".ogg"))
+		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[1].FileName, "audio_"))
+
+		assert.Equal(t, "video", msg.AttachmentRefs[2].Type)
+		assert.Equal(t, "video/mp4", msg.AttachmentRefs[2].MIMEType)
+		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[2].FileName, ".mp4"))
+		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[2].FileName, "video_"))
+
+		assert.Equal(t, "document", msg.AttachmentRefs[3].Type)
+		assert.Equal(t, "custom_report.pdf", msg.AttachmentRefs[3].FileName)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message with inferred attachment extensions")
+	}
+}

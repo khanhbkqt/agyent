@@ -18,6 +18,9 @@ var (
 
 	// convNotFoundRegex matches all variants of missing/expired conversation or transcript warnings
 	convNotFoundRegex = regexp.MustCompile(`(?i)(conversation.*not found|invalid conversation|failed to load conversation|no such conversation|transcript not found|conversation expired)`)
+
+	// ttyErrorRegex matches bubbletea /dev/tty errors when interactive mode is triggered headlessly
+	ttyErrorRegex = regexp.MustCompile(`(?i)(could not open tty|error opening tty|no such device or address)`)
 )
 
 // StripANSI removes ANSI escape codes from string s.
@@ -45,10 +48,13 @@ func ParseOutput(stdoutBytes, stderrBytes []byte) (*domain.ExecutionResult, erro
 	// 1. Try to extract valid JSON payload from stdout first
 	payload, err := extractLastJSONPayload(cleanStdout)
 	if err != nil {
-		// If stdout could not be parsed, check if conversation loss is signaled in stderr or stdout
+		// If stdout could not be parsed, check if conversation loss or TTY error is signaled in stderr or stdout
 		combinedText := strings.TrimSpace(cleanStderr + " " + string(cleanStdout))
 		if convNotFoundRegex.MatchString(combinedText) {
 			return nil, fmt.Errorf("%w: %s", ports.ErrConversationNotFound, combinedText)
+		}
+		if ttyErrorRegex.MatchString(combinedText) {
+			return nil, fmt.Errorf("%w: headless environment blocked interactive TTY prompt: %s", ports.ErrProcessExecution, combinedText)
 		}
 		return nil, fmt.Errorf("%w: stdout='%s', stderr='%s': %v", ports.ErrOutputParse, string(cleanStdout), cleanStderr, err)
 	}

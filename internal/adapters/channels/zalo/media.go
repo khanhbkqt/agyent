@@ -173,7 +173,6 @@ func (m *MediaManager) downloadInboundAttachment(ctx context.Context, remoteURL,
 	if fileName == "" {
 		fileName = fmt.Sprintf("zalo_media_%d", time.Now().UnixNano())
 	}
-	destination := filepath.Join(targetDir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileName))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
@@ -185,6 +184,7 @@ func (m *MediaManager) downloadInboundAttachment(ctx context.Context, remoteURL,
 		_, err := validateZaloMediaURL(redirect.Context(), redirect.URL.String(), evaluator)
 		return err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", 0, "", fmt.Errorf("download Zalo media: %w", err)
@@ -196,6 +196,36 @@ func (m *MediaManager) downloadInboundAttachment(ctx context.Context, remoteURL,
 	if resp.ContentLength > MaxMediaSizeBytes {
 		return "", 0, "", fmt.Errorf("%w: content length %d exceeds limit", ports.ErrAttachmentTooLarge, resp.ContentLength)
 	}
+
+	if filepath.Ext(fileName) == "" {
+		ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+		if idx := strings.Index(ct, ";"); idx != -1 {
+			ct = strings.TrimSpace(ct[:idx])
+		}
+		var ext string
+		switch ct {
+		case "image/jpeg", "image/jpg":
+			ext = ".jpg"
+		case "image/png":
+			ext = ".png"
+		case "image/gif":
+			ext = ".gif"
+		case "image/webp":
+			ext = ".webp"
+		case "audio/ogg", "audio/opus":
+			ext = ".ogg"
+		case "audio/mpeg", "audio/mp3":
+			ext = ".mp3"
+		case "video/mp4":
+			ext = ".mp4"
+		case "application/pdf":
+			ext = ".pdf"
+		}
+		if ext != "" {
+			fileName += ext
+		}
+	}
+	destination := filepath.Join(targetDir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileName))
 
 	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {

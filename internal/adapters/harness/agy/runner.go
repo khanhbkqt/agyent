@@ -103,7 +103,7 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	}
 	projectID := req.Admission.AGYProjectID
 
-	args := []string{"--output-format", "json", "--project", projectID, "--sandbox"}
+	args := []string{"--print", "--output-format", "json", "--project", projectID, "--sandbox"}
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
@@ -118,6 +118,11 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if mode != "" {
 		args = append(args, "--mode", mode)
 	}
+
+	if req.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	args = append(args, "--disable-slash-commands")
 
 	model := req.Model
 	effort := req.Effort
@@ -318,6 +323,11 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if mode != "" {
 		args = append(args, "--mode", mode)
 	}
+
+	if req.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	args = append(args, "--disable-slash-commands")
 
 	model := req.Model
 	effort := req.Effort

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -234,3 +235,31 @@ func TestUploadPublicMedia_FallbackChain(t *testing.T) {
 	assert.True(t, litterboxCalled.Load())
 }
 
+type allowingURLSafetyEvaluator struct{}
+
+func (allowingURLSafetyEvaluator) EvaluateURL(context.Context, string) (domain.SecurityDecision, error) {
+	return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+}
+
+func TestMediaManager_DownloadInboundAttachment_InfersExtensionFromContentType(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("fake-png-payload"))
+	}))
+	defer server.Close()
+
+	manager := &MediaManager{
+		stagingDir: t.TempDir(),
+		httpClient: server.Client(),
+	}
+	manager.SetURLSafetyEvaluator(allowingURLSafetyEvaluator{})
+
+	filePath, err := manager.DownloadInboundAttachment(context.Background(), server.URL+"/raw-photo", "photo_without_ext")
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(filePath, ".png"))
+
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("fake-png-payload"), content)
+}

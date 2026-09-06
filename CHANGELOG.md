@@ -5,6 +5,18 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.45] - 2026-09-06
+
+### Fixed
+- **Headless AGY Execution & TTY Block Prevention (`harness/agy`):**
+  - **Headless CLI Flags:** Passed `--print`, `--dangerously-skip-permissions` (when requested/configured), and `--disable-slash-commands` to AGY CLI executions to prevent Bubbletea interactive prompt crashes (`could not open TTY: open /dev/tty: no such device or address`) when running headlessly in daemon mode.
+  - **Bubbletea / TTY Error Classification:** Added regex classification in `parser.go` to cleanly surface headless TTY blocking errors.
+- **Inbound Media Extension & Multimodal Detection (`channels/zalo`):**
+  - **Automatic Extension Inference:** Added automatic filename generation with appropriate extensions (`.jpg`, `.ogg`, `.mp4`, `.doc`) in Zalo message router when inbound attachments have empty filenames or lack extensions.
+  - **Content-Type Fallback:** Enhanced Zalo media downloader to infer file extensions from HTTP `Content-Type` headers if the remote attachment filename is extensionless, enabling LLM Multimodal Vision to natively recognize and process images without fallback tool invocations.
+
+---
+
 ## [1.0.44] - 2026-09-06
 
 ### Fixed
