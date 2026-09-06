@@ -68,7 +68,7 @@ flowchart TB
 | :--- | :--- | :--- | :--- |
 | **1. Rules** | Identity, address conventions, data safety, baseline interaction etiquette. | Code architecture (Clean Arch), linters, banned dependencies, commit conventions. | **Hierarchical Stacking:** Global rules load as base $\rightarrow$ Workspace `AGENTS.md` stacks on top as domain constraints. |
 | **2. Skills** | General system skills: Diagnostics, session management, reminder tools. | Project-specific domain runbooks: Staging deployment, database migration scripts. | **Native Progressive Disclosure:** AGY CLI automatically discovers `.agents/skills/<name>/SKILL.md` in workspace and loads full bodies only upon prompt triggers. |
-| **3. Tools / MCP** | **Global Integrations:** enabled global plugins. | **Project Infrastructure:** enabled workspace plugins. | **Dynamic MCP Syncing:** AGY CLI currently reads `~/.gemini/antigravity-cli/mcp_config.json`. `agyent` mounts session-keyed MCP servers for an exclusive turn and unmounts them afterward. |
+| **3. Tools / MCP** | **Global Integrations:** enabled global plugins. | **Project Infrastructure:** enabled workspace plugins. | **Dynamic MCP Syncing:** AGY CLI reads `~/.gemini/config/mcp_config.json` (mirrored across all runtime targets). `agyent` mounts session-keyed MCP servers for an exclusive turn and unmounts them afterward. |
 | **4. Memory / State** | Durable facts: User preferences, working habits, Architectural Decision Records (ADRs). | Project context: Active CWD, git branch, in-progress bugs, task checklist in repo. | **Scoped Isolation:** Workspace reads global memory as needed; project notes never leak across codebases. |
 
 ---

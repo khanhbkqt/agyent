@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.42] - 2026-09-06
+
+### Fixed
+- **Multi-Target MCP Configuration Mirroring (`adapters/mcp`, `doctor`):**
+  - **Declarative Config Target Alignment:** Configured `MCPSyncer` default path to `~/.gemini/config/mcp_config.json` (the global Declarative Config path recognized by Antigravity CLI and Language Server) instead of legacy `~/.gemini/antigravity-cli/mcp_config.json`.
+  - **Multi-Target Atomic Mirroring:** Atomically synced mounted and unmounted ephemeral MCP server definitions across all runtime configuration targets (`~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`, and `~/.gemini/antigravity-cli/mcp_config.json`), ensuring seamless MCP tool injection (`camoufox_*`, `sqlite_*`, `scheduler`, `subagent_dispatcher`) across all background scheduler turns and interactive sessions.
+  - **Fallback State Resolution:** Enhanced `readConfigUnderLock` to automatically fall back to alternative targets if the primary file does not exist yet.
+
+---
+
 ## [1.0.41] - 2026-09-06
 
 ### Fixed

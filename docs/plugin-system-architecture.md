@@ -66,8 +66,8 @@ do not consume or constrain every turn.
 
 ## 4. MCP lifecycle and isolation
 
-AGY currently discovers MCP servers from
-`~/.gemini/antigravity-cli/mcp_config.json`. `MCPSyncer` therefore:
+AGY discovers MCP servers from `~/.gemini/config/mcp_config.json` (and
+mirrored across all Antigravity CLI targets). `MCPSyncer` therefore:
 
 1. Acquires an OS-backed exclusive turn lease for MCP-enabled turns.
 2. Adds session-scoped server entries with a hashed ephemeral key.

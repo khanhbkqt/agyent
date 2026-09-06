@@ -47,8 +47,12 @@ func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get user home: %w", err)
 		}
-		configPath = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
-		allPaths = []string{configPath}
+		configPath = filepath.Join(home, ".gemini", "config", "mcp_config.json")
+		allPaths = []string{
+			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "antigravity", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"),
+		}
 	} else {
 		allPaths = []string{configPath}
 	}
@@ -260,6 +264,17 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 
 func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 	data, err := os.ReadFile(s.configPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		for _, p := range s.allConfigPaths {
+			if p != s.configPath {
+				if d, e := os.ReadFile(p); e == nil {
+					data = d
+					err = nil
+					break
+				}
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

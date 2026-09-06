@@ -47,8 +47,9 @@ func (d *DoctorRunner) CheckPlugins() []CheckResult {
 	// 2. Check MCP Syncer Configuration File
 	homeDir, _ := os.UserHomeDir()
 	mcpPaths := []string{
-		filepath.Join(homeDir, ".gemini", "antigravity", "mcp_config.json"),
 		filepath.Join(homeDir, ".gemini", "config", "mcp_config.json"),
+		filepath.Join(homeDir, ".gemini", "antigravity", "mcp_config.json"),
+		filepath.Join(homeDir, ".gemini", "antigravity-cli", "mcp_config.json"),
 	}
 
 	mcpFound := false
