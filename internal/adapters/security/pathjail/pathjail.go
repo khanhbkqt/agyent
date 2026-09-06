@@ -106,7 +106,19 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 	// 3. Resolve Symlinks and canonicalize target path
 	canonTarget := resolveSymlinksAndCanonicalize(absTarget)
 
-	// 4. Absolute Forbidden Blacklist check
+	// 4. Control-plane path protection: writing to .agents or .agyent anywhere (including within workspace) is strictly forbidden
+	if isWrite {
+		normTarget := strings.ToLower(filepath.ToSlash(filepath.Clean(canonTarget)))
+		if strings.Contains(normTarget, "/.agents/") || strings.HasSuffix(normTarget, "/.agents") ||
+			strings.Contains(normTarget, "/.agyent/") || strings.HasSuffix(normTarget, "/.agyent") {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of control-plane path '%s' is strictly forbidden", targetPath),
+			}, nil
+		}
+	}
+
+	// 5. Absolute Forbidden Blacklist check
 	for _, forbidden := range e.forbiddenPaths {
 		if pathMatches(canonTarget, forbidden) {
 			// Check if this file is explicitly allowed under delegated agent config management
@@ -124,7 +136,7 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 		}
 	}
 
-	// 5. Workspace Jail Enforcement check
+	// 6. Workspace Jail Enforcement check
 	if e.enforceJail {
 		canonWorkspace := resolveSymlinksAndCanonicalize(workspaceDir)
 		isInside := canonWorkspace != "" && pathMatches(canonTarget, canonWorkspace)
@@ -151,21 +163,6 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 				Decision: domain.DecisionDeny,
 				Reason:   fmt.Sprintf("🛡️ [Path Jail]: Target path '%s' resides outside active workspace '%s'", targetPath, workspaceDir),
 			}, nil
-		}
-
-		// 6. Control-plane path protection: writing to .agents or .agyent inside workspace is strictly forbidden
-		if isWrite && isInside {
-			rel, relErr := filepath.Rel(canonWorkspace, canonTarget)
-			if relErr == nil {
-				relClean := strings.ToLower(filepath.ToSlash(filepath.Clean(rel)))
-				if relClean == ".agents" || strings.HasPrefix(relClean, ".agents/") ||
-					relClean == ".agyent" || strings.HasPrefix(relClean, ".agyent/") {
-					return domain.SecurityDecision{
-						Decision: domain.DecisionDeny,
-						Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of control-plane path '%s' is strictly forbidden", targetPath),
-					}, nil
-				}
-			}
 		}
 	}
 

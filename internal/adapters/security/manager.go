@@ -236,6 +236,12 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
 		targetPath, _ := req.Args["TargetFile"].(string)
 		if targetPath == "" {
+			targetPath, _ = req.Args["target_file"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["targetFile"].(string)
+		}
+		if targetPath == "" {
 			targetPath, _ = req.Args["AbsolutePath"].(string)
 		}
 		if targetPath == "" {
@@ -246,6 +252,12 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}
 		if targetPath == "" {
 			targetPath, _ = req.Args["SearchDirectory"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["path"].(string)
+		}
+		if targetPath == "" {
+			targetPath, _ = req.Args["file_path"].(string)
 		}
 		isWrite := req.ToolName == "write_to_file" || req.ToolName == "replace_file_content"
 		if isWrite && preset == domain.PresetReadOnly {
