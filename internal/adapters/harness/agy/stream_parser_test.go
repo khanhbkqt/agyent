@@ -284,4 +284,50 @@ func TestStreamParser_TC_BRG_01_To_04(t *testing.T) {
 		assert.Equal(t, "turn-test-xyz", resultTurnID)
 		assert.Equal(t, "turn-test-xyz", res.TurnID)
 	})
+
+	t.Run("TC-BRG-09_SilentToolHeartbeatPingsWatchdog", func(t *testing.T) {
+		var (
+			mu             sync.Mutex
+			milestoneCount int
+		)
+
+		bus := eventbus.NewEventBus(10, 1)
+		defer bus.Close()
+
+		parser := agy.NewStreamParser(bus)
+		parser.SetToolHeartbeatInterval(15 * time.Millisecond)
+		parser.SetOnMilestone(func() {
+			mu.Lock()
+			milestoneCount++
+			mu.Unlock()
+		})
+
+		pr, pw := io.Pipe()
+
+		go func() {
+			defer pw.Close()
+			// 1. init
+			_, _ = pw.Write([]byte(`{"event":"init","conversation_id":"c-hb"}` + "\n"))
+			// 2. tool RUNNING
+			_, _ = pw.Write([]byte(`{"event":"step_update","step_update":{"step_type":"tool","state":"RUNNING","tool_name":"generate_image"}}` + "\n"))
+			// Wait 60ms during silent tool execution (heartbeat ticker at 15ms will trigger multiple times)
+			time.Sleep(60 * time.Millisecond)
+			// 3. tool DONE
+			_, _ = pw.Write([]byte(`{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"generate_image"}}` + "\n"))
+			// 4. result
+			_, _ = pw.Write([]byte(`{"event":"result","result":{"status":"SUCCESS","response":"finished"}}` + "\n"))
+		}()
+
+		res, err := parser.ParseAndEmitStream(context.Background(), "telegram:hb", pr)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+
+		mu.Lock()
+		count := milestoneCount
+		mu.Unlock()
+
+		// Milestones:
+		// 1 (init) + 1 (tool RUNNING start) + >= 2 (heartbeat pings during 60ms) + 1 (tool DONE) + 1 (result) >= 6
+		assert.GreaterOrEqual(t, count, 6, "Milestone must be pinged periodically during silent tool execution")
+	})
 }

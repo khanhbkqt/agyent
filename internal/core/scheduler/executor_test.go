@@ -185,3 +185,39 @@ func TestTaskExecutor_ExecuteSchedule_EmitsArtifactsAndContext(t *testing.T) {
 		t.Fatal("Timeout waiting for EventScheduleCompleted")
 	}
 }
+
+func TestTaskExecutor_ExecuteSchedule_DynamicImageTimeout(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Scheduler.DefaultTaskTimeoutSeconds = 30 // Set low timeout
+
+	runner := &effortRejectingRunner{}
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	exec := NewTaskExecutor(cfg, runner, nil, bus, nil)
+
+	// Case 1: Image task should be dynamically boosted to >= 300s
+	taskImage := domain.ScheduleTask{
+		ID:        "cron-1a29f7e8",
+		AgentName: "agyent",
+		Title:     "Lịch sinh hoạt 05:30 sáng: Chào buổi sáng & gửi ảnh Bé Na thức dậy",
+		Prompt:    "Gửi lời chào buổi sáng và tạo hình ảnh Bé Na thức dậy",
+	}
+	_, err := exec.ExecuteSchedule(context.Background(), taskImage)
+	require.NoError(t, err)
+	require.NotEmpty(t, runner.receivedReqs)
+	lastReq := runner.receivedReqs[len(runner.receivedReqs)-1]
+	assert.GreaterOrEqual(t, lastReq.Timeout, 300*time.Second, "Image tasks must have dynamically boosted timeout >= 300s")
+
+	// Case 2: Non-image task keeps default timeout
+	taskNormal := domain.ScheduleTask{
+		ID:        "cron-git-status",
+		AgentName: "agyent",
+		Title:     "Daily Git Status Check",
+		Prompt:    "Check git status of repository",
+	}
+	_, err = exec.ExecuteSchedule(context.Background(), taskNormal)
+	require.NoError(t, err)
+	lastReq = runner.receivedReqs[len(runner.receivedReqs)-1]
+	assert.Equal(t, 30*time.Second, lastReq.Timeout, "Non-image task should keep configured timeout")
+}

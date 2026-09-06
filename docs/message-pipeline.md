@@ -138,6 +138,11 @@ To ensure rock-solid rendering, the gateway implements **Telegram HTML Mode (`Pa
 
 ---
 
-### Stage 7: Auto Artifacts Upload
+### Stage 7: Auto Artifacts Upload & Smart Split Delivery
 1. Compares post-execution snapshot with the pre-execution baseline and inspects the AGY brain directory (`~/.gemini/antigravity/brain/<conv_id>/`).
 2. When newly created files match the artifact whitelist (`.png`, `.jpg`, `.pdf`, `.zip`, `.csv`, `.xlsx`, `exports/*`), the gateway automatically invokes Telegram APIs (`sendPhoto` / `sendDocument`) to deliver them to the chat.
+3. **Smart Split Delivery:**
+   - If an outbound message contains media (photos) alongside message text:
+     - **$\le 1,024$ characters:** Gathers the entire greeting or response text into the `caption` field of the primary photo (formatted with Telegram HTML mode, clamped $\le 1,024$ UTF-16 code units, and falling back to plain text if HTML parsing fails). Redundant, disconnected duplicate text messages are suppressed.
+     - **$> 1,024$ characters:** Sends the photo first with its original alt-text/filename caption (clamped $\le 1,024$), followed immediately by the complete response text delivered via chunked `sendMessage`.
+   - If media upload encounters an error, the text message delivery remains fail-safe so no text is ever dropped.

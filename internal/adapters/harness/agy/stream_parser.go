@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"agyent/internal/core/domain"
@@ -60,10 +62,11 @@ type ResultPayload struct {
 
 // StreamParser reads NDJSON lines from an io.Reader and translates them into domain.Events on the EventBus.
 type StreamParser struct {
-	eventBus         ports.EventBusPort
-	artifactDetector func() []domain.Attachment
-	onMilestone      func()
-	turnID           string
+	eventBus              ports.EventBusPort
+	artifactDetector      func() []domain.Attachment
+	onMilestone           func()
+	turnID                string
+	toolHeartbeatInterval time.Duration
 }
 
 // NewStreamParser creates a new StreamParser instance.
@@ -88,6 +91,11 @@ func (p *StreamParser) SetOnMilestone(fn func()) {
 	p.onMilestone = fn
 }
 
+// SetToolHeartbeatInterval sets an optional custom interval for tool progress heartbeat pings (defaults to 10s).
+func (p *StreamParser) SetToolHeartbeatInterval(d time.Duration) {
+	p.toolHeartbeatInterval = d
+}
+
 // ParseAndEmitStream processes NDJSON lines from reader and dispatches domain events until EOF.
 // It supports large NDJSON lines up to 10MB (to prevent bufio.ErrTooLong on large tool/diff outputs).
 func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string, reader io.Reader) (*domain.StreamResultPayload, error) {
@@ -103,6 +111,52 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 	var lastResult *domain.StreamResultPayload
 	var conversationID string
 	hasResult := false
+
+	var (
+		activeToolMu     sync.Mutex
+		activeToolCancel context.CancelFunc
+	)
+
+	stopActiveToolHeartbeat := func() {
+		activeToolMu.Lock()
+		defer activeToolMu.Unlock()
+		if activeToolCancel != nil {
+			activeToolCancel()
+			activeToolCancel = nil
+		}
+	}
+	defer stopActiveToolHeartbeat()
+
+	hbInterval := p.toolHeartbeatInterval
+	if hbInterval <= 0 {
+		hbInterval = 10 * time.Second
+	}
+
+	startActiveToolHeartbeat := func(toolName string) {
+		activeToolMu.Lock()
+		defer activeToolMu.Unlock()
+		if activeToolCancel != nil {
+			activeToolCancel()
+		}
+		var hbCtx context.Context
+		hbCtx, activeToolCancel = context.WithCancel(ctx)
+		go func() {
+			ticker := time.NewTicker(hbInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-hbCtx.Done():
+					return
+				case <-ticker.C:
+					slog.DebugContext(hbCtx, "Emitting silent tool progress heartbeat ping",
+						"tool", toolName, "turn_id", p.turnID, "session_key", sessionKey)
+					if p.onMilestone != nil {
+						p.onMilestone()
+					}
+				}
+			}
+		}()
+	}
 
 	for scanner.Scan() {
 		if ctx != nil && ctx.Err() != nil {
@@ -132,6 +186,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 
 		switch rawEvt.Event {
 		case "init":
+			stopActiveToolHeartbeat()
 			if p.onMilestone != nil {
 				p.onMilestone()
 			}
@@ -166,6 +221,7 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				}
 
 				if step.StepType == "agent_response" && step.TextDelta != "" {
+					stopActiveToolHeartbeat()
 					deltaPayload := domain.StreamDeltaPayload{
 						SessionKey:     sessionKey,
 						ConversationID: conversationID,
@@ -187,6 +243,13 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 						params = step.ToolInfo.Parameters
 						output = step.ToolInfo.Output
 					}
+
+					if step.State == "DONE" {
+						stopActiveToolHeartbeat()
+					} else {
+						startActiveToolHeartbeat(toolName)
+					}
+
 					toolPayload := domain.StreamToolPayload{
 						SessionKey:      sessionKey,
 						ConversationID:  conversationID,
@@ -201,10 +264,13 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 					if p.eventBus != nil {
 						_ = p.eventBus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamTool, toolPayload))
 					}
+				} else {
+					stopActiveToolHeartbeat()
 				}
 			}
 
 		case "result":
+			stopActiveToolHeartbeat()
 			hasResult = true
 			if p.onMilestone != nil {
 				p.onMilestone()

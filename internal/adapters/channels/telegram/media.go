@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
@@ -739,8 +740,21 @@ func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadI
 	}
 	defer file.Close()
 
+	plainCaption := caption
+	if utf8.RuneCountInString(plainCaption) > 1024 {
+		plainCaption = string([]rune(plainCaption)[:1021]) + "..."
+	}
+
+	formattedCaption := FormatMarkdownToTelegramHTML(plainCaption)
+	targetParseMode := "HTML"
+	if utf8.RuneCountInString(formattedCaption) > 1024 {
+		targetParseMode = ""
+		formattedCaption = plainCaption
+	}
+
 	opts := &gotgbot.SendPhotoOpts{
-		Caption: caption,
+		Caption:   formattedCaption,
+		ParseMode: targetParseMode,
 	}
 	if threadID != 0 {
 		opts.MessageThreadId = threadID
@@ -750,17 +764,26 @@ func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadI
 	_, err = bot.SendPhoto(chatID, inputFile, opts)
 	if err != nil {
 		var tgErr *gotgbot.TelegramError
-		if errors.As(err, &tgErr) && tgErr.Code == 429 {
-			retrySec := 1
-			if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
-				retrySec = int(tgErr.ResponseParams.RetryAfter)
-			}
-			slog.WarnContext(ctx, "Telegram sendPhoto rate limited (429), waiting and retrying",
-				"chat_id", chatID, "retry_after", retrySec, "path", imagePath)
-			time.Sleep(time.Duration(retrySec) * time.Second)
+		if errors.As(err, &tgErr) {
+			if tgErr.Code == 429 {
+				retrySec := 1
+				if tgErr.ResponseParams != nil && tgErr.ResponseParams.RetryAfter > 0 {
+					retrySec = int(tgErr.ResponseParams.RetryAfter)
+				}
+				slog.WarnContext(ctx, "Telegram sendPhoto rate limited (429), waiting and retrying",
+					"chat_id", chatID, "retry_after", retrySec, "path", imagePath)
+				time.Sleep(time.Duration(retrySec) * time.Second)
 
-			if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
-				_, err = bot.SendPhoto(chatID, inputFile, opts)
+				if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
+					_, err = bot.SendPhoto(chatID, inputFile, opts)
+				}
+			} else if tgErr.Code == 400 && targetParseMode != "" && (strings.Contains(strings.ToLower(tgErr.Description), "parse") || strings.Contains(strings.ToLower(tgErr.Description), "entity")) {
+				// Fallback to plain text caption if HTML parse mode fails
+				opts.ParseMode = ""
+				opts.Caption = plainCaption
+				if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
+					_, err = bot.SendPhoto(chatID, inputFile, opts)
+				}
 			}
 		}
 	}
@@ -772,13 +795,21 @@ func (m *MediaManager) SendBrainImage(ctx context.Context, chatID int64, threadI
 
 		if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
 			docOpts := &gotgbot.SendDocumentOpts{
-				Caption: caption,
+				Caption:   formattedCaption,
+				ParseMode: targetParseMode,
 			}
 			if threadID != 0 {
 				docOpts.MessageThreadId = threadID
 			}
 			docFile := &gotgbot.FileReader{Name: filepath.Base(imagePath), Data: file}
 			_, docErr := bot.SendDocument(chatID, docFile, docOpts)
+			if docErr != nil && targetParseMode != "" {
+				docOpts.ParseMode = ""
+				docOpts.Caption = plainCaption
+				if _, sErr := file.Seek(0, io.SeekStart); sErr == nil {
+					_, docErr = bot.SendDocument(chatID, docFile, docOpts)
+				}
+			}
 			if docErr == nil {
 				slog.InfoContext(ctx, "Successfully uploaded image via SendDocument fallback",
 					"chat_id", chatID, "path", imagePath)
@@ -844,13 +875,24 @@ func (m *MediaManager) SendMediaGroup(ctx context.Context, chatID int64, threadI
 				continue
 			}
 			openFiles = append(openFiles, f)
-			caption := p.Caption
-			if caption == "" {
-				caption = p.FileName
+			plainCap := p.Caption
+			if plainCap == "" {
+				plainCap = p.FileName
 			}
+			if utf8.RuneCountInString(plainCap) > 1024 {
+				plainCap = string([]rune(plainCap)[:1021]) + "..."
+			}
+			formattedCap := FormatMarkdownToTelegramHTML(plainCap)
+			parseMode := "HTML"
+			if utf8.RuneCountInString(formattedCap) > 1024 {
+				parseMode = ""
+				formattedCap = plainCap
+			}
+
 			inputMedias = append(inputMedias, gotgbot.InputMediaPhoto{
-				Media:   &gotgbot.FileReader{Name: filepath.Base(p.FilePath), Data: f},
-				Caption: caption,
+				Media:     &gotgbot.FileReader{Name: filepath.Base(p.FilePath), Data: f},
+				Caption:   formattedCap,
+				ParseMode: parseMode,
 			})
 		}
 
@@ -972,12 +1014,23 @@ func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, th
 		}
 
 		inputFile := &gotgbot.FileReader{Name: att.FileName, Data: file}
-		caption := att.Caption
-		if caption == "" {
-			caption = att.FileName
+		plainDocCap := att.Caption
+		if plainDocCap == "" {
+			plainDocCap = att.FileName
 		}
+		if utf8.RuneCountInString(plainDocCap) > 1024 {
+			plainDocCap = string([]rune(plainDocCap)[:1021]) + "..."
+		}
+		formattedDocCap := FormatMarkdownToTelegramHTML(plainDocCap)
+		docParseMode := "HTML"
+		if utf8.RuneCountInString(formattedDocCap) > 1024 {
+			docParseMode = ""
+			formattedDocCap = plainDocCap
+		}
+
 		opts := &gotgbot.SendDocumentOpts{
-			Caption: caption,
+			Caption:   formattedDocCap,
+			ParseMode: docParseMode,
 		}
 		if threadID != 0 {
 			opts.MessageThreadId = threadID
@@ -994,6 +1047,13 @@ func (m *MediaManager) UploadTurnArtifacts(ctx context.Context, chatID int64, th
 				slog.WarnContext(ctx, "Telegram SendDocument rate limited (429), waiting and retrying",
 					"chat_id", chatID, "retry_after", retrySec, "path", att.FilePath)
 				time.Sleep(time.Duration(retrySec) * time.Second)
+				if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
+					_, docErr = bot.SendDocument(chatID, inputFile, opts)
+				}
+			} else if docParseMode != "" {
+				// Fallback to plain text caption if HTML parse mode fails
+				opts.ParseMode = ""
+				opts.Caption = plainDocCap
 				if _, seekErr := file.Seek(0, io.SeekStart); seekErr == nil {
 					_, docErr = bot.SendDocument(chatID, inputFile, opts)
 				}

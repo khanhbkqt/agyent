@@ -372,3 +372,5 @@ Rather than applying a fixed static deadline from turn initiation (which would p
    - Tool execution start/completion (`step_type: "tool"` or `state: "DONE"`)
    - Final turn result (`event: "result"`)
 3. **Loop & Stall Protection:** Minor `agent_response` text deltas do not reset the watchdog. If an agent process stalls or hangs on a single step without reaching a milestone for `timeout` duration, the watchdog fires, terminates the OS process tree, and returns `context.DeadlineExceeded`.
+4. **Silent Tool Execution Heartbeat Ping:** During long-running tool executions (e.g. `generate_image`, which consumes 35s–65s of silent I/O without stdout token emission), `StreamParser` automatically initiates an active-tool progress heartbeat ping ticker (every 10s). This periodic ping resets the sliding inactivity watchdog while the tool is computing, preventing premature timeout cancellation.
+5. **Dynamic Image Task Timeout:** For scheduled cron and background tasks requesting image generation or multimedia workflows, `TaskExecutor` dynamically boosts the execution timeout to at least 300s.

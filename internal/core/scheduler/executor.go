@@ -67,6 +67,15 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		timeout = 30 * time.Second
 	}
 
+	// Dynamic Timeout for Image / Multimedia Tasks:
+	// Generating images via Diffusion/Gemini backends consumes 35s - 65s without token emission.
+	// Automatically elevate timeout to at least 300s to prevent premature watchdog/deadline cancellation.
+	if isImageOrMediaTask(task.Title, task.Prompt) {
+		if timeout < 300*time.Second {
+			timeout = 300 * time.Second
+		}
+	}
+
 	promptText := formatBackgroundPrompt(task.Title, task.Prompt)
 	model, effort := e.resolveModelAndEffort(task.AgentName)
 
@@ -92,6 +101,7 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		"session_key", sessionKey,
 		"model", model,
 		"effort", effort,
+		"timeout", timeout,
 	)
 
 	var result *domain.ExecutionResult
@@ -339,4 +349,33 @@ func formatHeartbeatPrompt(agentName, directives string) string {
 	sb.WriteString(directives)
 	sb.WriteString("\n\nExecute your checks according to these directives. Formulate your report to be sent to the user. If you generate reports, charts, or images, embed or link them directly in your response text so they are delivered directly to the user.")
 	return sb.String()
+}
+
+// isImageOrMediaTask checks whether a scheduled task prompt or title requests image generation or multimedia processing.
+func isImageOrMediaTask(title, prompt string) bool {
+	combined := strings.ToLower(title + " " + prompt)
+	keywords := []string{
+		"generate_image",
+		"image",
+		"photo",
+		"picture",
+		"ảnh",
+		"hình ảnh",
+		"vẽ ảnh",
+		"sinh ảnh",
+		"tạo ảnh",
+		"gửi ảnh",
+		"multimedia",
+		"media",
+		"diffusion",
+		"illustration",
+		"diagram",
+		"avatar",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(combined, kw) {
+			return true
+		}
+	}
+	return false
 }

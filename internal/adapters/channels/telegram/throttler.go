@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
@@ -638,6 +639,31 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 	}
 	sess.Mu.Unlock()
 
+	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, SafeTelegramMessageLimit)
+
+	// Smart Split Delivery:
+	// If no streaming message was posted yet (msgID == 0) and we have photos to upload:
+	// If cleanedText <= 1024 chars, attach it directly as caption of the first photo.
+	// This avoids creating an empty or disconnected separate text message on Telegram.
+	if msgID == 0 && len(unuploadedMedia) > 0 {
+		trimmedText := strings.TrimSpace(cleanedText)
+		hasPhotos := false
+		photoIdx := -1
+		for idx, m := range unuploadedMedia {
+			ext := strings.ToLower(filepath.Ext(m.FilePath))
+			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
+				hasPhotos = true
+				if photoIdx == -1 {
+					photoIdx = idx
+				}
+			}
+		}
+		if hasPhotos && photoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 1024 {
+			unuploadedMedia[photoIdx].Caption = trimmedText
+			chunks = nil
+		}
+	}
+
 	if len(unuploadedMedia) > 0 && dt.mediaMgr != nil {
 		go func(targetBot *gotgbot.Bot, cID, tID int64, arts []domain.Attachment) {
 			if err := dt.mediaMgr.UploadTurnArtifacts(context.Background(), cID, tID, arts, targetBot); err != nil {
@@ -646,7 +672,6 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 		}(bot, chatID, threadID, unuploadedMedia)
 	}
 
-	chunks := SplitMarkdownPreservingCodeBlocks(cleanedText, SafeTelegramMessageLimit)
 	if len(chunks) == 0 {
 		return
 	}

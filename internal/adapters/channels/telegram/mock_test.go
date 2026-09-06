@@ -37,12 +37,13 @@ type ChatActionRecord struct {
 }
 
 type SentMediaRecord struct {
-	ChatID   int64
-	ThreadID int64
-	Type     string // "photo", "document"
-	FileName string
-	Caption  string
-	Bytes    []byte
+	ChatID    int64
+	ThreadID  int64
+	Type      string // "photo", "document"
+	FileName  string
+	Caption   string
+	ParseMode string
+	Bytes     []byte
 }
 
 type MockTelegramServer struct {
@@ -499,13 +500,15 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 			fileName = header.Filename
 		}
 
+		parseMode, _ := params["parse_mode"].(string)
 		m.SentMedia = append(m.SentMedia, SentMediaRecord{
-			ChatID:   chatID,
-			ThreadID: threadID,
-			Type:     "photo",
-			FileName: fileName,
-			Caption:  caption,
-			Bytes:    fileBytes,
+			ChatID:    chatID,
+			ThreadID:  threadID,
+			Type:      "photo",
+			FileName:  fileName,
+			Caption:   caption,
+			ParseMode: parseMode,
+			Bytes:     fileBytes,
 		})
 
 		w.Header().Set("Content-Type", "application/json")
@@ -524,6 +527,7 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		m.msgSeq++
 		msgID := m.msgSeq
 		caption, _ := params["caption"].(string)
+		docParseMode, _ := params["parse_mode"].(string)
 		chatID := getInt64FromMap(params, "chat_id")
 		threadID := getInt64FromMap(params, "message_thread_id")
 
@@ -537,12 +541,13 @@ func (m *MockTelegramServer) handleRequest(w http.ResponseWriter, r *http.Reques
 		}
 
 		m.SentMedia = append(m.SentMedia, SentMediaRecord{
-			ChatID:   chatID,
-			ThreadID: threadID,
-			Type:     "document",
-			FileName: fileName,
-			Caption:  caption,
-			Bytes:    fileBytes,
+			ChatID:    chatID,
+			ThreadID:  threadID,
+			Type:      "document",
+			FileName:  fileName,
+			Caption:   caption,
+			ParseMode: docParseMode,
+			Bytes:     fileBytes,
 		})
 
 		w.Header().Set("Content-Type", "application/json")

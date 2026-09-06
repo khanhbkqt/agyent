@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
@@ -687,36 +689,30 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 	}
 
 	sentPaths := make(map[string]bool)
+	var allMedia []domain.Attachment
+	cleanedText := msg.Text
 
-	// 1. Extract any embedded media from text and clean text first (preserves human markdown captions)
-	textToSend := msg.Text
-	if textToSend != "" {
-		cleanedText, extraMedia := ExtractAndCleanOutboundMedia(textToSend, msg.WorkspaceDir, msg.ConversationID)
-		var unuploadedMedia []domain.Attachment
+	// 1. Extract embedded media from markdown text
+	if msg.Text != "" {
+		var extraMedia []domain.Attachment
+		cleanedText, extraMedia = ExtractAndCleanOutboundMedia(msg.Text, msg.WorkspaceDir, msg.ConversationID)
 		for _, m := range extraMedia {
 			normPath := filepath.Clean(filepath.FromSlash(m.FilePath))
 			if !sentPaths[normPath] {
 				sentPaths[normPath] = true
 				m.FilePath = normPath
-				unuploadedMedia = append(unuploadedMedia, m)
+				allMedia = append(allMedia, m)
 			}
 		}
-		if len(unuploadedMedia) > 0 && mediaMgr != nil {
-			if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, unuploadedMedia, bot); err != nil {
-				slog.ErrorContext(ctx, "Failed to upload embedded media attachments", "chat_id", chatID, "error", err)
-			}
-		}
-		textToSend = cleanedText
 	}
 
-	// 2. Send any remaining unreferenced outbound attachments from msg.Attachments
-	if len(msg.Attachments) > 0 && mediaMgr != nil {
-		var domainAtts []domain.Attachment
+	// 2. Collect any remaining unreferenced outbound attachments from msg.Attachments
+	if len(msg.Attachments) > 0 {
 		for _, att := range msg.Attachments {
 			normPath := filepath.Clean(filepath.FromSlash(att.FilePath))
 			if !sentPaths[normPath] {
 				sentPaths[normPath] = true
-				domainAtts = append(domainAtts, domain.Attachment{
+				allMedia = append(allMedia, domain.Attachment{
 					FileName: att.FileName,
 					FilePath: normPath,
 					MIMEType: att.MIMEType,
@@ -725,14 +721,45 @@ func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
 				})
 			}
 		}
-		if len(domainAtts) > 0 {
-			if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, domainAtts, bot); err != nil {
-				slog.ErrorContext(ctx, "Failed to upload outbound message attachments", "chat_id", chatID, "error", err)
+	}
+
+	textToSend := cleanedText
+	hasPhotos := false
+	primaryPhotoIdx := -1
+	for idx, m := range allMedia {
+		ext := strings.ToLower(filepath.Ext(m.FilePath))
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" || m.Type == "image" {
+			hasPhotos = true
+			if primaryPhotoIdx == -1 {
+				primaryPhotoIdx = idx
 			}
 		}
 	}
 
-	if textToSend == "" {
+	// Smart Split Delivery:
+	// If outbound message contains a photo and cleanedText <= 1024 characters:
+	// Attach the full text as the photo's caption, delivering image + greeting in a single unified message.
+	// If cleanedText > 1024 characters: photo is sent first with original alt-text/filename caption,
+	// and cleanedText is subsequently sent as full text message(s) without dropping any text.
+	if len(allMedia) > 0 && mediaMgr != nil {
+		trimmedText := strings.TrimSpace(cleanedText)
+		canAttachToPhoto := hasPhotos && primaryPhotoIdx != -1 && trimmedText != "" && utf8.RuneCountInString(trimmedText) <= 1024
+
+		if canAttachToPhoto {
+			allMedia[primaryPhotoIdx].Caption = trimmedText
+		}
+
+		if err := mediaMgr.UploadTurnArtifacts(ctx, chatID, msg.ThreadID, allMedia, bot); err != nil {
+			slog.ErrorContext(ctx, "Failed to upload outbound media attachments", "chat_id", chatID, "error", err)
+			// Fallback: If media upload failed, retain textToSend so the message text is not lost
+			textToSend = cleanedText
+		} else if canAttachToPhoto {
+			// Successfully delivered text inside the photo caption! Suppress duplicate text message.
+			textToSend = ""
+		}
+	}
+
+	if strings.TrimSpace(textToSend) == "" {
 		return nil
 	}
 
@@ -988,13 +1015,35 @@ func (a *Adapter) SendFile(ctx context.Context, target domain.TargetContext, fil
 	inputFile := &gotgbot.FileReader{Name: filepath.Base(filePath), Data: file}
 
 	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" || ext == ".gif" {
+		plainCaption := caption
+		if utf8.RuneCountInString(plainCaption) > 1024 {
+			plainCaption = string([]rune(plainCaption)[:1021]) + "..."
+		}
+		formattedCaption := FormatMarkdownToTelegramHTML(plainCaption)
+		targetParseMode := "HTML"
+		if utf8.RuneCountInString(formattedCaption) > 1024 {
+			targetParseMode = ""
+			formattedCaption = plainCaption
+		}
+
 		opts := &gotgbot.SendPhotoOpts{
-			Caption: caption,
+			Caption:   formattedCaption,
+			ParseMode: targetParseMode,
 		}
 		if target.ThreadID != 0 {
 			opts.MessageThreadId = target.ThreadID
 		}
 		_, err = bot.SendPhoto(chatIDInt, inputFile, opts)
+		if err != nil && targetParseMode != "" {
+			var tgErr *gotgbot.TelegramError
+			if errors.As(err, &tgErr) && tgErr.Code == 400 && (strings.Contains(strings.ToLower(tgErr.Description), "parse") || strings.Contains(strings.ToLower(tgErr.Description), "entity")) {
+				opts.ParseMode = ""
+				opts.Caption = plainCaption
+				if _, sErr := file.Seek(0, io.SeekStart); sErr == nil {
+					_, err = bot.SendPhoto(chatIDInt, inputFile, opts)
+				}
+			}
+		}
 		if err != nil && a.bot != nil && bot != a.bot {
 			if fileFallback, oErr := os.Open(filePath); oErr == nil {
 				defer fileFallback.Close()
