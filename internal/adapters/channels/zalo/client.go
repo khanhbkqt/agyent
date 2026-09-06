@@ -63,15 +63,144 @@ type ZaloChat struct {
 	ThreadID int64  `json:"thread_id,omitempty"`
 }
 
+// ZaloAttachmentPayload represents the nested payload inside a Zalo attachment object.
+type ZaloAttachmentPayload struct {
+	URL          string `json:"url,omitempty"`
+	ImageURL     string `json:"image_url,omitempty"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+	Thumbnail    string `json:"thumbnail,omitempty"`
+	SRC          string `json:"src,omitempty"`
+	Link         string `json:"link,omitempty"`
+	FileID       string `json:"file_id,omitempty"`
+	FileName     string `json:"file_name,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Caption      string `json:"caption,omitempty"`
+}
+
 // ZaloAttachment represents an attached photo, document, or audio.
 type ZaloAttachment struct {
-	Type        string `json:"type"` // "photo", "document", "sticker"
-	URL         string `json:"url,omitempty"`
-	FileID      string `json:"file_id,omitempty"`
-	FileName    string `json:"file_name,omitempty"`
-	FileSize    int64  `json:"file_size,omitempty"`
-	Caption     string `json:"caption,omitempty"`
-	Description string `json:"description,omitempty"`
+	Type         string                 `json:"type"` // "photo", "image", "document", "file", "audio", "voice", "video", "sticker"
+	URL          string                 `json:"url,omitempty"`
+	ImageURL     string                 `json:"image_url,omitempty"`
+	ThumbnailURL string                 `json:"thumbnail_url,omitempty"`
+	SRC          string                 `json:"src,omitempty"`
+	Link         string                 `json:"link,omitempty"`
+	FileID       string                 `json:"file_id,omitempty"`
+	FileName     string                 `json:"file_name,omitempty"`
+	FileSize     int64                  `json:"file_size,omitempty"`
+	Caption      string                 `json:"caption,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	Title        string                 `json:"title,omitempty"`
+	Payload      *ZaloAttachmentPayload `json:"payload,omitempty"`
+}
+
+// GetEffectiveURL returns the resolved media URL from either top-level fields or nested payload.
+func (a ZaloAttachment) GetEffectiveURL() string {
+	if u := strings.TrimSpace(a.URL); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(a.ImageURL); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(a.SRC); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(a.Link); u != "" {
+		return u
+	}
+	if a.Payload != nil {
+		if u := strings.TrimSpace(a.Payload.URL); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.ImageURL); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.SRC); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.Link); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.ThumbnailURL); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.Thumbnail); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+// GetEffectiveFileID returns the resolved file ID.
+func (a ZaloAttachment) GetEffectiveFileID() string {
+	if id := strings.TrimSpace(a.FileID); id != "" {
+		return id
+	}
+	if a.Payload != nil && strings.TrimSpace(a.Payload.FileID) != "" {
+		return strings.TrimSpace(a.Payload.FileID)
+	}
+	return ""
+}
+
+// GetEffectiveFileName returns the resolved file name.
+func (a ZaloAttachment) GetEffectiveFileName() string {
+	if n := strings.TrimSpace(a.FileName); n != "" {
+		return n
+	}
+	if n := strings.TrimSpace(a.Title); n != "" {
+		return n
+	}
+	if a.Payload != nil {
+		if n := strings.TrimSpace(a.Payload.FileName); n != "" {
+			return n
+		}
+		if n := strings.TrimSpace(a.Payload.Name); n != "" {
+			return n
+		}
+		if n := strings.TrimSpace(a.Payload.Title); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+// GetEffectiveFileSize returns the declared file size.
+func (a ZaloAttachment) GetEffectiveFileSize() int64 {
+	if a.FileSize > 0 {
+		return a.FileSize
+	}
+	if a.Payload != nil {
+		if a.Payload.FileSize > 0 {
+			return a.Payload.FileSize
+		}
+		if a.Payload.Size > 0 {
+			return a.Payload.Size
+		}
+	}
+	return 0
+}
+
+// GetEffectiveCaption returns the resolved caption or description.
+func (a ZaloAttachment) GetEffectiveCaption() string {
+	if c := strings.TrimSpace(a.Caption); c != "" {
+		return c
+	}
+	if c := strings.TrimSpace(a.Description); c != "" {
+		return c
+	}
+	if a.Payload != nil {
+		if c := strings.TrimSpace(a.Payload.Caption); c != "" {
+			return c
+		}
+		if c := strings.TrimSpace(a.Payload.Description); c != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 // ZaloInboundMessage represents an inbound message from Zalo Bot Platform.
@@ -84,7 +213,64 @@ type ZaloInboundMessage struct {
 	Caption     string              `json:"caption,omitempty"`
 	Description string              `json:"description,omitempty"`
 	Attachments []ZaloAttachment    `json:"attachments,omitempty"`
+	Photo       []ZaloAttachment    `json:"photo,omitempty"`
+	Image       *ZaloAttachment     `json:"image,omitempty"`
+	Document    *ZaloAttachment     `json:"document,omitempty"`
+	Audio       *ZaloAttachment     `json:"audio,omitempty"`
+	Voice       *ZaloAttachment     `json:"voice,omitempty"`
+	Video       *ZaloAttachment     `json:"video,omitempty"`
 	ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message,omitempty"`
+}
+
+// CollectAttachments aggregates all attachments across all schema variations.
+func (m *ZaloInboundMessage) CollectAttachments() []ZaloAttachment {
+	if m == nil {
+		return nil
+	}
+	var res []ZaloAttachment
+	res = append(res, m.Attachments...)
+	for _, p := range m.Photo {
+		if p.Type == "" {
+			p.Type = "photo"
+		}
+		res = append(res, p)
+	}
+	if m.Image != nil {
+		img := *m.Image
+		if img.Type == "" {
+			img.Type = "photo"
+		}
+		res = append(res, img)
+	}
+	if m.Document != nil {
+		doc := *m.Document
+		if doc.Type == "" {
+			doc.Type = "document"
+		}
+		res = append(res, doc)
+	}
+	if m.Audio != nil {
+		aud := *m.Audio
+		if aud.Type == "" {
+			aud.Type = "audio"
+		}
+		res = append(res, aud)
+	}
+	if m.Voice != nil {
+		v := *m.Voice
+		if v.Type == "" {
+			v.Type = "voice"
+		}
+		res = append(res, v)
+	}
+	if m.Video != nil {
+		vid := *m.Video
+		if vid.Type == "" {
+			vid.Type = "video"
+		}
+		res = append(res, vid)
+	}
+	return res
 }
 
 // ZaloUpdate represents an update item in getUpdates or Webhook payload.

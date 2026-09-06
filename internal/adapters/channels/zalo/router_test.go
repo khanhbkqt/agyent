@@ -2,6 +2,7 @@ package zalo_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -480,5 +481,86 @@ func TestZaloRouter_CaptionAndDescriptionFallback(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected canonical message for msg-cap-3")
 	}
+
+	// Case 4: Zero-Text & Zero-Caption with photo -> fallback prompt must be set
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg-no-text-photo",
+			From:      zalo.ZaloUser{ID: "user-1"},
+			Chat:      zalo.ZaloChat{ID: "chat-1", Type: "private"},
+			Attachments: []zalo.ZaloAttachment{
+				{
+					Type:   "photo",
+					FileID: "photo4",
+					URL:    "https://cdn.zalo.example/p4.jpg",
+				},
+			},
+		},
+	})
+
+	select {
+	case msg := <-inbound:
+		assert.Contains(t, msg.Text, "Người dùng gửi ảnh/tệp đính kèm")
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "https://cdn.zalo.example/p4.jpg", msg.AttachmentRefs[0].SourceID)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for msg-no-text-photo")
+	}
 }
+
+func TestZaloRouter_NestedPayloadAndCompatibilityAttachments(t *testing.T) {
+	rawJSON := `{
+		"update_id": 9999,
+		"message": {
+			"message_id": "zalo-nested-123",
+			"from": {"id": "user-888", "name": "Nguyen Van A"},
+			"chat": {"id": "chat-999", "type": "private"},
+			"date": 1725600000,
+			"attachments": [
+				{
+					"type": "photo",
+					"payload": {
+						"url": "https://cdn.zalo.example/nested-photo.png",
+						"file_name": "receipt_2026.png",
+						"caption": "Receipt photo in payload"
+					}
+				}
+			],
+			"document": {
+				"file_id": "doc-top-1",
+				"file_name": "annual_report.pdf",
+				"url": "https://cdn.zalo.example/report.pdf"
+			}
+		}
+	}`
+
+	var update zalo.ZaloUpdate
+	err := json.Unmarshal([]byte(rawJSON), &update)
+	require.NoError(t, err)
+
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(&config.Config{}, nil, nil, inbound)
+
+	router.RouteUpdate(context.Background(), update)
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "Receipt photo in payload", msg.Text)
+		require.Len(t, msg.AttachmentRefs, 2)
+
+		// 1. Nested photo attachment
+		assert.Equal(t, "image", msg.AttachmentRefs[0].Type)
+		assert.Equal(t, "https://cdn.zalo.example/nested-photo.png", msg.AttachmentRefs[0].SourceID)
+		assert.Equal(t, "receipt_2026.png", msg.AttachmentRefs[0].FileName)
+		assert.Equal(t, "Receipt photo in payload", msg.AttachmentRefs[0].Caption)
+
+		// 2. Compatibility top-level document
+		assert.Equal(t, "document", msg.AttachmentRefs[1].Type)
+		assert.Equal(t, "https://cdn.zalo.example/report.pdf", msg.AttachmentRefs[1].SourceID)
+		assert.Equal(t, "annual_report.pdf", msg.AttachmentRefs[1].FileName)
+	case <-time.After(time.Second):
+		t.Fatal("expected message with nested payload attachments")
+	}
+}
+
 

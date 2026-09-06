@@ -125,6 +125,18 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 	}
 
+	var botCtxObj BotContext
+	if len(botCtx) > 0 {
+		botCtxObj = botCtx[0]
+	}
+	botIDStr := botCtxObj.BotID
+	botUsername := botCtxObj.BotUsername
+	bindAgent := botCtxObj.BindAgent
+	botID := ParseNumericID(botIDStr)
+	sessionKey := domain.FormatSessionKey("zalo", msg.Chat.ID, msg.Chat.ThreadID, botID)
+
+	allAttachments := msg.CollectAttachments()
+
 	rawText := msg.Text
 	if strings.TrimSpace(rawText) == "" {
 		rawText = msg.Caption
@@ -132,16 +144,78 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	if strings.TrimSpace(rawText) == "" {
 		rawText = msg.Description
 	}
-	if strings.TrimSpace(rawText) == "" && len(msg.Attachments) > 0 {
-		for _, att := range msg.Attachments {
-			if strings.TrimSpace(att.Caption) != "" {
-				rawText = att.Caption
+	if strings.TrimSpace(rawText) == "" && len(allAttachments) > 0 {
+		for _, att := range allAttachments {
+			if c := att.GetEffectiveCaption(); c != "" {
+				rawText = c
 				break
 			}
-			if strings.TrimSpace(att.Description) != "" {
-				rawText = att.Description
-				break
+		}
+	}
+
+	attachmentRefs := make([]domain.InboundAttachmentRef, 0, len(allAttachments))
+	for _, attachment := range allAttachments {
+		remoteURL := attachment.GetEffectiveURL()
+		if remoteURL == "" {
+			continue
+		}
+		fileID := attachment.GetEffectiveFileID()
+		if fileID == "" {
+			fileID = fmt.Sprintf("att_%d", time.Now().UnixNano())
+		}
+		attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
+		mimeType := "application/octet-stream"
+		fileName := SanitizeFilename(attachment.GetEffectiveFileName())
+		if attachmentType == "photo" || attachmentType == "image" || attachmentType == "" {
+			attachmentType = "image"
+			mimeType = "image/jpeg"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("photo_%d_%s.jpg", time.Now().Unix(), fileID)
 			}
+		} else if attachmentType == "voice" || attachmentType == "audio" {
+			attachmentType = "audio"
+			mimeType = "audio/ogg"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("audio_%d_%s.ogg", time.Now().Unix(), fileID)
+			}
+		} else if attachmentType == "video" {
+			mimeType = "video/mp4"
+			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
+				fileName = fmt.Sprintf("video_%d_%s.mp4", time.Now().Unix(), fileID)
+			}
+		} else {
+			if fileName == "file" || fileName == "" {
+				fileName = fmt.Sprintf("doc_%d_%s", time.Now().Unix(), fileID)
+			}
+		}
+
+		caption := attachment.GetEffectiveCaption()
+		if caption == "" {
+			caption = msg.Caption
+		}
+		if caption == "" {
+			caption = msg.Description
+		}
+
+		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
+			Channel:  "zalo",
+			ID:       fileID,
+			SourceID: remoteURL,
+			FileName: fileName,
+			MIMEType: mimeType,
+			Size:     attachment.GetEffectiveFileSize(),
+			Type:     attachmentType,
+			Caption:  caption,
+			BotID:    botID,
+		})
+	}
+
+	// Zero-Empty-Prompt Guard: Ensure prompt is never empty to prevent headless TUI crashes
+	if strings.TrimSpace(rawText) == "" {
+		if len(attachmentRefs) > 0 {
+			rawText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			rawText = "Xin chào!"
 		}
 	}
 
@@ -165,17 +239,10 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 	}
 
-	var botCtxObj BotContext
-	if len(botCtx) > 0 {
-		botCtxObj = botCtx[0]
-	}
-	botIDStr := botCtxObj.BotID
-	botUsername := botCtxObj.BotUsername
-	bindAgent := botCtxObj.BindAgent
-	botID := ParseNumericID(botIDStr)
-	sessionKey := domain.FormatSessionKey("zalo", msg.Chat.ID, msg.Chat.ThreadID, botID)
-
 	cleanText, isMentioned := CleanZaloMention(rawText, botCtxObj)
+	if cleanText == "" {
+		cleanText = rawText
+	}
 
 	r.mu.RLock()
 	authorizer := r.authorizer
@@ -186,61 +253,6 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			slog.WarnContext(ctx, "inbound Zalo message unauthorized (blocked by ACL)", "sender_id", msg.From.ID, "bind_agent", bindAgent, "chat_id", msg.Chat.ID, "chat_type", msg.Chat.Type, "error", err)
 			return
 		}
-	}
-
-	attachmentRefs := make([]domain.InboundAttachmentRef, 0, len(msg.Attachments))
-	for _, attachment := range msg.Attachments {
-		if strings.TrimSpace(attachment.URL) == "" {
-			continue
-		}
-		attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
-		mimeType := "application/octet-stream"
-		fileName := SanitizeFilename(attachment.FileName)
-		if attachmentType == "photo" || attachmentType == "image" {
-			attachmentType = "image"
-			mimeType = "image/jpeg"
-			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
-				fileName = fmt.Sprintf("photo_%d_%s.jpg", time.Now().Unix(), attachment.FileID)
-			}
-		} else if attachmentType == "voice" || attachmentType == "audio" {
-			attachmentType = "audio"
-			mimeType = "audio/ogg"
-			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
-				fileName = fmt.Sprintf("audio_%d_%s.ogg", time.Now().Unix(), attachment.FileID)
-			}
-		} else if attachmentType == "video" {
-			mimeType = "video/mp4"
-			if fileName == "file" || fileName == "" || filepath.Ext(fileName) == "" {
-				fileName = fmt.Sprintf("video_%d_%s.mp4", time.Now().Unix(), attachment.FileID)
-			}
-		} else {
-			if fileName == "file" || fileName == "" {
-				fileName = fmt.Sprintf("doc_%d_%s", time.Now().Unix(), attachment.FileID)
-			}
-		}
-
-		caption := attachment.Caption
-		if caption == "" {
-			caption = attachment.Description
-		}
-		if caption == "" {
-			caption = msg.Caption
-		}
-		if caption == "" {
-			caption = msg.Description
-		}
-
-		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
-			Channel:  "zalo",
-			ID:       attachment.FileID,
-			SourceID: attachment.URL,
-			FileName: fileName,
-			MIMEType: mimeType,
-			Size:     attachment.FileSize,
-			Type:     attachmentType,
-			Caption:  caption,
-			BotID:    botID,
-		})
 	}
 
 	date := time.Now()

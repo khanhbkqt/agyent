@@ -5,6 +5,17 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.48] - 2026-09-06
+
+### Fixed
+- **Zalo Nested Media Payload Extraction (`channels/zalo`):**
+  - **Nested Payload & Schema Compatibility:** Added `ZaloAttachmentPayload` struct and `GetEffectiveURL()`, `GetEffectiveFileID()`, `GetEffectiveFileName()`, `GetEffectiveFileSize()`, and `GetEffectiveCaption()` methods. Resolved nested `attachments[i].payload.url`, `image_url`, `src`, `link` objects alongside top-level `photo`, `image`, `document`, `voice`, `audio`, and `video` schema variations.
+- **Zero-Empty-Prompt Defense-in-Depth Guard (`channels/zalo`, `engine`, `bootstrap`):**
+  - **Zero-Empty-Prompt Fallback:** If an inbound message contains attachments without text/caption, automatically synthesize a fallback user prompt (`"[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"`) across Zalo Router, Engine, and Bootstrap Prompt Composers.
+  - **Bubbletea /dev/tty Immunity:** Completely eliminates the risk of headless Bubbletea interactive TTY prompt crashes when receiving media without text.
+
+---
+
 ## [1.0.47] - 2026-09-06
 
 ### Fixed

@@ -913,6 +913,14 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		}
 	}
 
+	if strings.TrimSpace(promptText) == "" {
+		if len(msg.Attachments) > 0 {
+			promptText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			promptText = "Xin chào!"
+		}
+	}
+
 	// 7. Dynamic MCP Mounting (with deferred unmount for Zero Context Leakage)
 	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
 		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx)

@@ -199,18 +199,27 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 		sb.WriteString("\n\n")
 	}
 
+	userText := msg.Text
+	if strings.TrimSpace(userText) == "" {
+		if len(msg.Attachments) > 0 {
+			userText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			userText = "Xin chào!"
+		}
+	}
+
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("[ATTACHED FILES RECEIVED]\n")
 		for _, att := range msg.Attachments {
 			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", att.FilePath, att.Type, att.Size))
 		}
 		sb.WriteString("\nUser Prompt: ")
-		sb.WriteString(msg.Text)
+		sb.WriteString(userText)
 	} else if knowledgeDirectives != "" {
 		sb.WriteString("[USER MESSAGE]\n")
-		sb.WriteString(msg.Text)
+		sb.WriteString(userText)
 	} else {
-		sb.WriteString(msg.Text)
+		sb.WriteString(userText)
 	}
 
 	return sb.String()
@@ -276,12 +285,21 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 		sb.WriteString("\n\n")
 	}
 
+	resolvedUserText := msg.Text
+	if strings.TrimSpace(resolvedUserText) == "" {
+		if len(msg.Attachments) > 0 {
+			resolvedUserText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			resolvedUserText = "Xin chào!"
+		}
+	}
+
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("User Prompt: ")
-		sb.WriteString(msg.Text)
+		sb.WriteString(resolvedUserText)
 	} else {
 		sb.WriteString("[USER MESSAGE]\n")
-		sb.WriteString(msg.Text)
+		sb.WriteString(resolvedUserText)
 	}
 
 	return sb.String()
@@ -308,11 +326,20 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 		sb.WriteString("\n\n")
 	}
 
+	continuationUserText := msg.Text
+	if strings.TrimSpace(continuationUserText) == "" {
+		if len(msg.Attachments) > 0 {
+			continuationUserText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			continuationUserText = "Xin chào!"
+		}
+	}
+
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("User Prompt: ")
-		sb.WriteString(msg.Text)
+		sb.WriteString(continuationUserText)
 	} else {
-		sb.WriteString(msg.Text)
+		sb.WriteString(continuationUserText)
 	}
 
 	return sb.String()
