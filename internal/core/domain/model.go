@@ -61,7 +61,7 @@ var DefaultModelCapabilities = []ModelCapability{
 	{
 		ID:                    "gemini-3.8-flash",
 		DisplayName:           "Gemini 3.8 Flash",
-		Aliases:               []string{"3.8-flash", "gemini-3.8"},
+		Aliases:               []string{"flash", "fast", "3.8", "3.8-flash", "gemini-3.8", "gemini-flash"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
 		MaxContextTokens:      1048576,
@@ -71,7 +71,7 @@ var DefaultModelCapabilities = []ModelCapability{
 	{
 		ID:                    "gemini-3.7-flash",
 		DisplayName:           "Gemini 3.7 Flash",
-		Aliases:               []string{"flash", "fast", "3.7-flash", "gemini-flash"},
+		Aliases:               []string{"3.7", "3.7-flash", "gemini-3.7"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
 		MaxContextTokens:      1048576,

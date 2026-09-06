@@ -490,7 +490,7 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 		if capability.ID != "" {
 			modelDisplayName = capability.ID
 		} else {
-			modelDisplayName = "Gemini 3.7 Flash (Default)"
+			modelDisplayName = "Gemini 3.8 Flash (Default)"
 		}
 	}
 
@@ -1862,6 +1862,31 @@ func (e *Engine) handleCleanConversationsCommand(ctx context.Context) string {
 	return fmt.Sprintf("🧹 **Garbage collection complete!** Purged %d old archived sessions (> 30 days) and reclaimed disk space.", purged)
 }
 
+func formatModelButtonLabel(cap domain.ModelCapability) string {
+	name := cap.DisplayName
+	if name == "" {
+		name = cap.ID
+	}
+	if idx := strings.Index(name, "("); idx > 0 {
+		name = strings.TrimSpace(name[:idx])
+	}
+	idLower := strings.ToLower(cap.ID)
+	emoji := "🔹"
+	switch {
+	case strings.Contains(idLower, "flash"):
+		emoji = "⚡"
+	case strings.Contains(idLower, "pro"):
+		emoji = "🚀"
+	case strings.Contains(idLower, "opus"):
+		emoji = "🧠"
+	case strings.Contains(idLower, "sonnet"):
+		emoji = " "
+	case strings.Contains(idLower, "gpt") || strings.Contains(idLower, "oss"):
+		emoji = "🤖"
+	}
+	return emoji + " " + name
+}
+
 func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session, args []string) (string, domain.InlineKeyboard) {
 	var agentObj *domain.Agent
 	if session.ActiveAgent != "" {
@@ -1874,6 +1899,8 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 			resolvedModel = "default (agy CLI)"
 		}
 
+		availableModels := domain.ListAvailableModels()
+
 		var sb strings.Builder
 		sb.WriteString("⚡ **AI Model Selection**\n")
 		sb.WriteString(fmt.Sprintf("• **Active Model:** `%s` (%s)\n", resolvedModel, source))
@@ -1881,7 +1908,7 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 			sb.WriteString(fmt.Sprintf("• **Reasoning Effort:** `%s`\n", resolvedEffort))
 		}
 		sb.WriteString("\n**Available Model Tiers:**\n")
-		for _, cap := range domain.DefaultModelCapabilities {
+		for _, cap := range availableModels {
 			effDesc := "No thinking"
 			if len(cap.SupportedEfforts) > 0 {
 				effDesc = strings.Join(cap.SupportedEfforts, ", ")
@@ -1890,19 +1917,24 @@ func (e *Engine) handleModelCommand(ctx context.Context, session *domain.Session
 		}
 		sb.WriteString("\n_💡 Click a button below or type `/model <name>` to switch model._")
 
-		inlineKb := domain.InlineKeyboard{
-			{
-				{Text: "⚡ Gemini 3.7 Flash", CallbackData: "m:set:gemini-3.7-flash"},
-				{Text: "🚀 Gemini 3.1 Pro", CallbackData: "m:set:gemini-3.1-pro"},
-			},
-			{
-				{Text: " Claude Sonnet 4.6", CallbackData: "m:set:claude-sonnet-4-6"},
-				{Text: "🧠 Claude Opus 4.6", CallbackData: "m:set:claude-opus-4-6-thinking"},
-			},
-			{
-				{Text: "🔄 Reset to Default", CallbackData: "m:reset"},
-			},
+		var inlineKb domain.InlineKeyboard
+		var row []domain.InlineButton
+		for _, cap := range availableModels {
+			row = append(row, domain.InlineButton{
+				Text:         formatModelButtonLabel(cap),
+				CallbackData: "m:set:" + cap.ID,
+			})
+			if len(row) == 2 {
+				inlineKb = append(inlineKb, row)
+				row = nil
+			}
 		}
+		if len(row) > 0 {
+			inlineKb = append(inlineKb, row)
+		}
+		inlineKb = append(inlineKb, domain.InlineKeyboardRow{
+			{Text: "🔄 Reset to Default", CallbackData: "m:reset"},
+		})
 
 		return sb.String(), inlineKb
 	}

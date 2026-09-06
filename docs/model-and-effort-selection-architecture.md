@@ -54,7 +54,8 @@ Each model is characterized by a `ModelCapability` profile with explicit context
 
 | Model Canonical ID | Aliases | Display Name | Supported Efforts | Default Effort | Max Context | Max Output | Auto-Compact Limit (70%) | Capability Notes |
 | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| `gemini-3.7-flash` | `flash`, `fast`, `3.7-flash` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Fast frontier multimodal & reasoning |
+| `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Flagship frontier multimodal & reasoning Flash |
+| `gemini-3.7-flash` | `3.7`, `3.7-flash`, `gemini-3.7` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Fast frontier multimodal & reasoning |
 | `gemini-3.1-pro` | `pro`, `smart`, `3.1-pro` | Gemini 3.1 Pro | `["low", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Deep reasoning. **No medium effort** in agy. |
 | `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | High efficiency flash model |
 | `gemini-3.5-flash` | `3.5-flash`, `gemini-3.5` | Gemini 3.5 Flash | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 734,003 | Stable flash model |

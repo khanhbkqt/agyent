@@ -315,7 +315,7 @@ func TestCompactAndContinueTurn(t *testing.T) {
 	}
 	outTokens, err := eng.HandleCommand(ctx, msgTokens)
 	require.NoError(t, err)
-	assert.Contains(t, outTokens.Text, "Gemini 3.7 Flash")
+	assert.Contains(t, outTokens.Text, "Gemini 3.8 Flash")
 	assert.Contains(t, outTokens.Text, "2,902,665")
 
 	// 2. Run /compact command

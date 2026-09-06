@@ -140,6 +140,18 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 	assert.Contains(t, out.Text, "AI Model Selection")
 	assert.NotEmpty(t, out.InlineKeyboard)
 
+	var callbackDataList []string
+	var buttonTexts []string
+	for _, row := range out.InlineKeyboard {
+		for _, btn := range row {
+			callbackDataList = append(callbackDataList, btn.CallbackData)
+			buttonTexts = append(buttonTexts, btn.Text)
+		}
+	}
+	assert.Contains(t, callbackDataList, "m:set:gemini-3.8-flash")
+	assert.Contains(t, callbackDataList, "m:set:gemini-3.7-flash")
+	assert.Contains(t, callbackDataList, "m:reset")
+
 	// 2. Test /model pro switch
 	msgSetModel := domain.CanonicalMessage{
 		ID:        "2",

@@ -32,9 +32,9 @@ func TestTaskExecutor_ModelAndEffortResolution(t *testing.T) {
 	exec := NewTaskExecutor(cfg, nil, nil, nil, nil)
 
 	// 1. Default fallback ("flash") with global effort "high"
-	// Should resolve to canonical gemini-3.7-flash with effort "high"
+	// Should resolve to canonical gemini-3.8-flash with effort "high"
 	model, effort := exec.resolveModelAndEffort("default_agent")
-	assert.Equal(t, "gemini-3.7-flash", model)
+	assert.Equal(t, "gemini-3.8-flash", model)
 	assert.Equal(t, "high", effort)
 
 	// 2. Agent with Claude: effort should be stripped

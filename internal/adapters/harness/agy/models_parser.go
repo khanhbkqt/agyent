@@ -134,5 +134,18 @@ func generateSmartAliases(modelID string) []string {
 		aliases = append(aliases, "gpt-oss", "oss-120b", "gpt")
 	}
 
+	// Version-specific shorthand aliases (e.g. "3.8", "3.8-flash", "gemini-3.8")
+	for _, ver := range []string{"3.8", "3.7", "3.6", "3.5", "3.1", "2.5", "2.0"} {
+		if strings.Contains(idLower, ver) {
+			aliases = append(aliases, ver)
+			if strings.Contains(idLower, "flash") {
+				aliases = append(aliases, ver+"-flash", "gemini-"+ver)
+			} else if strings.Contains(idLower, "pro") {
+				aliases = append(aliases, ver+"-pro", "gemini-"+ver)
+			}
+			break
+		}
+	}
+
 	return aliases
 }
