@@ -3,12 +3,15 @@ package zalo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -314,22 +317,178 @@ func UploadPublicMedia(ctx context.Context, filePath string) (string, error) {
 		return "", fmt.Errorf("file size %d exceeds 50MB limit", stat.Size())
 	}
 
-	// 1. Try Catbox.moe
-	if u, err := uploadToCatbox(ctx, filePath); err == nil && u != "" {
-		return u, nil
+	isImage := imageExtRegex.MatchString(filePath)
+
+	type provider struct {
+		name string
+		fn   func(context.Context, string) (string, error)
 	}
 
-	// 2. Fallback to Litterbox (72h retention)
-	if u, err := uploadToLitterbox(ctx, filePath); err == nil && u != "" {
-		return u, nil
+	var providers []provider
+	if isImage {
+		providers = []provider{
+			{"freeimage", uploadToFreeImageHost},
+			{"uguu", uploadToUguu},
+			{"catbox", uploadToCatbox},
+			{"litterbox", uploadToLitterbox},
+		}
+	} else {
+		providers = []provider{
+			{"uguu", uploadToUguu},
+			{"catbox", uploadToCatbox},
+			{"litterbox", uploadToLitterbox},
+		}
 	}
 
-	// 3. Fallback to 0x0.st
-	if u, err := uploadTo0x0(ctx, filePath); err == nil && u != "" {
-		return u, nil
+	var errs []string
+	for _, p := range providers {
+		u, err := p.fn(ctx, filePath)
+		if err == nil && u != "" {
+			return u, nil
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "public media upload provider failed, trying next provider", "provider", p.name, "error", err, "path", filePath)
+			errs = append(errs, fmt.Sprintf("%s: %v", p.name, err))
+		}
 	}
 
-	return "", fmt.Errorf("all public media upload providers failed for %s", filePath)
+	return "", fmt.Errorf("all public media upload providers failed for %s (%s)", filePath, strings.Join(errs, "; "))
+}
+
+const browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+var (
+	freeImageHostAPIURL = "https://freeimage.host/api/1/upload"
+	uguuAPIURL          = "https://uguu.se/upload.php"
+	catboxAPIURL        = "https://catbox.moe/user/api.php"
+	litterboxAPIURL     = "https://litterbox.catbox.moe/resources/internals/api.php"
+)
+
+func uploadToFreeImageHost(ctx context.Context, filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("key", "6d207e02198a847aa98d0a2a901485a5")
+	_ = writer.WriteField("action", "upload")
+	_ = writer.WriteField("format", "json")
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="source"; filename=%q`, filepath.Base(filePath)))
+	mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	h.Set("Content-Type", mimeType)
+
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, freeImageHostAPIURL, body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("User-Agent", browserUserAgent)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var apiResp struct {
+		StatusCode int `json:"status_code"`
+		Image      struct {
+			URL string `json:"url"`
+		} `json:"image"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return "", fmt.Errorf("decode freeimage response: %w", err)
+	}
+
+	if apiResp.StatusCode == http.StatusOK && apiResp.Image.URL != "" {
+		return apiResp.Image.URL, nil
+	}
+	return "", fmt.Errorf("freeimage upload failed with status %d", apiResp.StatusCode)
+}
+
+func uploadToUguu(ctx context.Context, filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[]"; filename=%q`, filepath.Base(filePath)))
+	mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	h.Set("Content-Type", mimeType)
+
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, uguuAPIURL, body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("User-Agent", browserUserAgent)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Files   []struct {
+			URL string `json:"url"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return "", fmt.Errorf("decode uguu response: %w", err)
+	}
+
+	if apiResp.Success && len(apiResp.Files) > 0 && apiResp.Files[0].URL != "" {
+		return apiResp.Files[0].URL, nil
+	}
+	return "", fmt.Errorf("uguu upload failed (success=%v)", apiResp.Success)
 }
 
 func uploadToCatbox(ctx context.Context, filePath string) (string, error) {
@@ -342,7 +501,16 @@ func uploadToCatbox(ctx context.Context, filePath string) (string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("reqtype", "fileupload")
-	part, err := writer.CreateFormFile("fileToUpload", filepath.Base(filePath))
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="fileToUpload"; filename=%q`, filepath.Base(filePath)))
+	mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	h.Set("Content-Type", mimeType)
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
 		return "", err
 	}
@@ -353,17 +521,17 @@ func uploadToCatbox(ctx context.Context, filePath string) (string, error) {
 		return "", err
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "https://catbox.moe/user/api.php", body)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, catboxAPIURL, body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "agyent-gateway/1.0")
+	req.Header.Set("User-Agent", browserUserAgent)
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -393,7 +561,16 @@ func uploadToLitterbox(ctx context.Context, filePath string) (string, error) {
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("reqtype", "fileupload")
 	_ = writer.WriteField("time", "72h")
-	part, err := writer.CreateFormFile("fileToUpload", filepath.Base(filePath))
+
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="fileToUpload"; filename=%q`, filepath.Base(filePath)))
+	mimeType := mime.TypeByExtension(filepath.Ext(filePath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	h.Set("Content-Type", mimeType)
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
 		return "", err
 	}
@@ -404,17 +581,17 @@ func uploadToLitterbox(ctx context.Context, filePath string) (string, error) {
 		return "", err
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "https://litterbox.catbox.moe/resources/internals/api.php", body)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, litterboxAPIURL, body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "agyent-gateway/1.0")
+	req.Header.Set("User-Agent", browserUserAgent)
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -431,55 +608,6 @@ func uploadToLitterbox(ctx context.Context, filePath string) (string, error) {
 		return res, nil
 	}
 	return "", fmt.Errorf("litterbox upload failed with HTTP %d: %s", resp.StatusCode, res)
-}
-
-func uploadTo0x0(ctx context.Context, filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
-	if err != nil {
-		return "", err
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return "", err
-	}
-	if err := writer.Close(); err != nil {
-		return "", err
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, "https://0x0.st", body)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "agyent-gateway/1.0")
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	if err != nil {
-		return "", err
-	}
-
-	res := strings.TrimSpace(string(respBytes))
-	if resp.StatusCode == http.StatusOK && (strings.HasPrefix(res, "https://") || strings.HasPrefix(res, "http://")) {
-		return res, nil
-	}
-	return "", fmt.Errorf("0x0 upload failed with HTTP %d: %s", resp.StatusCode, res)
 }
 
 // ExtractAndCleanOutboundMedia extracts embedded media from markdown text,

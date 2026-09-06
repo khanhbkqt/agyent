@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.37] - 2026-09-06
+
+### Fixed
+- **Zalo Public Media Upload Providers & CDN Reliability Overhaul (`channels/zalo`):**
+  - Resolved upload failures where 0x0.st returned HTTP 503 (permanently closed uploads due to botnet spam) and Catbox returned HTTP 412 ("Invalid uploader") / connection timeouts.
+  - Added **FreeImage.host** as primary high-speed image CDN provider, backed by Cloudflare edge caching, permanent hosting, zero IP blocks, and direct image URLs (`iili.io`).
+  - Added **Uguu.se** as secondary high-speed universal file upload provider, supporting all media and document types up to 100MB with direct download URLs (`n.uguu.se`).
+  - Enhanced **Catbox.moe** and **Litterbox** uploaders with realistic browser User-Agent headers, accurate multipart MIME headers (`image/jpeg`, `image/png`, etc. instead of generic `application/octet-stream`), and 30-second timeouts.
+  - Purged dead **0x0.st** provider from the upload chain.
+  - Added transparent warning logging per failed provider for rapid diagnostics in daemon logs.
+
+---
+
 ## [1.0.36] - 2026-09-06
 
 ### Added

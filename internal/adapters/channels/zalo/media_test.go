@@ -2,6 +2,7 @@ package zalo
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -118,5 +119,118 @@ func TestUploadPublicMedia_TestHookAndErrors(t *testing.T) {
 	u, err = UploadPublicMedia(ctx, tmpFile)
 	require.NoError(t, err)
 	assert.Equal(t, "https://custom-cdn.local/dummy.txt", u)
+}
+
+func TestUploadPublicMedia_FallbackChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	imgFile := filepath.Join(tmpDir, "photo.jpg")
+	require.NoError(t, os.WriteFile(imgFile, []byte("fake-photo-bytes"), 0644))
+
+	var freeImageCalled, uguuCalled, catboxCalled, litterboxCalled atomic.Bool
+	var freeImageFail, uguuFail, catboxFail atomic.Bool
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/freeimage":
+			freeImageCalled.Store(true)
+			if freeImageFail.Load() {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 200,
+				"image": map[string]string{
+					"url": "https://iili.io/mock_photo.jpg",
+				},
+			})
+		case "/uguu":
+			uguuCalled.Store(true)
+			if uguuFail.Load() {
+				http.Error(w, "service down", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"files": []map[string]string{
+					{"url": "https://n.uguu.se/mock_photo.jpg"},
+				},
+			})
+		case "/catbox":
+			catboxCalled.Store(true)
+			if catboxFail.Load() {
+				http.Error(w, "412 Invalid uploader", http.StatusPreconditionFailed)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("https://files.catbox.moe/mock_photo.jpg"))
+		case "/litterbox":
+			litterboxCalled.Store(true)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("https://litter.catbox.moe/mock_photo.jpg"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	origFreeImage := freeImageHostAPIURL
+	origUguu := uguuAPIURL
+	origCatbox := catboxAPIURL
+	origLitterbox := litterboxAPIURL
+	defer func() {
+		freeImageHostAPIURL = origFreeImage
+		uguuAPIURL = origUguu
+		catboxAPIURL = origCatbox
+		litterboxAPIURL = origLitterbox
+	}()
+
+	freeImageHostAPIURL = ts.URL + "/freeimage"
+	uguuAPIURL = ts.URL + "/uguu"
+	catboxAPIURL = ts.URL + "/catbox"
+	litterboxAPIURL = ts.URL + "/litterbox"
+
+	ctx := context.Background()
+
+	// 1. First provider (FreeImage) succeeds
+	u, err := UploadPublicMedia(ctx, imgFile)
+	require.NoError(t, err)
+	assert.Equal(t, "https://iili.io/mock_photo.jpg", u)
+	assert.True(t, freeImageCalled.Load())
+	assert.False(t, uguuCalled.Load())
+
+	// 2. FreeImage fails -> falls back to Uguu
+	freeImageFail.Store(true)
+	freeImageCalled.Store(false)
+	uguuCalled.Store(false)
+
+	u, err = UploadPublicMedia(ctx, imgFile)
+	require.NoError(t, err)
+	assert.Equal(t, "https://n.uguu.se/mock_photo.jpg", u)
+	assert.True(t, freeImageCalled.Load())
+	assert.True(t, uguuCalled.Load())
+	assert.False(t, catboxCalled.Load())
+
+	// 3. FreeImage and Uguu fail -> falls back to Catbox
+	uguuFail.Store(true)
+	freeImageCalled.Store(false)
+	uguuCalled.Store(false)
+	catboxCalled.Store(false)
+
+	u, err = UploadPublicMedia(ctx, imgFile)
+	require.NoError(t, err)
+	assert.Equal(t, "https://files.catbox.moe/mock_photo.jpg", u)
+	assert.True(t, catboxCalled.Load())
+	assert.False(t, litterboxCalled.Load())
+
+	// 4. FreeImage, Uguu, and Catbox (412) fail -> falls back to Litterbox
+	catboxFail.Store(true)
+	litterboxCalled.Store(false)
+
+	u, err = UploadPublicMedia(ctx, imgFile)
+	require.NoError(t, err)
+	assert.Equal(t, "https://litter.catbox.moe/mock_photo.jpg", u)
+	assert.True(t, litterboxCalled.Load())
 }
 
