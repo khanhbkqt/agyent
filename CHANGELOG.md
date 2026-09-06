@@ -5,6 +5,26 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.43] - 2026-09-06
+
+### Added
+- **Project-Scoped Worker Isolation (ADR 0002) (`security`, `execution`, `harness/agy`, `storage/sqlite`):**
+  - **`agy_project_registry` SQLite Table & Migration (`000013`):** Introduced dedicated tenant-to-project isolation mapping ensuring worker/subagent executions run within their strictly isolated project sandboxes.
+  - **Execution Admission Chokepoint:** Integrated `ExecutionAdmission` in `execution.Service` enforcing APIS-4D execution identity, requiring `--project <id>` and `--sandbox` parameters for worker runs.
+  - **CommandPolicy AST & Obfuscation Scanner:** Implemented deep AST parsing for shell commands, pipeline unnesting, subshell extraction, and Base64-encoded command deobfuscation scanning.
+  - **`workspace_only` Security Preset & SuperAdmin Switching:** Added `workspace_only` preset and allowed SuperAdmins to dynamically switch security presets via `/security preset` commands.
+  - **AI Fleet Definitions & System Diagrams:** Added comprehensive agent fleet specifications in `.agents/agents/` with refactored Mermaid architecture diagrams.
+
+### Fixed
+- **Headless AGY Permission Provisioning (`security`, `harness/agy`):**
+  - **Automatic Tool Grants:** Auto-provisioned workspace and host `settings.json` tool permissions and AGY project permission grants to prevent non-interactive headless AGY permission denials.
+  - **Control Plane Write Protection:** Hardened `pathjail` to enforce unconditional write protection on control-plane paths (`.agents/hooks.json`, `~/.agyent/`, `config.yaml`) across all path argument variations.
+  - **Agent Project ID Binding:** Ensured AGY runner and execution service always select and propagate dedicated agent project IDs and resource boundaries.
+- **Compaction Safety & Multi-Bot Zalo Routing (`engine`, `config`, `channels/zalo`):**
+  - **Uncancelled Bounded Context for Compaction:** Guarded SQLite compaction transactions with uncancelled bounded context to prevent database corruption or state loss during turn timeouts.
+  - **Config-to-SQLite Agent Sync:** Synchronized configured agent profiles from `config.yaml` into SQLite on daemon bootstrap.
+  - **Zalo Multi-Bot Routing:** Added fallback bot name resolution from bound agent profiles in Zalo adapter.
+
 ---
 
 ## [1.0.42] - 2026-09-06
