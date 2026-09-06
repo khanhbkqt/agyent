@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,3 +418,89 @@ func TestZaloAdapter_MultiBotRouting_AgentNameAndSessionKey(t *testing.T) {
 	assert.Contains(t, lastReceivedText, "────────────────────────")
 	mu.Unlock()
 }
+
+func TestZaloAdapter_Polling_408TimeoutDoesNotBackoff(t *testing.T) {
+	var pollAttempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.URL.Path == "/botpoll_token/getMe" {
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"id": "bot_poll", "name": "Poll Bot", "is_bot": true}`),
+			})
+			return
+		}
+
+		if r.URL.Path == "/botpoll_token/getUpdates" {
+			count := pollAttempts.Add(1)
+			if count == 1 {
+				// 1st attempt: HTTP 408
+				w.WriteHeader(http.StatusRequestTimeout)
+				_, _ = w.Write([]byte(`{"error_code": 408, "description": "Request timeout"}`))
+				return
+			}
+			if count == 2 {
+				// 2nd attempt: HTTP 200 with error_code 408
+				_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+					OK:          false,
+					ErrorCode:   408,
+					Description: "Request timeout",
+				})
+				return
+			}
+			// 3rd attempt: successfully deliver a message immediately
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK: true,
+				Result: json.RawMessage(`[
+					{
+						"update_id": 100,
+						"message": {
+							"message_id": "msg_after_timeout",
+							"from": {"id": "user_1", "name": "Active User"},
+							"chat": {"id": "chat_1", "type": "private"},
+							"date": 1724947200,
+							"text": "fast response after idle timeout"
+						}
+					}
+				]`),
+			})
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.BotToken = "poll_token"
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Mode = "polling"
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, nil)
+	require.NoError(t, err)
+
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	err = adapter.Start(ctx, inboundChan)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inboundChan:
+		elapsed := time.Since(start)
+		assert.Equal(t, "fast response after idle timeout", msg.Text)
+		// Should complete swiftly without 1s/2s/4s/8s/16s backoff delays
+		assert.Less(t, elapsed, 2*time.Second, "polling should not trigger backoff sleep on 408 timeout")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for message after 408 idle polling")
+	}
+
+	err = adapter.Stop()
+	require.NoError(t, err)
+}
+

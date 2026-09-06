@@ -250,8 +250,12 @@ func (a *Adapter) pollBotUpdates(ctx context.Context, botName string, inst *botI
 
 		updates, err := inst.client.GetUpdates(ctx, offset, 50, 10)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 				return
+			}
+			if IsTimeoutError(err) {
+				backoff = 1 * time.Second
+				continue
 			}
 			slog.Warn("failed to poll Zalo updates, backing off", "bot_name", botName, "error", err, "backoff", backoff)
 			select {

@@ -98,6 +98,63 @@ type APIResponse struct {
 	Description string          `json:"description,omitempty"`
 }
 
+// APIError represents an error returned by the Zalo Bot Platform API or HTTP layer.
+type APIError struct {
+	StatusCode  int
+	ErrorCode   int
+	Description string
+	RawBody     string
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.ErrorCode != 0 && e.Description != "" {
+		return fmt.Sprintf("zalo API error [%d]: %s", e.ErrorCode, e.Description)
+	}
+	if e.StatusCode != 0 && e.Description != "" {
+		return fmt.Sprintf("zalo API returned HTTP %d: %s", e.StatusCode, e.Description)
+	}
+	if e.StatusCode != 0 && e.RawBody != "" {
+		return fmt.Sprintf("zalo API returned HTTP %d: %s", e.StatusCode, e.RawBody)
+	}
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("zalo API returned HTTP %d", e.StatusCode)
+	}
+	return "zalo API error"
+}
+
+// IsTimeout returns true if the error represents an idle request timeout (HTTP 408 or ErrorCode 408 / "Request timeout").
+func (e *APIError) IsTimeout() bool {
+	if e == nil {
+		return false
+	}
+	if e.StatusCode == http.StatusRequestTimeout || e.ErrorCode == 408 {
+		return true
+	}
+	desc := strings.ToLower(e.Description)
+	if strings.Contains(desc, "request timeout") {
+		return true
+	}
+	raw := strings.ToLower(e.RawBody)
+	return strings.Contains(raw, "408") && strings.Contains(raw, "request timeout")
+}
+
+// IsTimeoutError reports whether an error indicates an idle polling timeout from Zalo.
+func IsTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.IsTimeout()
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "408") || strings.Contains(errStr, "request timeout")
+}
+
+
 // Client interacts with the Zalo Bot Platform via HTTP REST with built-in retry and backoff.
 type Client struct {
 	botToken   string
@@ -185,7 +242,18 @@ func (c *Client) executeRequest(ctx context.Context, method string, payload inte
 
 		// Permanent HTTP error (400, 401, 403, 404, etc.)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return retry.Permanent(fmt.Errorf("zalo API returned HTTP %d: %s", resp.StatusCode, string(respBytes)))
+			var apiResp APIResponse
+			_ = json.Unmarshal(respBytes, &apiResp)
+			desc := apiResp.Description
+			if desc == "" {
+				desc = string(respBytes)
+			}
+			return retry.Permanent(&APIError{
+				StatusCode:  resp.StatusCode,
+				ErrorCode:   apiResp.ErrorCode,
+				Description: desc,
+				RawBody:     string(respBytes),
+			})
 		}
 
 		var apiResp APIResponse
@@ -198,7 +266,12 @@ func (c *Client) executeRequest(ctx context.Context, method string, payload inte
 			if apiResp.ErrorCode == 429 || apiResp.ErrorCode == -1 {
 				return fmt.Errorf("transient Zalo API error [%d]: %s", apiResp.ErrorCode, apiResp.Description)
 			}
-			return retry.Permanent(fmt.Errorf("zalo API error [%d]: %s", apiResp.ErrorCode, apiResp.Description))
+			return retry.Permanent(&APIError{
+				StatusCode:  resp.StatusCode,
+				ErrorCode:   apiResp.ErrorCode,
+				Description: apiResp.Description,
+				RawBody:     string(respBytes),
+			})
 		}
 
 		if out != nil && len(apiResp.Result) > 0 {
@@ -252,6 +325,11 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, limit int, timeou
 	var raw json.RawMessage
 	err := c.executeRequest(ctx, "getUpdates", payload, &raw)
 	if err != nil {
+		if IsTimeoutError(err) {
+			// Zalo long-polling timeout (HTTP 408 or ErrorCode 408 / "Request timeout")
+			// is the expected idle poll completion when no new messages arrived.
+			return []ZaloUpdate{}, nil
+		}
 		return nil, err
 	}
 

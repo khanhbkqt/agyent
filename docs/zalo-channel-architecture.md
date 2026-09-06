@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/adapters/channels/zalo`, `internal/adapters/channels/composite`, `cmd/agyent/run.go`
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-09-06
 
 This document specifies the technical design, architectural patterns, and integration specifications for the **Zalo Bot Platform Channel Adapter** in `agyent`.
 
@@ -89,7 +89,7 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
 - Strict RBAC validation against both `zalo.admin_user_ids` and `security.admin_user_ids`.
 
 ### 2.5 Dual Polling & Webhook Modes
-- **Polling Mode:** Long-polling (`getUpdates`) with adaptive backoff.
+- **Polling Mode:** Long-polling (`getUpdates`) with adaptive backoff. Idle server-side timeouts (HTTP 408 Request Timeout or JSON error code 408) are treated as expected empty poll cycles returning `[]ZaloUpdate{}` without error, maintaining continuous real-time responsiveness without sleep backoff delays.
 - **Webhook Mode:** Local HTTP webhook server listening on configured host and port, secret verification via `X-Secret-Token` / `X-Bot-Token`, and automatic webhook registration via `setWebhook`.
 
 ### 2.6 Message Formatting & UTF-16 Code Unit Preservation

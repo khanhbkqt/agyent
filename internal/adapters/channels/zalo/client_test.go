@@ -242,3 +242,36 @@ func TestZaloClient_GetUpdates_InvalidFormat(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected JSON format")
 }
+
+func TestZaloClient_GetUpdates_408TimeoutReturnsEmptyUpdates(t *testing.T) {
+	t.Run("HTTP 408 Status", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"error_code": 408, "description": "Request timeout"}`))
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("token", ts.URL, ts.Client())
+		updates, err := client.GetUpdates(context.Background(), 0, 50, 10)
+		require.NoError(t, err)
+		assert.Empty(t, updates)
+	})
+
+	t.Run("HTTP 200 with JSON ErrorCode 408", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp := zalo.APIResponse{
+				OK:          false,
+				ErrorCode:   408,
+				Description: "Request timeout",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("token", ts.URL, ts.Client())
+		updates, err := client.GetUpdates(context.Background(), 0, 50, 10)
+		require.NoError(t, err)
+		assert.Empty(t, updates)
+	})
+}
+
