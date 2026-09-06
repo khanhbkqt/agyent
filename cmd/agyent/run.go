@@ -210,6 +210,7 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		sched := scheduler.NewScheduler(cfg, store, wsMgr, runner, bus, mainLogger)
 		sched.SetLocation(contextAdapter.DetectUserLocation(starterWS))
 		sched.SetExecutionService(execSvc)
+		sched.SetSecurityManager(secMgr)
 		eng.SetScheduler(sched)
 		ipcServer.SetScheduler(sched)
 

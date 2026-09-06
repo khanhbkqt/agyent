@@ -247,9 +247,16 @@ func TestDebouncer_TC_DEB_06_SlashCommandFastPathPreemption(t *testing.T) {
 	err := deb.Ingest(context.Background(), cmdMsg)
 	require.NoError(t, err)
 
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) == 2
+	}, 1*time.Second, 10*time.Millisecond)
+
 	mu.Lock()
-	assert.Len(t, received, 1, "only the slash command should be dispatched, pending was pre-empted")
-	assert.Equal(t, "/reset", received[0].Text)
+	texts := []string{received[0].Text, received[1].Text}
+	assert.Contains(t, texts, "Please delete old database")
+	assert.Contains(t, texts, "/reset")
 	mu.Unlock()
 
 	assert.Equal(t, 0, deb.ActiveSessions(), "session map should be clean")

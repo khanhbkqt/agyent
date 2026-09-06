@@ -221,3 +221,154 @@ func TestTaskExecutor_ExecuteSchedule_DynamicImageTimeout(t *testing.T) {
 	lastReq = runner.receivedReqs[len(runner.receivedReqs)-1]
 	assert.Equal(t, 30*time.Second, lastReq.Timeout, "Non-image task should keep configured timeout")
 }
+
+type mockExecutionService struct {
+	lastPrincipal  domain.Principal
+	lastReq        domain.ExecutionRequest
+	lastSessionKey string
+	resultToReturn *domain.ExecutionResult
+	errToReturn    error
+}
+
+func (m *mockExecutionService) ExecuteTurn(ctx context.Context, principal domain.Principal, req domain.ExecutionRequest, sessionKey string, isStreaming bool) (*domain.ExecutionResult, error) {
+	m.lastPrincipal = principal
+	m.lastReq = req
+	m.lastSessionKey = sessionKey
+	return m.resultToReturn, m.errToReturn
+}
+
+func (m *mockExecutionService) InterruptTurn(ctx context.Context, sessionKey string) error {
+	return nil
+}
+
+type mockSecurityManager struct {
+	clearedSessions []string
+}
+
+func (m *mockSecurityManager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error) {
+	return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+}
+func (m *mockSecurityManager) EvaluateCommand(ctx context.Context, sessionKey string, role string, cmd string) (domain.SecurityDecision, error) {
+	return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+}
+func (m *mockSecurityManager) EvaluatePath(ctx context.Context, sessionKey string, workspaceDir string, targetPath string, isWrite bool) (domain.SecurityDecision, error) {
+	return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+}
+func (m *mockSecurityManager) EvaluateURL(ctx context.Context, urlStr string) (domain.SecurityDecision, error) {
+	return domain.SecurityDecision{Decision: domain.DecisionAllow}, nil
+}
+func (m *mockSecurityManager) SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error) {
+	return output, nil
+}
+func (m *mockSecurityManager) GrantSessionPermission(sessionKey string, pattern string) {}
+func (m *mockSecurityManager) ClearSessionGrants(sessionKey string) {
+	m.clearedSessions = append(m.clearedSessions, sessionKey)
+}
+func (m *mockSecurityManager) ClearAllSessionGrants()                                   {}
+func (m *mockSecurityManager) SetPreset(preset domain.SecurityPreset)                   {}
+func (m *mockSecurityManager) SetRedactionMode(mode domain.RedactionMode)               {}
+func (m *mockSecurityManager) AddWhitelistEntry(entry string)                           {}
+func (m *mockSecurityManager) GetDashboardSummary(sessionKey string) domain.SecurityDashboard {
+	return domain.SecurityDashboard{}
+}
+func (m *mockSecurityManager) EnsureWorkspaceHooks(workspaceDir string) error          { return nil }
+func (m *mockSecurityManager) RegisterActiveTurn(turn domain.TurnSecurityContext)      {}
+func (m *mockSecurityManager) UnregisterActiveTurn(convID string, workspaceDir string) {}
+func (m *mockSecurityManager) UnregisterTurnByID(turnID string)                        {}
+func (m *mockSecurityManager) ResolveSessionKey(convID string, workspaceDir string) string {
+	return ""
+}
+func (m *mockSecurityManager) ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool) {
+	return domain.TurnSecurityContext{}, false
+}
+func (m *mockSecurityManager) ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool) {
+	return domain.TurnSecurityContext{}, false
+}
+func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string) {}
+
+func TestTaskExecutor_DelegatedPrincipal_AndSessionRouting(t *testing.T) {
+	cfg := config.DefaultConfig()
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	mockExec := &mockExecutionService{
+		resultToReturn: &domain.ExecutionResult{
+			Success:      true,
+			ResponseText: "Top trending Etsy POD shirts: 1. Vintage German Eagle",
+		},
+	}
+	mockSec := &mockSecurityManager{}
+
+	exec := NewTaskExecutor(cfg, nil, nil, bus, nil)
+	exec.SetExecutionService(mockExec)
+	exec.SetSecurityManager(mockSec)
+
+	task := domain.ScheduleTask{
+		ID:        "cron-93103b51",
+		AgentName: "wife_assistant",
+		Title:     "Radar POD DE",
+		Prompt:    "Cào dữ liệu bestseller Etsy DE",
+		Channel:   "telegram",
+		ChatID:    "8220274185",
+		ThreadID:  "0",
+		CreatedBy: "8220274185",
+	}
+
+	res, err := exec.ExecuteSchedule(context.Background(), task)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+
+	// 1. Verify Delegated Principal
+	assert.Equal(t, domain.PrincipalUser, mockExec.lastPrincipal.Kind)
+	assert.Equal(t, "telegram", mockExec.lastPrincipal.Provider)
+	assert.Equal(t, "8220274185", mockExec.lastPrincipal.SubjectID)
+	assert.Equal(t, "wife_assistant", mockExec.lastPrincipal.AccountID)
+
+	// 2. Verify Channel-Routable SessionKey
+	expectedSessionKey := "telegram:8220274185"
+	assert.Equal(t, expectedSessionKey, mockExec.lastSessionKey)
+
+	// 3. Verify Session Grant Invalidation on Completion
+	require.Len(t, mockSec.clearedSessions, 1)
+	assert.Equal(t, expectedSessionKey, mockSec.clearedSessions[0])
+}
+
+func TestTaskExecutor_QualityAssertion_FalsePositiveProtection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	mockExec := &mockExecutionService{}
+	exec := NewTaskExecutor(cfg, nil, nil, bus, nil)
+	exec.SetExecutionService(mockExec)
+
+	task := domain.ScheduleTask{
+		ID:        "cron-quality-check",
+		AgentName: "wife_assistant",
+		Title:     "Radar Etsy",
+		Prompt:    "Cào dữ liệu",
+		Channel:   "telegram",
+		ChatID:    "8220274185",
+		CreatedBy: "8220274185",
+	}
+
+	// Case 1: Empty output despite exit code 0 -> Must fail assertion
+	mockExec.resultToReturn = &domain.ExecutionResult{
+		Success:      true,
+		ResponseText: "   ",
+	}
+	res, _ := exec.ExecuteSchedule(context.Background(), task)
+	assert.False(t, res.Success, "Empty output must be marked as failed")
+	assert.Contains(t, res.Error, "empty output")
+
+	// Case 2: Soft-deny response text -> Must fail assertion
+	mockExec.resultToReturn = &domain.ExecutionResult{
+		Success:      true,
+		ResponseText: "🛡️ [Security Gate]: Action rejected by user or approval timed out",
+	}
+	res, _ = exec.ExecuteSchedule(context.Background(), task)
+	assert.False(t, res.Success, "Soft-deny response must be marked as failed")
+	assert.Contains(t, res.Error, "blocked by security gate")
+}
+

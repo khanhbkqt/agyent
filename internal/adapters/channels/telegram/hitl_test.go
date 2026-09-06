@@ -187,3 +187,45 @@ func TestHITLCoordinator_MultiBotResolution(t *testing.T) {
 	assert.False(t, dec.Approved)
 	assert.Equal(t, "timeout", dec.Action)
 }
+
+func TestHITLCoordinator_AllowAllSession_AndKeyboard(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AdminUserIDs: []int64{123456789},
+		},
+		Security: config.GetEffectiveSecurityPreset("balanced"),
+	}
+
+	coordinator := NewHITLCoordinator(nil, cfg, nil)
+	ctx := context.Background()
+
+	req := domain.ApprovalRequest{
+		RequestID:   "hitl-allow-all-test",
+		SessionKey:  "telegram:123456789",
+		ToolName:    "run_command",
+		CommandLine: "python3 scripts/radar.py --page 1",
+		CreatedAt:   time.Now(),
+		ExpiresAt:   time.Now().Add(500 * time.Millisecond),
+	}
+
+	// 1. Verify keyboard structure
+	kb := coordinator.buildInlineKeyboard(req)
+	require.Len(t, kb.InlineKeyboard, 3)
+	assert.Equal(t, "✅ Allow Once", kb.InlineKeyboard[0][0].Text)
+	assert.Equal(t, "🛡️ Allow Command (python3)", kb.InlineKeyboard[0][1].Text)
+	assert.Equal(t, "🔓 Allow All (Session)", kb.InlineKeyboard[1][0].Text)
+	assert.Equal(t, "❌ Deny", kb.InlineKeyboard[1][1].Text)
+	assert.Equal(t, "🛑 Force Kill Agent", kb.InlineKeyboard[2][0].Text)
+
+	// 2. Simulate user clicking "Allow All (Session)"
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = coordinator.HandleCallback(ctx, "cb-all", 123456789, "hitl:hitl-allow-all-test:allow_all_session")
+	}()
+
+	decision, err := coordinator.RequestApproval(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, decision.Approved)
+	assert.Equal(t, "allow_all_session", decision.Action)
+}
+

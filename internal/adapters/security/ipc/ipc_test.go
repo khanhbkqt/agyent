@@ -54,6 +54,8 @@ func (m *mockSecurityManager) SanitizeToolOutput(ctx context.Context, toolName s
 }
 
 func (m *mockSecurityManager) GrantSessionPermission(sessionKey string, pattern string) {}
+func (m *mockSecurityManager) ClearSessionGrants(sessionKey string)                     {}
+func (m *mockSecurityManager) ClearAllSessionGrants()                                   {}
 func (m *mockSecurityManager) SetPreset(preset domain.SecurityPreset)                   {}
 func (m *mockSecurityManager) SetRedactionMode(mode domain.RedactionMode)               {}
 func (m *mockSecurityManager) AddWhitelistEntry(entry string)                           {}

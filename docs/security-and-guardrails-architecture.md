@@ -188,30 +188,50 @@ sequenceDiagram
 
 ## 6. UX & Operations Design
 
-### 6.1. Interactive Telegram HITL Card with RBAC Verification
-When a sensitive tool execution is intercepted, the Gateway sends a formatted card:
+### 6.1. Interactive Telegram HITL Card with Multi-Tier Approval
+When a sensitive tool execution is intercepted, the Gateway sends a formatted interactive card with a 3-tier approval hierarchy:
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │ 🛡️ [Agyent Security Gate] Action Approval Required    │
 ├────────────────────────────────────────────────────────┤
 │ 💻 Tool     : `run_command`                            │
-│ 📜 Command  : `rm -rf ./dist && npm run build`         │
-│ 📂 Directory: `C:\projects\ecommerce-api`              │
-│ 🤖 Agent    : `coder` • Task `task-8f12`               │
-│ ⚠️ Risk Eval : Medium (Directory removal & build)      │
+│ 📜 Command  : `python3 scraper.py --target de`         │
+│ 📂 Directory: `/data/agents/wife_assistant/workspace`  │
+│ 🤖 Agent    : `wife_assistant`                         │
+│ ⚠️ Risk Eval : Medium (Network fetch & local execution) │
 ├────────────────────────────────────────────────────────┤
-│ [ ✅ Allow Once ]        [ 🛡️ Allow for Session ]      │
-│ [ ❌ Deny Action ]       [ 🛑 Force Kill Agent ]       │
+│ [ ✅ Allow Once ]        [ 🛡️ Allow Command (python3) ]│
+│ [ 🔓 Allow All (Session) ]        [ ❌ Deny ]         │
+│ [ 🛑 Force Kill Agent ]                                │
 └────────────────────────────────────────────────────────┘
 ```
 
 - **Strict User Verification:** When an inline button is clicked, the Gateway verifies `callback.From.ID == admin_user_ids`. Unauthorized clicks receive an immediate alert: `"⛔ You are not authorized to approve this action."`
 - **[ ✅ Allow Once ]**: Hook returns `{ "decision": "allow" }`; tool executes once.
-- **[ 🛡️ Allow for Session ]**: Pattern added to **Session Permission Cache**; subsequent identical calls run without prompts.
-- **[ ❌ Deny Action ]**: Hook returns `{ "decision": "deny", "reason": "Action denied by administrator" }`. AGY feeds denial back to LLM context to adapt.
+- **[ 🛡️ Allow Command (<base>) ]**: Dynamically extracts the base binary via `domain.ExtractBaseCommand` (e.g. `python3`, `node`, `git`, `curl`) and grants permission for that binary family across the active session.
+- **[ 🔓 Allow All (Session) ]**: Grants wildcard (`*`) permission across all tools and commands for the active session lifecycle.
+- **[ ❌ Deny ]**: Hook returns `{ "decision": "deny", "reason": "Action denied by administrator" }`. AGY feeds denial back to LLM context to adapt without aborting the session.
 - **[ 🛑 Force Kill Agent ]**: Gateway immediately terminates the subprocess tree and unlocks the session.
 - **Auto-Deny Timeout (60s):** If no button is clicked within 60s, the action is automatically rejected.
+
+### 6.2. Session-Lifecycle Grant Management & Hard Guardrail Invariance
+Session grants are bound strictly to the lifetime of the active session rather than relying on arbitrary TTL timers:
+1. **Lifecycle Invalidation Triggers:**
+   - Explicit session resets or conversation changes (`/reset`, `/new`, `/clear`, `/c switch`).
+   - Agent switches (`/a use <agent>`) and project switches (`/p use <project>`).
+   - Ephemeral background tasks and scheduled turns conclude (`defer SecurityManager.ClearSessionGrants(sessionKey)`).
+2. **Hard Guardrail Invariance:**
+   - Inviolable system protections (e.g. anti-self-escalation, gateway database `agyent.db` protection, `pkill agyent`, forbidden root paths) are evaluated *prior* to checking session grants.
+   - Even when wildcard `*` (`Allow All (Session)`) is active, hard guardrail violations remain strictly blocked (`DecisionDeny`).
+
+### 6.3. Delegated Principals & Quality Assertions for Scheduled/Background Tasks
+1. **Delegated Principal:**
+   - Scheduled tasks run with `domain.PrincipalUser` inheriting the creator's identity (`Provider: task.Channel`, `SubjectID: task.CreatedBy`, `AccountID: task.AgentName`).
+   - Session keys are channel-routable (e.g. `telegram:8220274185`), allowing HITL approval cards triggered during scheduled runs to be delivered directly to the creator's chat.
+2. **Quality Assertions against False-Positive Completion:**
+   - `TaskExecutor` asserts that background runs produce non-empty outputs and do not contain soft-deny refusal patterns (e.g. `"I cannot fulfill this request"`, `"Permission denied"`).
+   - For image or multimedia generation tasks, the executor enforces artifact existence checks before marking the scheduled run as `COMPLETED`.
 
 ---
 
@@ -247,7 +267,7 @@ Each agent is provisioned with a baseline `security_preset` stored in SQLite (`a
 
 ---
 
-## 6.3. Security Slash Commands Reference
+### 6.4. Security Slash Commands Reference
 
 | Slash Command | Description | Permission | Example Usage |
 | :--- | :--- | :--- | :--- |

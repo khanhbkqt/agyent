@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ type TaskExecutor struct {
 	cfg              *config.Config
 	runner           ports.RunnerPort
 	executionService ports.ExecutionServicePort
+	securityManager  ports.SecurityManagerPort
 	workspace        ports.WorkspacePort
 	eventBus         ports.EventBusPort
 	logger           *slog.Logger
@@ -47,12 +49,32 @@ func (e *TaskExecutor) SetExecutionService(svc ports.ExecutionServicePort) {
 	e.executionService = svc
 }
 
+// SetSecurityManager injects the security manager into the TaskExecutor.
+func (e *TaskExecutor) SetSecurityManager(sec ports.SecurityManagerPort) {
+	e.securityManager = sec
+}
+
 // ExecuteSchedule runs a single scheduled task in an isolated, non-blocking session turn.
 func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.ScheduleTask) (*domain.ExecutionResult, error) {
 	agentWS := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, task.AgentName)
+
+	// Build or preserve a channel-routable session key so HITL can deliver approval cards to the interactive channel
 	sessionKey := task.TargetSessionKey
-	if sessionKey == "" {
-		sessionKey = fmt.Sprintf("sched:%s:%s", task.AgentName, task.ID)
+	if sessionKey == "" || strings.HasPrefix(sessionKey, "sched:") {
+		if task.Channel != "" && task.ChatID != "" {
+			var threadID int64
+			if task.ThreadID != "" {
+				threadID, _ = strconv.ParseInt(task.ThreadID, 10, 64)
+			}
+			sessionKey = domain.FormatSessionKey(task.Channel, task.ChatID, threadID)
+		} else {
+			sessionKey = fmt.Sprintf("sched:%s:%s", task.AgentName, task.ID)
+		}
+	}
+
+	// Invalidate session grants when the background turn execution finishes
+	if e.securityManager != nil {
+		defer e.securityManager.ClearSessionGrants(sessionKey)
 	}
 
 	timeout := 1800 * time.Second
@@ -108,10 +130,21 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	var execErr error
 
 	if e.executionService != nil {
-		principal := domain.Principal{
-			Kind:      domain.PrincipalSystem,
-			Provider:  "internal",
-			SubjectID: "system:scheduler",
+		// Delegated User Principal: Inherit identity of task creator + agent persona
+		var principal domain.Principal
+		if task.CreatedBy != "" && task.CreatedBy != "system" {
+			principal = domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  task.Channel,
+				SubjectID: task.CreatedBy,
+				AccountID: task.AgentName,
+			}
+		} else {
+			principal = domain.Principal{
+				Kind:      domain.PrincipalSystem,
+				Provider:  "internal",
+				SubjectID: "system:scheduler",
+			}
 		}
 		result, execErr = e.executionService.ExecuteTurn(ctx, principal, req, sessionKey, false)
 	} else if e.runner != nil {
@@ -125,6 +158,23 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		}
 	} else {
 		execErr = fmt.Errorf("runner and execution service ports are not initialized")
+	}
+
+	// Quality Assertion: Validate output integrity and guard against false positive completion
+	if execErr == nil && result != nil && result.Success {
+		trimmed := strings.TrimSpace(result.ResponseText)
+		if trimmed == "" {
+			result.Success = false
+			result.Error = "scheduled task completed with empty output"
+		} else if isSoftDenyResponse(trimmed) {
+			result.Success = false
+			result.Error = fmt.Sprintf("scheduled task was blocked by security gate: %s", truncateText(trimmed, 150))
+		} else if isImageOrMediaTask(task.Title, task.Prompt) {
+			if len(result.Artifacts) == 0 && !containsImageMarkdown(trimmed) {
+				result.Success = false
+				result.Error = "multimedia generation task finished without producing media artifacts or image links"
+			}
+		}
 	}
 
 	// Publish completion or failure event to EventBus
@@ -167,9 +217,23 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 // ExecuteHeartbeat runs an agent's periodic heartbeat directives.
 func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.HeartbeatConfig) (*domain.ExecutionResult, error) {
 	agentWS := config.ResolveAgentWorkspace(e.cfg.Storage.AgentsDir, hb.AgentName)
+
 	sessionKey := hb.TargetSessionKey
-	if sessionKey == "" {
-		sessionKey = fmt.Sprintf("heartbeat:%s", hb.AgentName)
+	if sessionKey == "" || strings.HasPrefix(sessionKey, "hb:") || strings.HasPrefix(sessionKey, "heartbeat:") {
+		if hb.Channel != "" && hb.ChatID != "" {
+			var threadID int64
+			if hb.ThreadID != "" {
+				threadID, _ = strconv.ParseInt(hb.ThreadID, 10, 64)
+			}
+			sessionKey = domain.FormatSessionKey(hb.Channel, hb.ChatID, threadID)
+		} else {
+			sessionKey = fmt.Sprintf("heartbeat:%s", hb.AgentName)
+		}
+	}
+
+	// Invalidate session grants when the background turn execution finishes
+	if e.securityManager != nil {
+		defer e.securityManager.ClearSessionGrants(sessionKey)
 	}
 
 	var promptDirectives string
@@ -230,6 +294,7 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 			Kind:      domain.PrincipalSystem,
 			Provider:  "internal",
 			SubjectID: "system:heartbeat",
+			AccountID: hb.AgentName,
 		}
 		result, execErr = e.executionService.ExecuteTurn(ctx, principal, req, sessionKey, false)
 	} else if e.runner != nil {
@@ -242,6 +307,15 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		}
 	} else {
 		execErr = fmt.Errorf("runner and execution service ports are not initialized")
+	}
+
+	// Quality Assertion: Validate output integrity for heartbeat
+	if execErr == nil && result != nil && result.Success {
+		trimmed := strings.TrimSpace(result.ResponseText)
+		if isSoftDenyResponse(trimmed) {
+			result.Success = false
+			result.Error = fmt.Sprintf("heartbeat check was blocked by security gate: %s", truncateText(trimmed, 150))
+		}
 	}
 
 	// Publish heartbeat event to EventBus
@@ -379,3 +453,29 @@ func isImageOrMediaTask(title, prompt string) bool {
 	}
 	return false
 }
+
+func isSoftDenyResponse(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "soft-denying") ||
+		strings.Contains(lower, "action rejected by user") ||
+		strings.Contains(lower, "user denied permission") ||
+		strings.Contains(lower, "permission check failed") ||
+		strings.Contains(lower, "[security gate]: action rejected")
+}
+
+func containsImageMarkdown(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(text, "![") ||
+		strings.Contains(lower, ".png") ||
+		strings.Contains(lower, ".jpg") ||
+		strings.Contains(lower, ".jpeg") ||
+		strings.Contains(lower, ".webp")
+}
+
+func truncateText(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+

@@ -84,6 +84,15 @@ func (s *Scheduler) SetExecutionService(svc ports.ExecutionServicePort) {
 	}
 }
 
+// SetSecurityManager injects the security manager into the scheduler executor.
+func (s *Scheduler) SetSecurityManager(sec ports.SecurityManagerPort) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executor != nil {
+		s.executor.SetSecurityManager(sec)
+	}
+}
+
 // Start launches the background scheduler poller loop.
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.mu.Lock()

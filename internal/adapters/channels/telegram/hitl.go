@@ -117,7 +117,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 
 	// Format interactive Telegram card
 	cardText := h.formatCardText(req)
-	keyboard := h.buildInlineKeyboard(req.RequestID)
+	keyboard := h.buildInlineKeyboard(req)
 
 	if targetBot != nil {
 		opts := &gotgbot.SendMessageOpts{
@@ -271,7 +271,7 @@ func (h *HITLCoordinator) HandleCallbackWithBot(ctx context.Context, callbackID 
 		return nil
 	}
 
-	approved := act == "allow_once" || act == "allow_session"
+	approved := act == domain.ActionAllowOnce || act == domain.ActionAllowSession || act == domain.ActionAllowAllSession || act == "allow_once" || act == "allow_session" || act == "allow_all_session"
 	decision := domain.ApprovalDecision{
 		RequestID: reqID,
 		UserID:    userID,
@@ -380,27 +380,41 @@ func (h *HITLCoordinator) formatCardText(req domain.ApprovalRequest) string {
 	return sb.String()
 }
 
-func (h *HITLCoordinator) buildInlineKeyboard(reqID string) gotgbot.InlineKeyboardMarkup {
+func (h *HITLCoordinator) buildInlineKeyboard(req domain.ApprovalRequest) gotgbot.InlineKeyboardMarkup {
+	cmdLabel := "🛡️ Allow Command"
+	if req.CommandLine != "" {
+		baseCmd := domain.ExtractBaseCommand(req.CommandLine)
+		if baseCmd != "" {
+			cmdLabel = fmt.Sprintf("🛡️ Allow Command (%s)", baseCmd)
+		}
+	}
+
 	return gotgbot.InlineKeyboardMarkup{
 		InlineKeyboard: [][]gotgbot.InlineKeyboardButton{
 			{
 				{
 					Text:         "✅ Allow Once",
-					CallbackData: fmt.Sprintf("hitl:%s:allow_once", reqID),
+					CallbackData: fmt.Sprintf("hitl:%s:allow_once", req.RequestID),
 				},
 				{
-					Text:         "🛡️ Allow for Session",
-					CallbackData: fmt.Sprintf("hitl:%s:allow_session", reqID),
+					Text:         cmdLabel,
+					CallbackData: fmt.Sprintf("hitl:%s:allow_session", req.RequestID),
 				},
 			},
 			{
 				{
-					Text:         "❌ Deny",
-					CallbackData: fmt.Sprintf("hitl:%s:deny", reqID),
+					Text:         "🔓 Allow All (Session)",
+					CallbackData: fmt.Sprintf("hitl:%s:allow_all_session", req.RequestID),
 				},
 				{
+					Text:         "❌ Deny",
+					CallbackData: fmt.Sprintf("hitl:%s:deny", req.RequestID),
+				},
+			},
+			{
+				{
 					Text:         "🛑 Force Kill Agent",
-					CallbackData: fmt.Sprintf("hitl:%s:force_kill", reqID),
+					CallbackData: fmt.Sprintf("hitl:%s:force_kill", req.RequestID),
 				},
 			},
 		},
@@ -420,8 +434,10 @@ func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.Ap
 	switch dec.Action {
 	case "allow_once":
 		statusText = "✅ **APPROVED (ONE-TIME)**"
+	case "allow_all_session":
+		statusText = "🔓 **APPROVED ALL ACTIONS FOR SESSION**"
 	case "allow_session":
-		statusText = "🛡️ **APPROVED FOR ENTIRE SESSION**"
+		statusText = "🛡️ **APPROVED COMMAND FOR SESSION**"
 	case "deny":
 		statusText = "❌ **DENIED BY ADMINISTRATOR**"
 	case "force_kill":

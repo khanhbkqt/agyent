@@ -581,3 +581,103 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "allow", resp3.Decision, "Real IPC call for strict agent with whitelisted cmd must return allow")
 }
+
+func TestExtractBaseCommand(t *testing.T) {
+	assert.Equal(t, "python3", ExtractBaseCommand("python3 scripts/radar.py --page 1"))
+	assert.Equal(t, "python3", ExtractBaseCommand("/usr/bin/python3 -c \"import camoufox; print(1)\""))
+	assert.Equal(t, "node", ExtractBaseCommand("ENV_VAR=test /opt/homebrew/bin/node index.js"))
+	assert.Equal(t, "git", ExtractBaseCommand("git.exe commit -m 'test'"))
+	assert.Equal(t, "curl", ExtractBaseCommand("curl -s https://example.com"))
+	assert.Equal(t, "", ExtractBaseCommand(""))
+}
+
+func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+	sessionKey := "telegram:123:456:0:wife_assistant"
+
+	// 1. Initial sensitive command triggers HITL
+	hitlCalls := 0
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalls++
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowSession}, nil
+	}
+
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": `python3 -c "import camoufox; print('page 1')"`},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 1, hitlCalls)
+
+	// 2. Next command with DIFFERENT arguments uses the base command session grant ('python3') without triggering HITL
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": `python3 -c "import camoufox; print('page 2')"`},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 1, hitlCalls, "Should reuse base command session grant without asking user again")
+
+	// 3. Different binary ('curl') still triggers HITL
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalls++
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowAllSession}, nil
+	}
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "curl -s https://api.etsy.com/v3"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 2, hitlCalls)
+
+	// 4. Wildcard '*' grant from AllowAllSession allows any subsequent tool/command
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "pip install requests"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 2, hitlCalls, "Wildcard grant must allow subsequent commands without HITL")
+
+	// 5. Inviolable Hard Guardrails check: Self-escalation and destructive commands are STILL BLOCKED despite wildcard grant!
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "rm -rf /"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Destructive commands must remain denied despite wildcard grant")
+
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "pkill agyent"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Self-escalation tampering must remain denied despite wildcard grant")
+
+	// 6. Test ClearSessionGrants: Invalidation clears all grants for the session
+	mgr.ClearSessionGrants(sessionKey)
+
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalls++
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowOnce}, nil
+	}
+
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": `python3 -c "import camoufox"`},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 3, hitlCalls, "After ClearSessionGrants, sensitive command must trigger HITL again")
+}

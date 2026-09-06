@@ -33,7 +33,23 @@ func isSelfEscalationCommand(cmd string) bool {
 
 type sessionGrant struct {
 	pattern   string
-	expiresAt time.Time
+	grantedAt time.Time
+}
+
+// ExtractBaseCommand extracts the primary binary/executable name from a command line string.
+func ExtractBaseCommand(rawCmd string) string {
+	return domain.ExtractBaseCommand(rawCmd)
+}
+
+func isBaseCommandMatch(cmd string, pattern string) bool {
+	if pattern == "" || pattern == "*" {
+		return false
+	}
+	cmdBase := domain.ExtractBaseCommand(cmd)
+	if cmdBase != "" && strings.EqualFold(cmdBase, pattern) {
+		return true
+	}
+	return false
 }
 
 type presetEvaluators struct {
@@ -343,9 +359,16 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			}, nil
 		}
 
-		// If user selected "Allow for Session" -> Grant temporary permission
-		if appDecision.Action == "allow_session" && appReq.CommandLine != "" {
-			m.GrantSessionPermission(sessionKey, appReq.CommandLine)
+		// Multi-tier Session Grant Handling:
+		if appDecision.Action == domain.ActionAllowAllSession {
+			m.GrantSessionPermission(sessionKey, "*")
+		} else if appDecision.Action == domain.ActionAllowSession && appReq.CommandLine != "" {
+			baseCmd := ExtractBaseCommand(appReq.CommandLine)
+			if baseCmd != "" {
+				m.GrantSessionPermission(sessionKey, baseCmd)
+			} else {
+				m.GrantSessionPermission(sessionKey, appReq.CommandLine)
+			}
 		}
 
 		m.recordApproved()
@@ -389,7 +412,7 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}, nil
 	}
 
-	// 1.5. Check Anti-Self-Escalation & Gateway Tampering (Forbidden across all managed presets)
+	// 1.5. Check Anti-Self-Escalation & Gateway Tampering (Forbidden across all managed presets - Inviolable Hard Guardrail)
 	if isSelfEscalationCommand(cmd) {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
@@ -397,7 +420,7 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}, nil
 	}
 
-	// 2. Check Blacklist Patterns
+	// 2. Check Blacklist Patterns (Inviolable Hard Guardrail)
 	for _, bl := range bundle.blacklistPatterns {
 		if bl.MatchString(cmd) {
 			return domain.SecurityDecision{
@@ -407,20 +430,17 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		}
 	}
 
-	// 3. Check in-memory session grants
+	// 3. Check in-memory session grants (Valid for the entire duration of the active session)
 	m.mu.RLock()
 	grants, hasGrants := m.sessionGrants[sessionKey]
 	m.mu.RUnlock()
 	if hasGrants {
-		now := time.Now()
 		for _, g := range grants {
-			if g.expiresAt.After(now) {
-				if g.pattern == "*" || cmd == g.pattern || strings.HasPrefix(cmd, g.pattern+" ") {
-					return domain.SecurityDecision{
-						Decision: domain.DecisionAllow,
-						Reason:   "Allowed by active session permission grant",
-					}, nil
-				}
+			if g.pattern == "*" || cmd == g.pattern || strings.HasPrefix(cmd, g.pattern+" ") || isBaseCommandMatch(cmd, g.pattern) {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionAllow,
+					Reason:   fmt.Sprintf("Allowed by active session permission grant (%s)", g.pattern),
+				}, nil
 			}
 		}
 	}
@@ -489,16 +509,34 @@ func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, outpu
 	return bundle.sanitizerEval.RedactSecrets(output), nil
 }
 
-// GrantSessionPermission adds a temporary permission grant.
+// GrantSessionPermission adds a permission grant to the session cache for the active session.
 func (m *Manager) GrantSessionPermission(sessionKey string, pattern string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.sessionGrants[sessionKey] = append(m.sessionGrants[sessionKey], sessionGrant{
 		pattern:   pattern,
-		expiresAt: time.Now().Add(15 * time.Minute),
+		grantedAt: time.Now(),
 	})
-	m.logger.Info("Granted temporary session permission", "session", sessionKey, "pattern", pattern)
+	m.logger.Info("Granted session permission", "session", sessionKey, "pattern", pattern)
+}
+
+// ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
+func (m *Manager) ClearSessionGrants(sessionKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.sessionGrants, sessionKey)
+	m.logger.Info("Cleared all session grants", "session", sessionKey)
+}
+
+// ClearAllSessionGrants flushes all cached session grants.
+func (m *Manager) ClearAllSessionGrants() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.sessionGrants = make(map[string][]sessionGrant)
+	m.logger.Info("Cleared all cached session grants across all sessions")
 }
 
 // SetPreset dynamically updates the default fallback preset.

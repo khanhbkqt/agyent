@@ -35,8 +35,14 @@ type SecurityManagerPort interface {
 	// SanitizeToolOutput inspects external tool outputs (web, file, shell) for sensitive secrets and indirect injections.
 	SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error)
 
-	// GrantSessionPermission adds a temporary permission grant to the session cache.
+	// GrantSessionPermission adds a permission grant to the session cache.
 	GrantSessionPermission(sessionKey string, pattern string)
+
+	// ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
+	ClearSessionGrants(sessionKey string)
+
+	// ClearAllSessionGrants flushes all cached session grants.
+	ClearAllSessionGrants()
 
 	// SetPreset switches the active security preset.
 	SetPreset(preset domain.SecurityPreset)

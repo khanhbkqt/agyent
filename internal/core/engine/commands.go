@@ -239,6 +239,9 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 				})
 			}
 			session.ResetActiveConversationID()
+			if e.securityManager != nil {
+				e.securityManager.ClearSessionGrants(sessionKey)
+			}
 			if err := e.storage.SaveSession(ctx, session); err != nil {
 				responseText = fmt.Sprintf("⚠️ Failed to reset conversation context: %v", err)
 			} else {
@@ -1432,6 +1435,9 @@ func (e *Engine) switchProject(ctx context.Context, session *domain.Session, pro
 	}
 
 	session.ActiveProject = proj.ProjectName
+	if e.securityManager != nil {
+		e.securityManager.ClearSessionGrants(session.SessionKey)
+	}
 
 	// Restore latest conversation for the target project
 	latest, _, err := e.storage.ListRecentConversations(ctx, session.SessionKey, session.ActiveAgent, proj.ProjectName, 1, 0)
@@ -1656,6 +1662,9 @@ func (e *Engine) handleNewConversationCommand(ctx context.Context, session *doma
 	}
 
 	session.ResetActiveConversationID()
+	if e.securityManager != nil {
+		e.securityManager.ClearSessionGrants(session.SessionKey)
+	}
 	if err := e.storage.SaveSession(ctx, session); err != nil {
 		return fmt.Sprintf("⚠️ Failed to initialize new conversation: %v", err)
 	}
@@ -1714,6 +1723,9 @@ func (e *Engine) handleSwitchConversationCommand(ctx context.Context, session *d
 	}
 
 	session.SetActiveConversationID(targetConv.ID)
+	if e.securityManager != nil {
+		e.securityManager.ClearSessionGrants(session.SessionKey)
+	}
 	if err := e.storage.SaveSession(ctx, session); err != nil {
 		return fmt.Sprintf("⚠️ Failed to switch conversation: %v", err)
 	}

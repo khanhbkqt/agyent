@@ -1,8 +1,32 @@
 package domain
 
 import (
+	"path/filepath"
+	"strings"
 	"time"
 )
+
+// ExtractBaseCommand extracts the primary binary/executable name from a command line string.
+func ExtractBaseCommand(rawCmd string) string {
+	trimmed := strings.TrimSpace(rawCmd)
+	if trimmed == "" {
+		return ""
+	}
+	fields := strings.Fields(trimmed)
+	for _, f := range fields {
+		// Skip leading environment variable assignments (e.g. FOO=bar python3 ...)
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "./") && !strings.HasPrefix(f, "/") && !strings.HasPrefix(f, `\`) {
+			continue
+		}
+		base := filepath.Base(f)
+		base = strings.TrimSuffix(base, ".exe")
+		return base
+	}
+	if len(fields) > 0 {
+		return filepath.Base(fields[0])
+	}
+	return ""
+}
 
 // SecurityPreset defines predefined zero-config security postures.
 type SecurityPreset string
@@ -143,11 +167,21 @@ type ApprovalRequest struct {
 	ResponseChan chan ApprovalDecision `json:"-"`
 }
 
+// Approval action constants.
+const (
+	ActionAllowOnce       = "allow_once"
+	ActionAllowSession    = "allow_session"
+	ActionAllowAllSession = "allow_all_session"
+	ActionDeny            = "deny"
+	ActionForceKill       = "force_kill"
+	ActionTimeout         = "timeout"
+)
+
 // ApprovalDecision represents the user's action on an interactive HITL approval card.
 type ApprovalDecision struct {
 	RequestID string    `json:"request_id"`
 	UserID    int64     `json:"user_id"`
-	Action    string    `json:"action"` // "allow_once", "allow_session", "deny", "force_kill"
+	Action    string    `json:"action"` // "allow_once", "allow_session", "allow_all_session", "deny", "force_kill"
 	Approved  bool      `json:"approved"`
 	Pattern   string    `json:"pattern,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
