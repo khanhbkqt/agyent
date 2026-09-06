@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.30] - 2026-09-06
+
+### Fixed
+- **Zalo Polling Ingress Dual Payload Support (`channels/zalo`):**
+  - Resolved `getUpdates` unmarshaling failure when Zalo Bot Platform returns a single JSON object envelope instead of an array.
+  - Dynamically inspects raw payload via `json.RawMessage`: unpacks single update object into `[]ZaloUpdate{update}` and unmarshals array directly into `[]ZaloUpdate`.
+
+---
+
 ## [1.0.29] - 2026-09-06
 
 ### Added
