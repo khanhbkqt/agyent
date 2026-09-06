@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.38] - 2026-09-06
+
+### Fixed
+- **Zalo Polling Deadlock, Dual-Format JSON Normalization & Transport Overhaul (`channels/zalo`):**
+  - **Dual Response Envelope Normalization:** Supported both Telegram-compatible (`ok`, `result`, `error_code`, `description`) and Zalo-native (`error`, `message`, `data`) API response envelopes with automatic normalization in `APIResponse.Normalize()`, preventing inbound message drop (`GetUpdates`) and response extraction failure on native payloads.
+  - **Idle Long-Polling Timeout Resolution:** Enhanced `IsTimeoutError` to recognize HTTP 408, JSON ErrorCode 408, native Zalo Error 408, `context.DeadlineExceeded`, and HTTP client timeouts, returning `[]ZaloUpdate{}` immediately without backoff delays.
+  - **Polling Loop & Backoff Hardening:** Eliminated exponential backoff loops on idle long-polling cycles and capped network backoff at 10s.
+  - **HTTP Transport Connection Pooling:** Configured `http.Client` with custom `http.Transport` (`MaxIdleConns: 10`, `IdleConnTimeout: 30s`, `DisableKeepAlives: false`) for long-polling stability.
+
+---
+
 ## [1.0.37] - 2026-09-06
 
 ### Fixed

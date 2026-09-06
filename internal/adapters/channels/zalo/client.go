@@ -90,12 +90,51 @@ type ZaloUpdate struct {
 	Event    string              `json:"event,omitempty"`
 }
 
-// APIResponse is the standard envelope returned by Zalo Bot Platform.
+// APIResponse is the standard envelope returned by Zalo Bot Platform, supporting
+// both Telegram-compatible (ok, result, error_code, description) and Zalo-native
+// (error, message, data) response structures.
 type APIResponse struct {
 	OK          bool            `json:"ok"`
 	Result      json.RawMessage `json:"result,omitempty"`
 	ErrorCode   int             `json:"error_code,omitempty"`
 	Description string          `json:"description,omitempty"`
+	Error       int             `json:"error,omitempty"`
+	Message     string          `json:"message,omitempty"`
+	Data        json.RawMessage `json:"data,omitempty"`
+}
+
+// Normalize harmonizes Telegram-style and Zalo-native envelope fields into canonical
+// OK, Result, ErrorCode, and Description values.
+func (r *APIResponse) Normalize() {
+	if r == nil {
+		return
+	}
+	// 1. Error code normalization:
+	if r.ErrorCode == 0 && r.Error != 0 {
+		r.ErrorCode = r.Error
+	}
+
+	// 2. Description normalization:
+	if r.Description == "" && r.Message != "" {
+		r.Description = r.Message
+	}
+
+	// 3. Payload normalization:
+	if len(r.Result) == 0 && len(r.Data) > 0 {
+		r.Result = r.Data
+	}
+
+	// 4. Success status normalization:
+	if r.ErrorCode != 0 || r.Error != 0 {
+		r.OK = false
+	} else if !r.OK {
+		// If neither Error nor ErrorCode is non-zero, infer success when data/result is present or message indicates success
+		if len(r.Result) > 0 || len(r.Data) > 0 ||
+			strings.EqualFold(r.Description, "success") || strings.EqualFold(r.Description, "ok") ||
+			strings.EqualFold(r.Message, "success") || strings.EqualFold(r.Message, "ok") {
+			r.OK = true
+		}
+	}
 }
 
 // APIError represents an error returned by the Zalo Bot Platform API or HTTP layer.
@@ -134,24 +173,32 @@ func (e *APIError) IsTimeout() bool {
 		return true
 	}
 	desc := strings.ToLower(e.Description)
-	if strings.Contains(desc, "request timeout") {
+	if strings.Contains(desc, "request timeout") || strings.Contains(desc, "timeout") {
 		return true
 	}
 	raw := strings.ToLower(e.RawBody)
-	return strings.Contains(raw, "408") && strings.Contains(raw, "request timeout")
+	return strings.Contains(raw, "408") || strings.Contains(raw, "request timeout")
 }
 
-// IsTimeoutError reports whether an error indicates an idle polling timeout from Zalo.
+// IsTimeoutError reports whether an error indicates an idle polling timeout or network timeout from Zalo.
 func IsTimeoutError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.IsTimeout()
 	}
 	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "408") || strings.Contains(errStr, "request timeout")
+	return strings.Contains(errStr, "408") ||
+		strings.Contains(errStr, "request timeout") ||
+		strings.Contains(errStr, "context deadline exceeded") ||
+		strings.Contains(errStr, "client.timeout exceeded") ||
+		strings.Contains(errStr, "timeout awaiting response headers") ||
+		strings.Contains(errStr, "i/o timeout")
 }
 
 
@@ -162,7 +209,7 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient creates a new Zalo Bot API client.
+// NewClient creates a new Zalo Bot API client with standard connection pooling.
 func NewClient(botToken, apiURL string, httpClient ...*http.Client) *Client {
 	baseURL := strings.TrimRight(apiURL, "/")
 	if baseURL == "" {
@@ -170,6 +217,11 @@ func NewClient(botToken, apiURL string, httpClient ...*http.Client) *Client {
 	}
 	client := &http.Client{
 		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:      10,
+			IdleConnTimeout:   30 * time.Second,
+			DisableKeepAlives: false,
+		},
 	}
 	if len(httpClient) > 0 && httpClient[0] != nil {
 		client = httpClient[0]
@@ -244,6 +296,7 @@ func (c *Client) executeRequest(ctx context.Context, method string, payload inte
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			var apiResp APIResponse
 			_ = json.Unmarshal(respBytes, &apiResp)
+			apiResp.Normalize()
 			desc := apiResp.Description
 			if desc == "" {
 				desc = string(respBytes)
@@ -260,6 +313,7 @@ func (c *Client) executeRequest(ctx context.Context, method string, payload inte
 		if err := json.Unmarshal(respBytes, &apiResp); err != nil {
 			return retry.Permanent(fmt.Errorf("failed to decode Zalo API envelope: %w (body: %s)", err, string(respBytes)))
 		}
+		apiResp.Normalize()
 
 		if !apiResp.OK && apiResp.ErrorCode != 0 {
 			// Specific retryable error codes from Zalo Bot Platform (e.g. rate limit / server busy)

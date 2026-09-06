@@ -304,5 +304,114 @@ func TestZaloClient_GetUpdates_408TimeoutReturnsEmptyUpdates(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, updates)
 	})
+
+	t.Run("HTTP 200 with Native Zalo JSON Error 408", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"error": 408, "message": "Request timeout", "data": null}`))
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("token", ts.URL, ts.Client())
+		updates, err := client.GetUpdates(context.Background(), 0, 50, 10)
+		require.NoError(t, err)
+		assert.Empty(t, updates)
+	})
 }
+
+func TestZaloClient_NativeZaloEnvelope_Success(t *testing.T) {
+	t.Run("GetMe with error:0 and data object", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/botnative-tok/getMe", r.URL.Path)
+			_, _ = w.Write([]byte(`{
+				"error": 0,
+				"message": "Success",
+				"data": {
+					"id": "987654321",
+					"name": "Native Zalo Bot",
+					"is_bot": true
+				}
+			}`))
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("native-tok", ts.URL, ts.Client())
+		user, err := client.GetMe(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "987654321", user.ID)
+		assert.Equal(t, "Native Zalo Bot", user.Name)
+	})
+
+	t.Run("SendMessage with error:0 and data object", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/botnative-tok/sendMessage", r.URL.Path)
+			_, _ = w.Write([]byte(`{
+				"error": 0,
+				"message": "Success",
+				"data": {
+					"message_id": "native-msg-123",
+					"text": "Sent successfully"
+				}
+			}`))
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("native-tok", ts.URL, ts.Client())
+		msg, err := client.SendMessage(context.Background(), zalo.SendMessageRequest{
+			ChatID: "c1",
+			Text:   "Hello",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "native-msg-123", msg.MessageID)
+	})
+
+	t.Run("GetUpdates with error:0 and data array", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/botnative-tok/getUpdates", r.URL.Path)
+			_, _ = w.Write([]byte(`{
+				"error": 0,
+				"message": "Success",
+				"data": [
+					{
+						"update_id": 501,
+						"message": {"message_id": "m501", "text": "update from native data"}
+					}
+				]
+			}`))
+		}))
+		defer ts.Close()
+
+		client := zalo.NewClient("native-tok", ts.URL, ts.Client())
+		updates, err := client.GetUpdates(context.Background(), 0, 50, 10)
+		require.NoError(t, err)
+		require.Len(t, updates, 1)
+		assert.Equal(t, int64(501), updates[0].UpdateID)
+		assert.Equal(t, "m501", updates[0].Message.MessageID)
+		assert.Equal(t, "update from native data", updates[0].Message.Text)
+	})
+}
+
+func TestZaloClient_NativeZaloEnvelope_Error(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"error": -32, "message": "limit call api"}`))
+	}))
+	defer ts.Close()
+
+	client := zalo.NewClient("token", ts.URL, ts.Client())
+	_, err := client.SendMessage(context.Background(), zalo.SendMessageRequest{
+		ChatID: "c1",
+		Text:   "Hi",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-32")
+	assert.Contains(t, err.Error(), "limit call api")
+}
+
+func TestIsTimeoutError_Variants(t *testing.T) {
+	assert.True(t, zalo.IsTimeoutError(context.DeadlineExceeded))
+	assert.True(t, zalo.IsTimeoutError(&zalo.APIError{StatusCode: 408}))
+	assert.True(t, zalo.IsTimeoutError(&zalo.APIError{ErrorCode: 408}))
+	assert.True(t, zalo.IsTimeoutError(&zalo.APIError{Description: "Request timeout"}))
+	assert.False(t, zalo.IsTimeoutError(assert.AnError))
+}
+
 

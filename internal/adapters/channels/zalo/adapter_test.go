@@ -506,6 +506,81 @@ func TestZaloAdapter_Polling_408TimeoutDoesNotBackoff(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestZaloAdapter_Polling_NativeZaloEnvelopeAndTimeout(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/botnative_poll/getMe" {
+			_, _ = w.Write([]byte(`{
+				"error": 0,
+				"message": "Success",
+				"data": {"id": "bot_native_poll", "name": "Native Poll Bot", "is_bot": true}
+			}`))
+			return
+		}
+
+		if r.URL.Path == "/botnative_poll/getUpdates" {
+			cur := attempts.Add(1)
+			if cur == 1 {
+				// 1st attempt: native Zalo 408 timeout
+				_, _ = w.Write([]byte(`{"error": 408, "message": "Request timeout", "data": null}`))
+				return
+			}
+			// 2nd attempt: native Zalo update delivery
+			_, _ = w.Write([]byte(`{
+				"error": 0,
+				"message": "Success",
+				"data": [
+					{
+						"update_id": 200,
+						"message": {
+							"message_id": "msg_native_200",
+							"from": {"id": "user_native", "name": "Native User"},
+							"chat": {"id": "chat_native", "type": "private"},
+							"date": 1724947200,
+							"text": "received via native Zalo envelope"
+						}
+					}
+				]
+			}`))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.BotToken = "native_poll"
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Mode = "polling"
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, nil)
+	require.NoError(t, err)
+
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	err = adapter.Start(ctx, inboundChan)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inboundChan:
+		elapsed := time.Since(start)
+		assert.Equal(t, "received via native Zalo envelope", msg.Text)
+		assert.Equal(t, "msg_native_200", msg.ID)
+		assert.Less(t, elapsed, 2*time.Second, "native polling should complete without backoff delay")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for message in native polling test")
+	}
+
+	err = adapter.Stop()
+	require.NoError(t, err)
+}
+
 func TestZaloAdapter_StreamingSupport_EventBus(t *testing.T) {
 	var mu sync.Mutex
 	var sentMessages []zalo.SendMessageRequest

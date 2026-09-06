@@ -67,7 +67,9 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
   ```
 - Outbound responses and actions retain the originating channel, chat, thread, and normalized bot identity. Agent-bound bot selection remains available for scheduled delivery.
 
-### 2.3 Resilient Networking & Exponential Backoff with Jitter
+### 2.3 Resilient Networking, Dual Envelopes & Connection Pooling
+- **Dual Response Envelope Normalization:** Supports both Telegram-compatible (`ok`, `result`, `error_code`, `description`) and Zalo-native (`error`, `message`, `data`) API response envelopes with automatic normalization.
+- **Connection Pooling Transport:** Dedicated `http.Transport` configured with `MaxIdleConns: 10`, `IdleConnTimeout: 30s`, and keepalives for reliable long-polling.
 - Integrated with `internal/core/retry`:
   - Automatically retries transient network interruptions, HTTP 429 (Rate Limit), and 5xx Server Errors.
   - Honors full jitter to eliminate thundering herd collisions against Zalo API endpoints.
