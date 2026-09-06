@@ -99,7 +99,11 @@ flowchart TB
   - Sanitizes and neutralizes Windows Reserved Device Names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`).
   - Blocks Alternate Data Streams (ADS) (`file.txt:hidden.exe`) and Device/UNC paths (`\\?\`, `\\.\`, `\\127.0.0.1\c$`).
 - **Inbound Media Jail Alignment:** Inbound attachments are safely relocated to `<workspaceDir>/uploads/` with auto-provisioned `.gitignore` (`*`), ensuring legitimate user uploads reside directly inside the active workspace boundary (`DecisionAllow`) without granting access outside the jail.
-- **Absolute Forbidden Blacklist:** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `<workspaceDir>/.agents/hooks.json` (prevents self-tampering), `C:\Windows`, and `/etc`.
+- **Three-Tier Security Boundary & Control Plane Protection:**
+  - **Tier 0 (Host Infrastructure):** Strictly forbids access to `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `C:\Windows`, and `/etc`.
+  - **Tier 1 (Gateway Daemon Control Plane):** Strictly protects `~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, and `<workspaceDir>/.agents/hooks.json` from unauthorized mutation, regardless of preset.
+  - **Tier 2 (Agent Cognitive & Workspace Data Plane):** Agent workspaces located under `~/.agyent/workspace/` or `~/.agyent/workspace-<agent>/` and persona files (`MEMORY.md`, `USER.md`, `SOUL.md`, `IDENTITY.md`, `HEARTBEAT.md`, `memory/*.md`) are recognized as mutable Data Plane resources and are fully writable by the agent within its admitted workspace.
+
 
 ### Checkpoint 3: Synchronous Pre-Execution Tool Interceptor (Native Hook)
 - **Lifecycle Hook Integration:** Connects Antigravity `PreToolUse` and `PostToolUse` hooks through the `agyent hook-bridge` CLI command.
@@ -332,7 +336,7 @@ security:
       - "~/.aws"
       - "~/.gnupg"
       - "~/.kube"
-      - "~/.gemini/config/hooks.json" # Immutable: prevents agent tampering with hooks
+      - "<workspaceDir>/.agents/hooks.json" # Immutable: prevents agent tampering with hooks
 
   # 4. Sub-Agent Governance
   subagents:
@@ -395,15 +399,6 @@ import (
 
 // SecurityManagerPort coordinates multi-layer tool interception, path jailing, and policy decisions.
 type SecurityManagerPort interface {
-    // RegisterActiveTurn registers per-turn security context (preset, agent, workspace) for active evaluation.
-    RegisterActiveTurn(turn domain.TurnSecurityContext)
-    
-    // UnregisterActiveTurn cleans up active turn security context upon turn completion.
-    UnregisterActiveTurn(conversationID string, workspaceDir string)
-    
-    // ResolveTurnContext looks up the active turn context for a given conversation and workspace.
-    ResolveTurnContext(conversationID string, workspaceDir string) (domain.TurnSecurityContext, bool)
-    
     // EvaluateToolCall evaluates any tool call synchronously intercepted by PreToolUse hook.
     EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error)
     
@@ -416,43 +411,67 @@ type SecurityManagerPort interface {
     // EvaluateURL verifies that destination URL does not target private IPs or cloud metadata (with DNS Rebinding protection).
     EvaluateURL(ctx context.Context, urlStr string) (domain.SecurityDecision, error)
     
-    // SanitizeToolOutput inspects external tool outputs (web, mcp) for indirect prompt injections.
+    // SanitizeToolOutput inspects external tool outputs (web, file, shell) for sensitive secrets and indirect injections.
     SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error)
 
-    // GrantSessionPermission adds a temporary permission grant to the session cache.
+    // GrantSessionPermission adds a permission grant to the session cache.
     GrantSessionPermission(sessionKey string, pattern string)
     
-    // AddWhitelistEntry adds a persistent whitelist command rule.
-    AddWhitelistEntry(cmd string)
+    // ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
+    ClearSessionGrants(sessionKey string)
     
-    // SetPreset switches the fallback security preset.
-    SetPreset(preset string)
+    // ClearAllSessionGrants flushes all cached session grants.
+    ClearAllSessionGrants()
+    
+    // SetPreset switches the active security preset.
+    SetPreset(preset domain.SecurityPreset)
+    
+    // SetRedactionMode switches the active secret redaction mode.
+    SetRedactionMode(mode domain.RedactionMode)
+    
+    // AddWhitelistEntry dynamically appends a custom command or path to the active whitelist.
+    AddWhitelistEntry(entry string)
     
     // GetDashboardSummary returns statistics for /security slash command.
     GetDashboardSummary(sessionKey string) domain.SecurityDashboard
-}
-```
 
-// HookIPCPort defines the IPC server interface used by the hook-bridge command.
-type HookIPCPort interface {
-    Start(ctx context.Context) error
-    Stop() error
-    HandleHookRequest(req domain.HookRequest) (domain.HookResponse, error)
+    // EnsureWorkspaceHooks guarantees that .agents/hooks.json is provisioned in the given workspace.
+    EnsureWorkspaceHooks(workspaceDir string) error
+
+    // RegisterActiveTurn registers the active sessionKey, preset, and workspace associated with a running turn.
+    RegisterActiveTurn(turn domain.TurnSecurityContext)
+
+    // UnregisterActiveTurn removes the active turn association when execution concludes.
+    UnregisterActiveTurn(convID string, workspaceDir string)
+
+    // UnregisterTurnByID removes the active turn association by its unique TurnID.
+    UnregisterTurnByID(turnID string)
+
+    // ResolveSessionKey retrieves the active sessionKey for a given conversationID or workspace.
+    ResolveSessionKey(convID string, workspaceDir string) string
+
+    // ResolveTurnContext retrieves the full active TurnSecurityContext for a given conversationID or workspace.
+    ResolveTurnContext(convID string, workspaceDir string) (domain.TurnSecurityContext, bool)
+
+    // ResolveTurnByID retrieves the active TurnSecurityContext directly by TurnID.
+    ResolveTurnByID(turnID string) (domain.TurnSecurityContext, bool)
+
+    // CancelSessionApprovals terminates all pending approval requests for a given session.
+    CancelSessionApprovals(sessionKey string)
 }
 
 // HITLApprovalPort coordinates interactive approval requests over communication channels.
 type HITLApprovalPort interface {
     // RequestApproval sends an interactive card and suspends execution until user action or timeout.
-    RequestApproval(ctx context.Context, req domain.ApprovalRequest) (bool, error)
+    RequestApproval(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error)
     
-    // HandleCallback processes channel approval callbacks with strict RBAC verification.
+    // HandleCallback processes inline keyboard clicks from Telegram/Discord with strict RBAC verification.
     HandleCallback(ctx context.Context, callbackID string, userID int64, action string) error
-}
 
-// TurnOrchestratorPort manages non-blocking turn state machines to prevent session deadlocks.
-type TurnOrchestratorPort interface {
-    Dispatch(ctx context.Context, msg domain.CanonicalMessage) error
-    ResumeWithHITL(ctx context.Context, sessionKey string, approved bool) error
-    CancelTurn(ctx context.Context, sessionKey string) error
+    // CancelPendingRequest terminates a pending approval request when the turn is aborted.
+    CancelPendingRequest(requestID string)
+
+    // CancelPendingRequestsForSession terminates all pending approval requests for a given session.
+    CancelPendingRequestsForSession(sessionKey string)
 }
 ```

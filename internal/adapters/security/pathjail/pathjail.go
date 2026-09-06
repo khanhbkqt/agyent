@@ -106,29 +106,27 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 	// 3. Resolve Symlinks and canonicalize target path
 	canonTarget := resolveSymlinksAndCanonicalize(absTarget)
 
-	// 4. Control-plane path protection: writing to .agents or .agyent anywhere (including within workspace) is strictly forbidden
+	// 4. Control-plane path protection: writing to security hooks or daemon database/config is strictly forbidden
 	if isWrite {
-		normTarget := strings.ToLower(filepath.ToSlash(filepath.Clean(canonTarget)))
-		if strings.Contains(normTarget, "/.agents/") || strings.HasSuffix(normTarget, "/.agents") ||
-			strings.Contains(normTarget, "/.agyent/") || strings.HasSuffix(normTarget, "/.agyent") {
-			return domain.SecurityDecision{
-				Decision: domain.DecisionDeny,
-				Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of control-plane path '%s' is strictly forbidden", targetPath),
-			}, nil
-		}
-	}
-
-	// 5. Absolute Forbidden Blacklist check
-	for _, forbidden := range e.forbiddenPaths {
-		if pathMatches(canonTarget, forbidden) {
-			// Check if this file is explicitly allowed under delegated agent config management
-			if allowDelegatedConfig && e.isManageable(canonTarget) {
+		if isForbidden, desc := isControlPlaneWriteForbidden(canonTarget); isForbidden {
+			// If target is in manageable files and delegated config is enabled (e.g. config.yaml in developer preset) -> Ask via HITL
+			if allowDelegatedConfig && e.isManageable(canonTarget) && !isHookConfigFile(canonTarget) && !isDaemonDatabaseFile(canonTarget) {
 				return domain.SecurityDecision{
 					Decision: domain.DecisionAsk,
 					Reason:   fmt.Sprintf("🛡️ [Security Gate]: Modification to protected configuration file '%s' requires user confirmation.", targetPath),
 				}, nil
 			}
 
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of %s ('%s') is strictly forbidden", desc, targetPath),
+			}, nil
+		}
+	}
+
+	// 5. Absolute Forbidden Blacklist check (Tier 0 Host Infrastructure)
+	for _, forbidden := range e.forbiddenPaths {
+		if pathMatches(canonTarget, forbidden) {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
 				Reason:   fmt.Sprintf("🛡️ [Path Jail]: Access strictly forbidden to protected path: '%s'", targetPath),
@@ -178,10 +176,11 @@ func (e *Evaluator) isManageable(canonPath string) bool {
 		if pathMatches(canonPath, m) {
 			return true
 		}
-		if mBase := filepath.Base(m); mBase == baseName {
+		mBase := filepath.Base(m)
+		if mBase == baseName {
 			return true
 		}
-		if matched, err := filepath.Match(strings.ToLower(m), strings.ToLower(baseName)); err == nil && matched {
+		if matched, err := filepath.Match(strings.ToLower(mBase), strings.ToLower(baseName)); err == nil && matched {
 			return true
 		}
 	}
@@ -240,4 +239,44 @@ func pathMatches(target, base string) bool {
 func (e *Evaluator) AllowedPaths() []string {
 	return append([]string(nil), e.allowedPaths...)
 }
+
+func isControlPlaneWriteForbidden(canonTarget string) (bool, string) {
+	norm := strings.ToLower(filepath.ToSlash(filepath.Clean(canonTarget)))
+
+	if isHookConfigFile(norm) {
+		return true, "security hook configuration"
+	}
+	if isDaemonDatabaseFile(norm) {
+		return true, "gateway database"
+	}
+	if isDaemonConfigFile(norm) {
+		return true, "gateway daemon configuration file"
+	}
+	return false, ""
+}
+
+func isHookConfigFile(normPath string) bool {
+	normPath = strings.ToLower(filepath.ToSlash(filepath.Clean(normPath)))
+	return strings.HasSuffix(normPath, "/.agents/hooks.json") ||
+		normPath == ".agents/hooks.json" ||
+		strings.HasSuffix(normPath, "/.gemini/config/hooks.json") ||
+		normPath == ".gemini/config/hooks.json"
+}
+
+func isDaemonDatabaseFile(normPath string) bool {
+	normPath = strings.ToLower(filepath.ToSlash(filepath.Clean(normPath)))
+	base := filepath.Base(normPath)
+	return base == "agyent.db" || strings.HasPrefix(base, "agyent.db-") || strings.HasPrefix(base, "agyent.db.")
+}
+
+func isDaemonConfigFile(normPath string) bool {
+	normPath = strings.ToLower(filepath.ToSlash(filepath.Clean(normPath)))
+	base := filepath.Base(normPath)
+	if base != "config.yaml" && base != "config.yml" && base != "config.json" {
+		return false
+	}
+	dir := strings.ToLower(filepath.ToSlash(filepath.Dir(normPath)))
+	return strings.HasSuffix(dir, "/.agyent") || dir == ".agyent" || dir == "~/.agyent"
+}
+
 

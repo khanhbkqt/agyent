@@ -27,7 +27,7 @@ import (
 var sensitiveCommandRegex = regexp.MustCompile(`(?i)\b(rm|del|erase|rmdir|rd|git\s+(push|reset|clean)|chmod|chown|sudo|icacls|takeown|curl|wget|nc|ncat|scp|ssh|docker\s+(run|exec|stop|rm)|npm\s+(publish|install\s+-g)|pip\s+install|cargo\s+install|go\s+install|python[0-9.]*\s+-[a-zA-Z]*c|node\s+-[a-zA-Z]*e|powershell|pwsh|cmd\.exe|taskkill|kill)\b`)
 
 // Self-escalation and gateway tampering command patterns (forbidden across all managed presets)
-var selfEscalationRegex = regexp.MustCompile(`(?i)(agyent(\.exe)?\s+(agent|agents|a|security|sec|guardrail|init|config)\b|\.agyent[/\\](agyent\.db|config\.yaml)|\bagyent\.db\b|\b(pkill|killall|taskkill)\s+.*agyent\b)`)
+var selfEscalationRegex = regexp.MustCompile(`(?i)(agyent(\.exe)?\s+(agent|agents|a|security|sec|guardrail|init|config)\b|\.agyent[/\\](agyent\.db([.-].*)?|config\.ya?ml|config\.json)|\bagyent\.db([.-].*)?\b|\.agents[/\\]hooks\.json|\.gemini[/\\]config|\b(pkill|killall|taskkill)\s+.*agyent\b)`)
 
 func isSelfEscalationCommand(cmd string) bool {
 	return selfEscalationRegex.MatchString(cmd)
@@ -797,6 +797,16 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 					}
 				}
 			}
+		}
+	}
+
+	// 2.7. Inviolable Hard Guardrail: Deep-scan command arguments and redirections for control-plane and sensitive paths
+	for _, pcmd := range parsedCmds {
+		if hasControlPlanePathReference(pcmd) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate - Control Plane Protection]: Command '%s' attempts to reference or mutate forbidden control-plane or system paths", pcmd.Raw),
+			}, nil
 		}
 	}
 

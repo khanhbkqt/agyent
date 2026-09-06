@@ -2,6 +2,7 @@ package security_test
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"agyent/internal/adapters/security"
@@ -143,12 +144,60 @@ func TestEvaluateParsedCommandPolicy(t *testing.T) {
 	})
 
 	t.Run("Control-plane file manipulation in commands is Denied", func(t *testing.T) {
-		for _, cmdStr := range []string{"chmod 777 .agents/hooks.json", "cat > .agents/hooks.json", "rm -rf ~/.gemini/config", "cp secret ~/.ssh/id_rsa"} {
+		for _, cmdStr := range []string{
+			"chmod 777 .agents/hooks.json",
+			"cat > .agents/hooks.json",
+			"rm -rf ~/.gemini/config",
+			"cp secret ~/.ssh/id_rsa",
+			"/bin/cat /etc/shadow",
+			"sqlite3 ~/.agyent/agyent.db 'SELECT * FROM users'",
+			"cat ~/.agyent/config.yaml",
+		} {
 			parsed := security.ParseCommandPipeline(cmdStr)
 			dec, err := security.EvaluateParsedCommandPolicy(parsed, cmdStr, domain.PresetWorkspaceOnly, sensitiveRe, blacklist, whitelist)
 			require.NoError(t, err)
-			assert.Equal(t, domain.DecisionDeny, dec.Decision, "Command %s should be denied due to control-plane path reference", cmdStr)
-			assert.Contains(t, dec.Reason, "Control Plane Protection")
+			assert.Equal(t, domain.DecisionDeny, dec.Decision, "Command %s should be denied", cmdStr)
+			isDenied := strings.Contains(dec.Reason, "Control Plane Protection") || strings.Contains(dec.Reason, "Privilege Escalation Blocked")
+			assert.True(t, isDenied, "Denial reason must indicate security gate block, got: %s", dec.Reason)
 		}
 	})
+
+	t.Run("Agent memory and workspace commands are Allowed", func(t *testing.T) {
+		for _, cmdStr := range []string{
+			"cat MEMORY.md",
+			"echo 'note' >> ~/.agyent/workspace/MEMORY.md",
+			"cat SOUL.md",
+			"cat USER.md",
+			"git log -n 5",
+			"ls -la ~/.agyent/workspace/src",
+		} {
+			parsed := security.ParseCommandPipeline(cmdStr)
+			dec, err := security.EvaluateParsedCommandPolicy(parsed, cmdStr, domain.PresetDeveloper, sensitiveRe, blacklist, whitelist)
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionAllow, dec.Decision, "Command %s should be allowed", cmdStr)
+		}
+	})
+
+	t.Run("Escaped quotes in pipeline and command substitution with parens", func(t *testing.T) {
+		// 1. Escaped quotes inside strings should not desynchronize pipeline parsing
+		raw := `echo "foo \" bar" && rm -rf /`
+		parsed := security.ParseCommandPipeline(raw)
+		require.Len(t, parsed, 2)
+		assert.Equal(t, `echo "foo \" bar"`, parsed[0].Raw)
+		assert.Equal(t, `rm -rf /`, parsed[1].Raw)
+
+		// 2. Command substitution with quoted parenthesis inside $(...)
+		subCmd := `$(python3 -c "print(')')" && whoami)`
+		parsedSubs := security.ParseCommandPipeline(subCmd)
+		require.NotEmpty(t, parsedSubs)
+
+		// 3. Direct script execution with leading environment variables
+		scriptCmd := `VAR=1 FOO=bar ./build.sh`
+		parsedScript := security.ParseCommandPipeline(scriptCmd)
+		require.Len(t, parsedScript, 1)
+		scripts := security.ExtractScriptFileReferences(parsedScript)
+		require.Contains(t, scripts, "./build.sh")
+	})
 }
+
+

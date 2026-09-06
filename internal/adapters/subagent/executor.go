@@ -229,6 +229,8 @@ func (e *taskExecutor) executeTurn(
 		"AGYENT_AGENT_NAME="+task.AgentName,
 		"AGYENT_PROJECT_NAME="+task.ProjectName,
 		"AGYENT_PROJECT_ID="+agyProjectID,
+		"AGYENT_AGENT_WORKSPACE="+workspaceDir,
+		"AGYENT_USER_ID="+task.TenantID,
 	)
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")

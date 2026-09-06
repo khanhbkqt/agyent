@@ -87,11 +87,38 @@ func extractCommandSubstitutions(input string) []string {
 			start := i + 2
 			depth := 1
 			j := start
+			inSingleQuote := false
+			inDoubleQuote := false
+			escaped := false
+
 			for j < n && depth > 0 {
-				if chars[j] == '(' {
-					depth++
-				} else if chars[j] == ')' {
-					depth--
+				r := chars[j]
+				if escaped {
+					escaped = false
+					j++
+					continue
+				}
+				if r == '\\' && !inSingleQuote {
+					escaped = true
+					j++
+					continue
+				}
+				if r == '\'' && !inDoubleQuote {
+					inSingleQuote = !inSingleQuote
+					j++
+					continue
+				}
+				if r == '"' && !inSingleQuote {
+					inDoubleQuote = !inDoubleQuote
+					j++
+					continue
+				}
+				if !inSingleQuote && !inDoubleQuote {
+					if r == '(' {
+						depth++
+					} else if r == ')' {
+						depth--
+					}
 				}
 				j++
 			}
@@ -165,12 +192,24 @@ func splitPipelineSegments(input string) []string {
 	inSingleQuote := false
 	inDoubleQuote := false
 	inBacktick := false
+	escaped := false
 
 	chars := []rune(input)
 	n := len(chars)
 
 	for i := 0; i < n; i++ {
 		r := chars[i]
+
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingleQuote {
+			escaped = true
+			current.WriteRune(r)
+			continue
+		}
 
 		if r == '\'' && !inDoubleQuote && !inBacktick {
 			inSingleQuote = !inSingleQuote
@@ -398,26 +437,27 @@ func isHostProcessEnumerationCommand(execName string) bool {
 	return false
 }
 
-func hasControlPlanePathReference(cmd ParsedCommand) bool {
-	forbiddenSubstrings := []string{
-		".agents", ".agyent", "hooks.json", "config.yaml", "agyent.db",
-		".gemini", "/etc/shadow", "/etc/passwd", "/etc/sudoers", "/private/etc",
-		".ssh", ".aws", ".kube", ".gnupg",
-	}
+var controlPlaneRegexPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(^|[/\\])\.agents[/\\]hooks\.json`),
+	regexp.MustCompile(`(?i)(^|[/\\])\.agyent[/\\](config\.ya?ml|config\.json|agyent\.db([.-].*)?$)`),
+	regexp.MustCompile(`(?i)\bagyent\.db([.-].*)?\b`),
+	regexp.MustCompile(`(?i)(^|[/\\])\.gemini[/\\]config`),
+	regexp.MustCompile(`(?i)(/private)?/etc/(shadow|passwd|sudoers)`),
+	regexp.MustCompile(`(?i)(^|[/\\])\.(ssh|aws|kube|gnupg)([/\\]|$)`),
+}
 
+func hasControlPlanePathReference(cmd ParsedCommand) bool {
 	// Check raw command line
-	rawLower := strings.ToLower(cmd.Raw)
-	for _, forbidden := range forbiddenSubstrings {
-		if strings.Contains(rawLower, forbidden) {
+	for _, p := range controlPlaneRegexPatterns {
+		if p.MatchString(cmd.Raw) {
 			return true
 		}
 	}
 
 	// Check all token arguments
 	for _, arg := range cmd.Args {
-		argLower := strings.ToLower(arg)
-		for _, forbidden := range forbiddenSubstrings {
-			if strings.Contains(argLower, forbidden) {
+		for _, p := range controlPlaneRegexPatterns {
+			if p.MatchString(arg) {
 				return true
 			}
 		}
@@ -447,12 +487,18 @@ func ExtractScriptFileReferences(parsedCmds []ParsedCommand) []string {
 				}
 			}
 		default:
-			// Check direct script invocation like ./script.sh or ./foo.py
-			if strings.HasPrefix(pcmd.Raw, "./") || strings.HasPrefix(pcmd.Raw, ".\\") || strings.HasSuffix(execLower, ".sh") || strings.HasSuffix(execLower, ".py") {
-				fields := strings.Fields(pcmd.Raw)
-				if len(fields) > 0 {
-					scripts = append(scripts, fields[0])
+			// Check direct script invocation like ./script.sh or ./foo.py or VAR=1 ./script.sh
+			tokens := tokenizeCommandArgs(pcmd.Raw)
+			for _, tok := range tokens {
+				if strings.Contains(tok, "=") && !strings.HasPrefix(tok, "./") && !strings.HasPrefix(tok, "/") && !strings.HasPrefix(tok, `\`) {
+					continue
 				}
+				if strings.HasPrefix(tok, "./") || strings.HasPrefix(tok, ".\\") || strings.HasPrefix(tok, "/") ||
+					strings.HasSuffix(strings.ToLower(tok), ".sh") || strings.HasSuffix(strings.ToLower(tok), ".py") ||
+					strings.HasSuffix(strings.ToLower(tok), ".js") || strings.HasSuffix(strings.ToLower(tok), ".ts") {
+					scripts = append(scripts, tok)
+				}
+				break
 			}
 		}
 	}

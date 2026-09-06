@@ -850,3 +850,33 @@ print("Hello from workspace agent!")
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAllow, dec.Decision)
 }
+
+func TestSecurityManager_SessionGrantCannotBypassControlPlaneProtection(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+
+	sessionKey := "telegram:test-session-grants"
+	// Grant permission for "cat"
+	mgr.GrantSessionPermission(sessionKey, "cat")
+
+	// 1. Normal cat command within workspace -> Allowed by session grant
+	dec, err := mgr.EvaluateCommand(ctx, sessionKey, "developer", "cat MEMORY.md")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 2. cat targeting control plane paths (e.g. /etc/shadow or .agents/hooks.json or ~/.ssh/id_rsa) -> MUST BE DENIED!
+	for _, evilCmd := range []string{
+		"cat /etc/shadow",
+		"cat ~/.ssh/id_rsa",
+		"cat .agents/hooks.json",
+		"cat ~/.agyent/config.yaml",
+	} {
+		dec, err = mgr.EvaluateCommand(ctx, sessionKey, "developer", evilCmd)
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, dec.Decision, "Command '%s' must be denied despite session grant", evilCmd)
+		assert.True(t, dec.Decision == domain.DecisionDeny)
+	}
+}
+

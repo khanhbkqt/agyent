@@ -5,6 +5,18 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.44] - 2026-09-06
+
+### Fixed
+- **Three-Tier Security Boundary & Agent Memory Mutation (`security/pathjail`, `security/command_policy`, `security/manager`):**
+  - **Differentiated Control Plane from Cognitive Data Plane:** Replaced overbroad blanket substring checks (`/.agyent/`) with targeted control-plane canonical path resolution. Restored agent autonomy to write to `MEMORY.md`, `USER.md`, `SOUL.md`, `IDENTITY.md`, and workspace files under `~/.agyent/workspace/` without triggering false-positive `[Path Jail - Control Plane Protection]` denials.
+  - **Inviolable Control Plane Defense-in-Depth:** Enforced strict write protection on true control-plane assets (`~/.agyent/config.yaml`, `~/.agyent/agyent.db*`, `<workspaceDir>/.agents/hooks.json`, `/etc/shadow`, `~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`) across all security presets.
+  - **Session Grant Pre-Execution Ordering:** Prioritized deep-scan `hasControlPlanePathReference` checks before session grant lookups in `manager.go`, preventing permission grants from bypassing control-plane and sensitive path protection.
+  - **Cross-Platform Path & Command AST Normalization:** Normalized directory separators via `filepath.ToSlash` in Windows daemon config path checks, supported glob patterns in `isManageable`, and handled escaped quotes and quoted parentheses in shell pipeline segment splitting and command substitutions.
+  - **Subagent APIS-4D Identity Propagation:** Added `AGYENT_AGENT_WORKSPACE` and `AGYENT_USER_ID` environment variables to `subagent.taskExecutor`.
+
+---
+
 ## [1.0.43] - 2026-09-06
 
 ### Added
