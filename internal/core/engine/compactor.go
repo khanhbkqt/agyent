@@ -203,6 +203,9 @@ Scope: %s | Agent: %s%s`, session.ActiveAgent, session.ActiveProject, session.Ac
 		Mode:                       "plan",
 		Effort:                     "low",
 		DangerouslySkipPermissions: false,
+		AgentName:                  session.ActiveAgent,
+		ProjectName:                session.ActiveProject,
+		SessionKey:                 session.SessionKey,
 	}
 
 	var (

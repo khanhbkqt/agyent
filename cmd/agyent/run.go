@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -155,9 +156,9 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 			if ws != "" {
 				_, _ = securityAdapter.EnsureWorkspaceHooksProvisioned(ws, "", mainLogger)
 			}
-			_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-"+name, name, mainLogger)
+			_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-"+name, name, ws, mainLogger)
 		}
-		_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-agyent", "agyent", mainLogger)
+		_ = securityAdapter.EnsureAGYProjectProvisioned("agy-proj-agyent", "agyent", filepath.Join(cfg.Storage.AgentsDir, "workspace"), mainLogger)
 
 		// 2. Initialize Central EventBus
 		bus := eventbus.NewEventBus(1024, 4)

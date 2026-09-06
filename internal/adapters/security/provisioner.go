@@ -201,8 +201,25 @@ func RemoveGlobalHooks(logger *slog.Logger) error {
 type AGYProjectConfig struct {
 	ID               string                 `json:"id"`
 	Name             string                 `json:"name"`
+	ProjectResources *AGYProjectResources   `json:"projectResources,omitempty"`
 	PermissionGrants AGYPermissionGrantsObj `json:"permissionGrants"`
+	Settings         *AGYProjectSettings    `json:"settings,omitempty"`
 	UpdatedAt        string                 `json:"updatedAt,omitempty"`
+	IsWorkspaceOnly  bool                   `json:"isWorkspaceOnly"`
+}
+
+type AGYProjectResources struct {
+	Resources []AGYResource `json:"resources"`
+}
+
+type AGYResource struct {
+	FolderURI string `json:"folderUri"`
+}
+
+type AGYProjectSettings struct {
+	FileAccessPolicy    string `json:"fileAccessPolicy"`
+	InternetPolicy      string `json:"internetPolicy"`
+	AutoExecutionPolicy string `json:"autoExecutionPolicy"`
 }
 
 // AGYPermissionGrantsObj wraps the nested permissionGrants object.
@@ -217,7 +234,7 @@ type AGYAllowList struct {
 
 // EnsureAGYProjectProvisioned guarantees that ~/.gemini/config/projects/<projectID>.json exists
 // with native AGY permission grants so that headless tool calls are admitted to the PreToolUse hook.
-func EnsureAGYProjectProvisioned(projectID, agentName string, logger *slog.Logger) error {
+func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -236,11 +253,16 @@ func EnsureAGYProjectProvisioned(projectID, agentName string, logger *slog.Logge
 
 	projFilePath := filepath.Join(projectsDir, fmt.Sprintf("%s.json", projectID))
 
-	// Check if already exists and has permissionGrants
+	// Check if already exists, has projectResources, settings, and full permission grants
 	if data, err := os.ReadFile(projFilePath); err == nil {
 		var cfg AGYProjectConfig
-		if err := json.Unmarshal(data, &cfg); err == nil && len(cfg.PermissionGrants.PermissionGrants.Allow) > 0 {
-			return nil
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			hasResources := cfg.ProjectResources != nil && len(cfg.ProjectResources.Resources) > 0
+			hasSettings := cfg.Settings != nil && cfg.Settings.AutoExecutionPolicy != ""
+			hasGrants := len(cfg.PermissionGrants.PermissionGrants.Allow) >= 10
+			if (workspaceDir == "" || hasResources) && hasSettings && hasGrants {
+				return nil
+			}
 		}
 	}
 
@@ -249,26 +271,65 @@ func EnsureAGYProjectProvisioned(projectID, agentName string, logger *slog.Logge
 		name = projectID
 	}
 
+	var res *AGYProjectResources
+	if workspaceDir != "" {
+		canonWS := filepath.Clean(workspaceDir)
+		res = &AGYProjectResources{
+			Resources: []AGYResource{
+				{
+					FolderURI: fmt.Sprintf("file://%s", canonWS),
+				},
+			},
+		}
+	}
+
 	projConfig := AGYProjectConfig{
-		ID:   projectID,
-		Name: name,
+		ID:               projectID,
+		Name:             name,
+		ProjectResources: res,
 		PermissionGrants: AGYPermissionGrantsObj{
 			PermissionGrants: AGYAllowList{
 				Allow: []string{
+					"command",
 					"command(*)",
+					"command(.*)",
+					"read_file",
 					"read_file(*)",
+					"read_file(.*)",
+					"write_file",
 					"write_file(*)",
+					"write_file(.*)",
+					"edit_file",
 					"edit_file(*)",
+					"edit_file(.*)",
+					"list_dir",
 					"list_dir(*)",
+					"list_dir(.*)",
+					"read_url",
 					"read_url(*)",
+					"read_url(.*)",
+					"view_file",
 					"view_file(*)",
+					"view_file(.*)",
+					"grep_search",
 					"grep_search(*)",
+					"grep_search(.*)",
+					"find_by_name",
 					"find_by_name(*)",
+					"find_by_name(.*)",
+					"generate_image",
 					"generate_image(*)",
+					"generate_image(.*)",
 				},
 			},
 		},
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Settings: &AGYProjectSettings{
+			FileAccessPolicy:    "AGENT_SETTING_POLICY_ALLOW",
+			InternetPolicy:      "AGENT_SETTING_POLICY_ALLOW",
+			AutoExecutionPolicy: "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER",
+		},
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		IsWorkspaceOnly: false,
 	}
 
 	data, err := json.MarshalIndent(projConfig, "", "  ")

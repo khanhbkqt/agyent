@@ -116,8 +116,16 @@ func (r *ReflectionEngine) Reflect(ctx context.Context, snapshot domain.Conversa
 		return r.heuristicFallbackReflection(snapshot), nil
 	}
 
+	agentName := snapshot.AgentName
+	if agentName == "" {
+		agentName = "agyent"
+	}
+
 	req := domain.ExecutionRequest{
 		Prompt:                     fullPrompt,
+		AgentName:                  agentName,
+		ProjectName:                snapshot.ProjectName,
+		SessionKey:                 snapshot.SessionKey,
 		WorkspaceDir:               snapshot.WorkspaceDir,
 		Timeout:                    r.timeout,
 		Effort:                     "medium",
