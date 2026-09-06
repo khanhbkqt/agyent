@@ -5,6 +5,16 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.47] - 2026-09-06
+
+### Fixed
+- **Inbound Media Caption & Description Unmarshaling (`channels/zalo`):**
+  - **Struct Unmarshaling:** Added `Caption` and `Description` JSON fields to `ZaloInboundMessage` and `ZaloAttachment` structs in `client.go`, preventing caption drops during webhook or polling update decoding.
+  - **Router Fallback Extraction:** Updated Zalo router to extract `rawText` with multi-level fallback: `msg.Text` -> `msg.Caption` -> `msg.Description` -> `attachment.Caption` -> `attachment.Description`.
+  - **AttachmentRef Caption Mapping:** Mapped extracted captions directly to `domain.InboundAttachmentRef.Caption` for rich multimodal prompt context.
+
+---
+
 ## [1.0.46] - 2026-09-06
 
 ### Fixed

@@ -65,11 +65,13 @@ type ZaloChat struct {
 
 // ZaloAttachment represents an attached photo, document, or audio.
 type ZaloAttachment struct {
-	Type     string `json:"type"` // "photo", "document", "sticker"
-	URL      string `json:"url,omitempty"`
-	FileID   string `json:"file_id,omitempty"`
-	FileName string `json:"file_name,omitempty"`
-	FileSize int64  `json:"file_size,omitempty"`
+	Type        string `json:"type"` // "photo", "document", "sticker"
+	URL         string `json:"url,omitempty"`
+	FileID      string `json:"file_id,omitempty"`
+	FileName    string `json:"file_name,omitempty"`
+	FileSize    int64  `json:"file_size,omitempty"`
+	Caption     string `json:"caption,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // ZaloInboundMessage represents an inbound message from Zalo Bot Platform.
@@ -79,6 +81,8 @@ type ZaloInboundMessage struct {
 	Chat        ZaloChat            `json:"chat"`
 	Date        int64               `json:"date"`
 	Text        string              `json:"text"`
+	Caption     string              `json:"caption,omitempty"`
+	Description string              `json:"description,omitempty"`
 	Attachments []ZaloAttachment    `json:"attachments,omitempty"`
 	ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message,omitempty"`
 }

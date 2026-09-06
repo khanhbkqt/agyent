@@ -125,7 +125,27 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 	}
 
-	text := strings.TrimSpace(msg.Text)
+	rawText := msg.Text
+	if strings.TrimSpace(rawText) == "" {
+		rawText = msg.Caption
+	}
+	if strings.TrimSpace(rawText) == "" {
+		rawText = msg.Description
+	}
+	if strings.TrimSpace(rawText) == "" && len(msg.Attachments) > 0 {
+		for _, att := range msg.Attachments {
+			if strings.TrimSpace(att.Caption) != "" {
+				rawText = att.Caption
+				break
+			}
+			if strings.TrimSpace(att.Description) != "" {
+				rawText = att.Description
+				break
+			}
+		}
+	}
+
+	text := strings.TrimSpace(rawText)
 	if strings.HasPrefix(text, "/approve") || strings.HasPrefix(text, "/deny") || strings.HasPrefix(text, "/kill") {
 		parts := strings.Fields(text)
 		if len(parts) >= 2 && r.hitl != nil {
@@ -155,7 +175,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	botID := ParseNumericID(botIDStr)
 	sessionKey := domain.FormatSessionKey("zalo", msg.Chat.ID, msg.Chat.ThreadID, botID)
 
-	cleanText, isMentioned := CleanZaloMention(msg.Text, botCtxObj)
+	cleanText, isMentioned := CleanZaloMention(rawText, botCtxObj)
 
 	r.mu.RLock()
 	authorizer := r.authorizer
@@ -198,6 +218,18 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 				fileName = fmt.Sprintf("doc_%d_%s", time.Now().Unix(), attachment.FileID)
 			}
 		}
+
+		caption := attachment.Caption
+		if caption == "" {
+			caption = attachment.Description
+		}
+		if caption == "" {
+			caption = msg.Caption
+		}
+		if caption == "" {
+			caption = msg.Description
+		}
+
 		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
 			Channel:  "zalo",
 			ID:       attachment.FileID,
@@ -206,6 +238,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			MIMEType: mimeType,
 			Size:     attachment.FileSize,
 			Type:     attachmentType,
+			Caption:  caption,
 			BotID:    botID,
 		})
 	}
@@ -234,7 +267,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			ThreadID: msg.Chat.ThreadID,
 		},
 		Text:           cleanText,
-		RawText:        msg.Text,
+		RawText:        rawText,
 		IsMentioned:    isMentioned,
 		AttachmentRefs: attachmentRefs,
 	}

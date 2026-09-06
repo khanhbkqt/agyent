@@ -394,3 +394,91 @@ func TestZaloRouter_AttachmentFilenameAndExtensionInference(t *testing.T) {
 		t.Fatal("expected canonical message with inferred attachment extensions")
 	}
 }
+
+func TestZaloRouter_CaptionAndDescriptionFallback(t *testing.T) {
+	cfg := &config.Config{}
+	inbound := make(chan domain.CanonicalMessage, 5)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
+
+	// Case 1: Inbound message has empty Text but has message-level Caption
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg-cap-1",
+			From:      zalo.ZaloUser{ID: "user-1"},
+			Chat:      zalo.ZaloChat{ID: "chat-1", Type: "private"},
+			Caption:   "Analyze this receipt",
+			Attachments: []zalo.ZaloAttachment{
+				{
+					Type:   "photo",
+					FileID: "photo1",
+					URL:    "https://cdn.zalo.example/p1",
+				},
+			},
+		},
+	})
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "Analyze this receipt", msg.Text)
+		assert.Equal(t, "Analyze this receipt", msg.RawText)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "Analyze this receipt", msg.AttachmentRefs[0].Caption)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for msg-cap-1")
+	}
+
+	// Case 2: Inbound message has empty Text and Caption, but has attachment-level Caption
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg-cap-2",
+			From:      zalo.ZaloUser{ID: "user-1"},
+			Chat:      zalo.ZaloChat{ID: "chat-1", Type: "private"},
+			Attachments: []zalo.ZaloAttachment{
+				{
+					Type:    "photo",
+					FileID:  "photo2",
+					URL:     "https://cdn.zalo.example/p2",
+					Caption: "Photo specific caption",
+				},
+			},
+		},
+	})
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "Photo specific caption", msg.Text)
+		assert.Equal(t, "Photo specific caption", msg.RawText)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "Photo specific caption", msg.AttachmentRefs[0].Caption)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for msg-cap-2")
+	}
+
+	// Case 3: Inbound message has empty Text and Caption, but has message-level Description
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID:   "msg-cap-3",
+			From:        zalo.ZaloUser{ID: "user-1"},
+			Chat:        zalo.ZaloChat{ID: "chat-1", Type: "private"},
+			Description: "Document summary description",
+			Attachments: []zalo.ZaloAttachment{
+				{
+					Type:   "document",
+					FileID: "doc3",
+					URL:    "https://cdn.zalo.example/d3",
+				},
+			},
+		},
+	})
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "Document summary description", msg.Text)
+		assert.Equal(t, "Document summary description", msg.RawText)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "Document summary description", msg.AttachmentRefs[0].Caption)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for msg-cap-3")
+	}
+}
+
