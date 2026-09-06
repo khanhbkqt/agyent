@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.35] - 2026-09-06
+
+### Added
+- **Interactive Model Selection & Gemini 3.8 Flash Support (`engine`, `harness/agy`):**
+  - Added support for `gemini-3.8-flash` as the default fast/flash model and added a direct quick-selection button in the `/model` interactive keyboard menu.
+  - Dynamically generated `/model` inline keyboard buttons from the runtime model registry (`ModelRegistry`), seamlessly displaying all active, custom, or newly added models.
+  - Added shorthand version aliases (`3.8`, `3.7`, `3.6`, `3.1`) to the AGY model parser for streamlined model switching.
+- **AGY Project-Scoped Worker Security Isolation Architecture (`docs`, `adr`):**
+  - Published comprehensive architectural proposal and [ADR 0002](docs/adr/0002-agy-project-scoped-worker-isolation.md) defining project-scoped worker isolation, per-agent native grant scopes, and agyent-mediated authorization.
+
+### Fixed
+- **Standalone Text Message Delivery Alongside Media (`channels/telegram`, `channels/zalo`):**
+  - Restored full standalone text chat message bubbles alongside media/photo albums across both Telegram and Zalo channel adapters, eliminating text suppression and caption hijacking.
+  - Hardened the Telegram delivery throttler to synchronously upload media during `flushFinalSession` before text chunks, cleanly delete placeholder status messages on image-only turns, and eliminate false-positive warning alerts.
+- **Plugin Force Sync on Self-Upgrade (`cmd/update`):**
+  - Ensured `agyent update` passes `--force` to `plugin update --all` during automatic self-upgrades so that built-in embedded plugins properly overwrite on-disk versions.
+
+---
+
 ## [1.0.34] - 2026-09-06
 
 ### Added
