@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.29] - 2026-09-06
+
+### Added
+- **Enterprise Zalo Bot Platform Channel Adapter (`channels/zalo`):**
+  - **Hexagonal Architecture Conformance:** Complete channel adapter satisfying `ports.ChannelPort` and `ports.HITLApprovalPort`.
+  - **Dual Ingress:** Dual long-polling (`getUpdates`) and webhook listener with constant-time token comparison (`crypto/subtle.ConstantTimeCompare`) and 5MB request body limit (`http.MaxBytesReader`) against denial-of-service.
+  - **Multi-Bot Pool & Agent Persona Binding:** Supported multiple Zalo bots with per-agent persona binding (`bind_agent`) and enterprise RBAC authorization.
+  - **Exponential Backoff with Full Jitter:** Resilient Zalo API client leveraging `internal/core/retry`.
+  - **HITL Security Approval Routing:** Rich interactive approval cards, diff previews, and slash commands (`/approve`, `/deny`, `/kill`).
+  - **Rich UTF-16 Formatting & Chunker:** Markdown conversion with UTF-16 offset handling, smart codeblock chunking, and outbound throttler with LRU/TTL eviction to prevent memory leaks.
+- **Multi-Channel Composite Multiplexer (`channels/composite`):**
+  - Unified multiplexer running Telegram and Zalo channels concurrently.
+  - Deterministic HITL approval fallback routing and non-swallowing `errors.Join` lifecycle error reporting.
+- **Diagnostics & Setup Wizard Integration:**
+  - Added Zalo connectivity and webhook diagnostic checks (`CategoryZalo`) to `agyent doctor`.
+  - Integrated Zalo Bot setup into `agyent init` interactive onboarding wizard.
+
+### Fixed
+- **Telegram Smart Split Image Delivery:**
+  - Attached accompanying text $\le 1024$ runes directly as HTML photo caption, suppressing duplicate separate text messages.
+  - Split longer text into photo caption + following markdown message.
+  - Added graceful fallback to plain text retry on HTML caption formatting errors.
+- **Dynamic Image / Multimedia Task Timeout in Scheduler:**
+  - Detected image and media generation requests (`isImageOrMediaTask`) and dynamically elevated execution timeout to at least 300s to prevent premature timeout cancellation.
+- **Active Tool Heartbeat Watchdog Ping in Harness:**
+  - Emitted periodic silent heartbeat pings to `onMilestone()` during silent tool execution (e.g. `generate_image`, heavy web browsing) to prevent false sliding watchdog timeout.
+
+---
+
 ## [1.0.28] - 2026-09-05
 
 ### Fixed
