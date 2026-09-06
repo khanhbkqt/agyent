@@ -10,14 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.34] - 2026-09-06
 
 ### Added
+- **Zalo Outbound Media & Public CDN Bridging (`channels/zalo`):**
+  - Added native `sendPhoto` support for Zalo Bot Platform via public CDN bridging (`Catbox`, `Litterbox`, `0x0.st`) to automatically upload local file artifacts and agent brain images.
+  - Implemented `ExtractAndCleanOutboundMedia` to parse markdown image tags `![caption](path)` and document links `[caption](path)`, resolve local filesystem paths, strip raw image tags, and emit typed attachments.
+  - Implemented Smart Split Delivery: when outbound text contains an image and text $\le 2000$ runes (Zalo's caption limit), the text is attached directly to the photo caption for a single unified chat bubble. If text $> 2000$ runes, the photo is sent first followed by chunked text messages.
+  - Added document delivery formatting that converts non-image documents into clickable download cards (`📄 **Tài liệu:** [filename](url)`).
+  - Updated multi-bot routing in `SendFile` and `SendOutboundAttachment` to resolve the originating bot instance dynamically.
 - **Zalo Bot Mention Stripping & Multi-Word Tag Support (`channels/zalo`):**
-  - Implemented `CleanZaloMention` in Zalo update router to strip leading `@bot` mentions from inbound messages while preserving `RawText` in `domain.CanonicalMessage`.
-  - Seamlessly handles bot names with spaces (e.g. `@Trao Mơ FC /new` -> `/new`) and trailing punctuation (`:`, `,`), enabling slash commands (`/new`, `/reset`, `/status`) to execute reliably in group chats.
-  - Added smart split delivery and public CDN media upload support for outbound images and documents in Zalo adapter.
+  - Implemented `CleanZaloMention` in Zalo update router to strip leading `@bot` mentions from inbound messages while preserving `RawText` in `domain.CanonicalMessage` and setting `IsMentioned: true`.
+  - Robustly handles bot display names with spaces (e.g. `@Trao Mơ FC /new` -> `/new`) and trailing punctuation (`:`, `,`), allowing slash commands (`/new`, `/reset`, `/status`) and prompts to execute reliably in group chats.
 
 ### Changed
-- **Pure Message Delivery for Zalo Channel (`engine`):**
-  - Omitted group/ephemeral `contextTag` headers (`🌐 [agent • Global]`, `📁 [agent • project]`) for Zalo channel messages at the core engine level, returning 100% clean, pure response text without adapter-side string slicing.
+- **Clean Message Delivery for Zalo Channel (`engine`):**
+  - Omitted group/ephemeral `contextTag` headers (`🌐 [agent • Global]`, `📁 [agent • project]`) for Zalo channel messages at the core engine level, delivering 100% clean, distraction-free response text.
 
 ---
 
