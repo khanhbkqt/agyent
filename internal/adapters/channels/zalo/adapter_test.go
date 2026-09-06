@@ -15,6 +15,7 @@ import (
 	"agyent/internal/adapters/channels/zalo"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
+	"agyent/internal/core/eventbus"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -503,4 +504,234 @@ func TestZaloAdapter_Polling_408TimeoutDoesNotBackoff(t *testing.T) {
 	err = adapter.Stop()
 	require.NoError(t, err)
 }
+
+func TestZaloAdapter_StreamingSupport_EventBus(t *testing.T) {
+	var mu sync.Mutex
+	var sentMessages []zalo.SendMessageRequest
+	var sentActions []zalo.SendChatActionRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/botstream_token/getMe" {
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"id": "bot_stream", "name": "Stream Bot", "is_bot": true}`),
+			})
+			return
+		}
+		if r.URL.Path == "/botstream_token/getUpdates" {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"error_code": 408, "description": "Request timeout"}`))
+			return
+		}
+		if r.URL.Path == "/botstream_token/sendChatAction" {
+			var act zalo.SendChatActionRequest
+			_ = json.NewDecoder(r.Body).Decode(&act)
+			mu.Lock()
+			sentActions = append(sentActions, act)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{OK: true})
+			return
+		}
+		if r.URL.Path == "/botstream_token/sendMessage" {
+			var msg zalo.SendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&msg)
+			mu.Lock()
+			sentMessages = append(sentMessages, msg)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"message_id": "out_101", "date": 1724947200, "text": "ok"}`),
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.BotToken = "stream_token"
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Mode = "polling"
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, bus)
+	require.NoError(t, err)
+
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = adapter.Start(ctx, inboundChan)
+	require.NoError(t, err)
+
+	sessionKey := "zalo:stream_token:chat_streaming_123"
+
+	// 1. Emit EventStreamInit
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_1",
+		TurnID:         "turn_1",
+		CWD:            t.TempDir(),
+	}))
+	require.NoError(t, err)
+
+	// 2. Emit EventStreamDelta
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_1",
+		TurnID:         "turn_1",
+		TextDelta:      "Streaming chunk 1... ",
+	}))
+	require.NoError(t, err)
+
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_1",
+		TurnID:         "turn_1",
+		TextDelta:      "Chunk 2 complete!",
+	}))
+	require.NoError(t, err)
+
+	// 3. Emit EventStreamResult
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_1",
+		TurnID:         "turn_1",
+		Status:         "SUCCESS",
+		Response:       "Streaming chunk 1... Chunk 2 complete!",
+	}))
+	require.NoError(t, err)
+
+	// Verify message was delivered to Zalo
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sentMessages) == 1
+	}, 2*time.Second, 50*time.Millisecond, "expected finalized stream message to be sent to Zalo")
+
+	mu.Lock()
+	assert.Equal(t, "chat_streaming_123", sentMessages[0].ChatID)
+	assert.Contains(t, sentMessages[0].Text, "Streaming chunk 1... Chunk 2 complete!")
+	assert.NotEmpty(t, sentActions, "expected typing actions to be sent during streaming")
+	mu.Unlock()
+
+	err = adapter.Stop()
+	require.NoError(t, err)
+}
+
+func TestZaloAdapter_StreamingSupport_ErrorAndInterrupted(t *testing.T) {
+	var mu sync.Mutex
+	var sentMessages []zalo.SendMessageRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/boterr_token/getMe" {
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"id": "bot_err", "name": "Err Bot", "is_bot": true}`),
+			})
+			return
+		}
+		if r.URL.Path == "/boterr_token/getUpdates" {
+			w.WriteHeader(http.StatusRequestTimeout)
+			_, _ = w.Write([]byte(`{"error_code": 408, "description": "Request timeout"}`))
+			return
+		}
+		if r.URL.Path == "/boterr_token/sendChatAction" {
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{OK: true})
+			return
+		}
+		if r.URL.Path == "/boterr_token/sendMessage" {
+			var msg zalo.SendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&msg)
+			mu.Lock()
+			sentMessages = append(sentMessages, msg)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"message_id": "out_err", "date": 1724947200, "text": "ok"}`),
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	bus := eventbus.NewEventBus(100, 2)
+	defer bus.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.BotToken = "err_token"
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Mode = "polling"
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, bus)
+	require.NoError(t, err)
+
+	inboundChan := make(chan domain.CanonicalMessage, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = adapter.Start(ctx, inboundChan)
+	require.NoError(t, err)
+
+	// 1. Test EventStreamError delivery
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamError, domain.StreamErrorPayload{
+		SessionKey: "zalo:err_token:chat_err_456",
+		Error:      "LLM context window exceeded",
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sentMessages) >= 1
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mu.Lock()
+	assert.Equal(t, "chat_err_456", sentMessages[0].ChatID)
+	assert.Contains(t, sentMessages[0].Text, "LLM context window exceeded")
+	mu.Unlock()
+
+	// 2. Test EventStreamInterrupted delivery
+	sessKey2 := "zalo:err_token:chat_int_789"
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey: sessKey2,
+	}))
+	require.NoError(t, err)
+
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey: sessKey2,
+		TextDelta:  "Partial answer before cancel",
+	}))
+	require.NoError(t, err)
+
+	err = bus.SyncEmit(ctx, domain.NewEvent(domain.EventStreamInterrupted, domain.StreamInterruptedPayload{
+		SessionKey: sessKey2,
+		Reason:     "Preempted",
+	}))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sentMessages) >= 2
+	}, 2*time.Second, 50*time.Millisecond)
+
+	mu.Lock()
+	assert.Equal(t, "chat_int_789", sentMessages[1].ChatID)
+	assert.Contains(t, sentMessages[1].Text, "Partial answer before cancel")
+	assert.Contains(t, sentMessages[1].Text, "[Turn Interrupted by User]")
+	mu.Unlock()
+
+	err = adapter.Stop()
+	require.NoError(t, err)
+}
+
+
 

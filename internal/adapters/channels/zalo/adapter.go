@@ -46,6 +46,9 @@ type Adapter struct {
 	throttler  *Throttler
 	eventBus   ports.EventBusPort
 
+	unsubList      []ports.UnsubscribeFunc
+	streamSessions sync.Map // map[string]*zaloStreamSession
+
 	running    atomic.Bool
 	stopChan   chan struct{}
 	wg         sync.WaitGroup
@@ -55,6 +58,56 @@ type Adapter struct {
 
 	mu sync.RWMutex
 }
+
+type zaloStreamSession struct {
+	sessionKey     string
+	conversationID string
+	turnID         string
+	chatID         string
+	threadID       int64
+	botID          int64
+	botIDStr       string
+	workspaceDir   string
+	buffer         strings.Builder
+	cancelTyping   context.CancelFunc
+	mu             sync.Mutex
+}
+
+func (s *zaloStreamSession) stopTyping() {
+	if s.cancelTyping != nil {
+		s.cancelTyping()
+	}
+}
+
+func parseZaloSessionKey(sessionKey string) (chatID string, threadID int64, botID int64, botIDStr string) {
+	if !strings.HasPrefix(sessionKey, "zalo:") {
+		return "", 0, 0, ""
+	}
+	parsed, err := domain.ParseSessionKey(sessionKey)
+	if err == nil {
+		chatID = parsed.ChatID
+		threadID = parsed.ThreadID
+		botID = parsed.BotID
+	}
+	parts := strings.Split(sessionKey, ":")
+	if len(parts) == 2 {
+		chatID = parts[1]
+	} else if len(parts) >= 3 {
+		if num, err := strconv.ParseInt(parts[1], 10, 64); err == nil && num > 0 {
+			botID = num
+			botIDStr = parts[1]
+			chatID = parts[2]
+		} else {
+			botIDStr = parts[1]
+			chatID = parts[2]
+		}
+		if len(parts) >= 4 {
+			threadID, _ = strconv.ParseInt(parts[3], 10, 64)
+		}
+	}
+	return
+}
+
 
 // NewAdapter initializes a new Zalo channel adapter.
 func NewAdapter(cfg *config.Config, bus ports.EventBusPort) (*Adapter, error) {
@@ -185,6 +238,19 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 	authorizer := a.authorizer
 	a.mu.RUnlock()
 	a.router.SetInboundAuthorizer(authorizer)
+
+	// Subscribe to EventBus streaming lifecycle events to support AGY streaming mode
+	if a.eventBus != nil {
+		a.mu.Lock()
+		a.unsubList = []ports.UnsubscribeFunc{
+			a.eventBus.SubscribeSync(domain.EventStreamInit, a.onStreamInit),
+			a.eventBus.SubscribeSync(domain.EventStreamDelta, a.onStreamDelta),
+			a.eventBus.SubscribeSync(domain.EventStreamResult, a.onStreamResult),
+			a.eventBus.SubscribeSync(domain.EventStreamError, a.onStreamError),
+			a.eventBus.SubscribeSync(domain.EventStreamInterrupted, a.onStreamInterrupted),
+		}
+		a.mu.Unlock()
+	}
 
 	mode := strings.ToLower(a.cfg.Zalo.Mode)
 	if mode == "webhook" {
@@ -568,6 +634,23 @@ func (a *Adapter) Stop() error {
 
 	close(a.stopChan)
 
+	a.mu.Lock()
+	for _, unsub := range a.unsubList {
+		if unsub != nil {
+			unsub()
+		}
+	}
+	a.unsubList = nil
+	a.mu.Unlock()
+
+	a.streamSessions.Range(func(key, val any) bool {
+		if sess, ok := val.(*zaloStreamSession); ok {
+			sess.stopTyping()
+		}
+		a.streamSessions.Delete(key)
+		return true
+	})
+
 	if a.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -590,3 +673,253 @@ func (a *Adapter) Stop() error {
 	slog.Info("Zalo adapter stopped successfully")
 	return nil
 }
+
+func (a *Adapter) onStreamInit(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamInitPayload)
+	if !ok {
+		return nil
+	}
+	if !strings.HasPrefix(p.SessionKey, "zalo:") {
+		return nil
+	}
+	chatID, threadID, botID, botIDStr := parseZaloSessionKey(p.SessionKey)
+	if chatID == "" {
+		return nil
+	}
+
+	if existing, loaded := a.streamSessions.LoadAndDelete(p.SessionKey); loaded {
+		if s, ok := existing.(*zaloStreamSession); ok {
+			s.stopTyping()
+		}
+	}
+
+	typingCtx, cancelTyping := context.WithCancel(context.Background())
+	sess := &zaloStreamSession{
+		sessionKey:     p.SessionKey,
+		conversationID: p.ConversationID,
+		turnID:         p.TurnID,
+		chatID:         chatID,
+		threadID:       threadID,
+		botID:          botID,
+		botIDStr:       botIDStr,
+		workspaceDir:   p.CWD,
+		cancelTyping:   cancelTyping,
+	}
+
+	// Send initial typing indicator
+	_ = a.SendTyping(ctx, domain.TargetContext{
+		ChatID: chatID,
+		BotID:  botIDStr,
+	})
+
+	a.streamSessions.Store(p.SessionKey, sess)
+
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-a.stopChan:
+				return
+			case <-ticker.C:
+				_ = a.SendTyping(typingCtx, domain.TargetContext{
+					ChatID: chatID,
+					BotID:  botIDStr,
+				})
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (a *Adapter) onStreamDelta(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamDeltaPayload)
+	if !ok {
+		return nil
+	}
+	if !strings.HasPrefix(p.SessionKey, "zalo:") {
+		return nil
+	}
+	val, ok := a.streamSessions.Load(p.SessionKey)
+	if !ok {
+		return nil
+	}
+	sess := val.(*zaloStreamSession)
+	if p.TurnID != "" && sess.turnID != "" && p.TurnID != sess.turnID {
+		return nil
+	}
+	sess.mu.Lock()
+	sess.buffer.WriteString(p.TextDelta)
+	sess.mu.Unlock()
+	return nil
+}
+
+func (a *Adapter) onStreamResult(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamResultPayload)
+	if !ok {
+		return nil
+	}
+	if !strings.HasPrefix(p.SessionKey, "zalo:") {
+		return nil
+	}
+
+	var chatID string
+	var threadID int64
+	var botID int64
+	var botIDStr string
+	var wsDir string
+	var bufferText string
+
+	if val, loaded := a.streamSessions.LoadAndDelete(p.SessionKey); loaded {
+		sess := val.(*zaloStreamSession)
+		sess.stopTyping()
+		if p.TurnID != "" && sess.turnID != "" && p.TurnID != sess.turnID {
+			slog.DebugContext(ctx, "ignoring stale stream result from prior turn",
+				"session_key", p.SessionKey, "event_turn", p.TurnID, "active_turn", sess.turnID)
+			return nil
+		}
+		chatID = sess.chatID
+		threadID = sess.threadID
+		botID = sess.botID
+		botIDStr = sess.botIDStr
+		wsDir = sess.workspaceDir
+		sess.mu.Lock()
+		bufferText = sess.buffer.String()
+		sess.mu.Unlock()
+	} else {
+		chatID, threadID, botID, botIDStr = parseZaloSessionKey(p.SessionKey)
+	}
+
+	if chatID == "" {
+		return nil
+	}
+
+	responseText := p.Response
+	if strings.TrimSpace(responseText) == "" {
+		responseText = bufferText
+	}
+
+	if (p.Status == "ERROR" || p.Error != "") && p.Error != "" && !strings.Contains(responseText, p.Error) {
+		if strings.TrimSpace(responseText) != "" {
+			responseText += "\n\n⚠️ [Execution Error: " + p.Error + "]"
+		} else {
+			responseText = "⚠️ [Execution Error: " + p.Error + "]"
+		}
+	}
+
+	if strings.TrimSpace(responseText) == "" && len(p.Artifacts) == 0 {
+		return nil
+	}
+
+	outbound := domain.OutboundMessage{
+		Channel:        "zalo",
+		SessionKey:     p.SessionKey,
+		ChatID:         chatID,
+		ThreadID:       threadID,
+		BotID:          botID,
+		BotIDStr:       botIDStr,
+		Text:           responseText,
+		WorkspaceDir:   wsDir,
+		ConversationID: p.ConversationID,
+	}
+
+	for _, art := range p.Artifacts {
+		outbound.Attachments = append(outbound.Attachments, domain.OutboundAttachment{
+			FilePath: art.FilePath,
+			FileName: art.FileName,
+			MIMEType: art.MIMEType,
+			Caption:  art.Caption,
+		})
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	return a.Send(sendCtx, outbound)
+}
+
+func (a *Adapter) onStreamError(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamErrorPayload)
+	if !ok {
+		return nil
+	}
+	if !strings.HasPrefix(p.SessionKey, "zalo:") {
+		return nil
+	}
+
+	var chatID string
+	var botID int64
+	var botIDStr string
+	if val, loaded := a.streamSessions.LoadAndDelete(p.SessionKey); loaded {
+		sess := val.(*zaloStreamSession)
+		sess.stopTyping()
+		chatID = sess.chatID
+		botID = sess.botID
+		botIDStr = sess.botIDStr
+	} else {
+		chatID, _, botID, botIDStr = parseZaloSessionKey(p.SessionKey)
+	}
+
+	if chatID == "" {
+		return nil
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	return a.Send(sendCtx, domain.OutboundMessage{
+		Channel:    "zalo",
+		SessionKey: p.SessionKey,
+		ChatID:     chatID,
+		BotID:      botID,
+		BotIDStr:   botIDStr,
+		Text:       fmt.Sprintf("⚠️ Execution failed: %s", p.Error),
+	})
+}
+
+func (a *Adapter) onStreamInterrupted(ctx context.Context, evt domain.Event) error {
+	p, ok := evt.Payload.(domain.StreamInterruptedPayload)
+	if !ok {
+		return nil
+	}
+	if !strings.HasPrefix(p.SessionKey, "zalo:") {
+		return nil
+	}
+
+	val, loaded := a.streamSessions.LoadAndDelete(p.SessionKey)
+	if !loaded {
+		return nil
+	}
+	sess := val.(*zaloStreamSession)
+	sess.stopTyping()
+
+	sess.mu.Lock()
+	text := sess.buffer.String()
+	sess.mu.Unlock()
+
+	if strings.TrimSpace(text) != "" {
+		text += "\n\n[Turn Interrupted by User]"
+	} else {
+		text = "⚠️ [Turn Interrupted by User]"
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	return a.Send(sendCtx, domain.OutboundMessage{
+		Channel:        "zalo",
+		SessionKey:     p.SessionKey,
+		ChatID:         sess.chatID,
+		BotID:          sess.botID,
+		BotIDStr:       sess.botIDStr,
+		Text:           text,
+		WorkspaceDir:   sess.workspaceDir,
+		ConversationID: p.ConversationID,
+	})
+}
+

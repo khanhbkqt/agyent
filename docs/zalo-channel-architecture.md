@@ -97,6 +97,13 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
 - Automatic conversion of HTML formatting tags (`<b>`, `<code>`, `<pre>`, `<i>`, `<a>`) into Zalo Markdown.
 - Smart Chunker (`ChunkZaloMessage`) splits responses exceeding 1950 runes while preserving fenced code block boundaries.
 
+### 2.7 Streaming Bridge for Non-Streaming Zalo Platform
+- Although Zalo Bot Platform does not support token-by-token message streaming edits, when global AGY streaming is active (`streaming_enabled: true`), the Zalo adapter bridges streaming via `EventBus`:
+  - **`EventStreamInit`:** Dispatches immediate typing chat action (`SendTyping`) and runs a 4-second heartbeat typing ticker while the LLM generates tokens.
+  - **`EventStreamDelta`:** Buffers incremental tokens in an in-memory session buffer without making noisy edit calls.
+  - **`EventStreamResult`:** Halts typing heartbeat, finalizes text and outbound artifacts, and delivers the complete message via `a.Send`.
+  - **`EventStreamError` / `EventStreamInterrupted`:** Stops typing and sends execution failure or interruption notices to the Zalo chat.
+
 ---
 
 ## 3. Diagnostic & Doctor Integration
