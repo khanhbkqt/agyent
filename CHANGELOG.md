@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.33] - 2026-09-06
+
+### Fixed
+- **Zalo Adapter Streaming Bridge Support (`channels/zalo`):**
+  - Resolved issue where Zalo messages failed to deliver when global AGY streaming was enabled (`streaming_enabled: true`) because the engine bypassed `channel.Send` in streaming mode.
+  - Added EventBus subscription bridge in Zalo adapter (`EventStreamInit`, `EventStreamDelta`, `EventStreamResult`, `EventStreamError`, `EventStreamInterrupted`).
+  - Active turns send an immediate typing indicator and keep an active 4-second heartbeat typing ticker while tokens are generated, signaling progress to Zalo users.
+  - Finalized turn response and outbound artifacts are assembled and dispatched to Zalo chat cleanly upon `EventStreamResult`, and mid-stream errors/interruptions are reported immediately.
+
+---
+
 ## [1.0.32] - 2026-09-06
 
 ### Fixed
