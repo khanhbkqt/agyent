@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.36] - 2026-09-06
+
+### Added
+- **In-Flight Turn Auto-Recovery & Daemon Crash Resilience (`engine`, `storage`):**
+  - Added SQLite schema migration `000012_in_flight_turns` and `InFlightTurnRepository` to persist active turn lifecycle states (`running`, `completed`, `failed`, `interrupted`) along with channel delivery metadata and recovery context.
+  - Implemented asynchronous startup turn recovery worker with bounded concurrency (default 2 workers) and FIFO session lock serialization to resume interrupted user turns cleanly.
+  - Implemented stale subagent task reconciliation on startup, transitioning dangling in-progress tasks to `failed` and restoring subagent loop availability.
+  - Added circuit-breaker protection (`max_retries = 1`) to eliminate crashing recovery loops, and ephemeral turn discard logic for `/ask` temporary sessions.
+  - Added guarded continuation prompt assembly (`ComposeRecoveryPrompt`) to safely resume conversations without re-executing non-idempotent side effects.
+  - Added daily janitor retention policy to purge completed/failed turns older than 7 days.
+  - Published comprehensive subsystem architectural reference in `docs/turn-recovery-and-resilience-architecture.md`.
+
+---
+
 ## [1.0.35] - 2026-09-06
 
 ### Added
