@@ -149,8 +149,134 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 		return "", fmt.Errorf("failed to atomically replace %s: %w", hookFilePath, err)
 	}
 
-	logger.Debug("Provisioned workspace-scoped Antigravity hooks", "path", hookFilePath, "workspace", workspaceDir)
+	_ = EnsureWorkspaceSettingsProvisioned(workspaceDir, logger)
+
+	logger.Debug("Provisioned workspace-scoped Antigravity hooks and settings", "path", hookFilePath, "workspace", workspaceDir)
 	return hookFilePath, nil
+}
+
+// DefaultToolPermissions defines the complete set of tool grants provisioned into settings.json
+// and project configurations to ensure headless AGY invocations never auto-deny and instead
+// delegate evaluation to the PreToolUse hook.
+var DefaultToolPermissions = []string{
+	"command",
+	"command(*)",
+	"command(.*)",
+	"read_file",
+	"read_file(*)",
+	"read_file(.*)",
+	"write_file",
+	"write_file(*)",
+	"write_file(.*)",
+	"edit_file",
+	"edit_file(*)",
+	"edit_file(.*)",
+	"list_dir",
+	"list_dir(*)",
+	"list_dir(.*)",
+	"read_url",
+	"read_url(*)",
+	"read_url(.*)",
+	"view_file",
+	"view_file(*)",
+	"view_file(.*)",
+	"grep_search",
+	"grep_search(*)",
+	"grep_search(.*)",
+	"find_by_name",
+	"find_by_name(*)",
+	"find_by_name(.*)",
+	"generate_image",
+	"generate_image(*)",
+	"generate_image(.*)",
+	"mcp(*)",
+}
+
+// EnsureWorkspaceSettingsProvisioned provisions settings.json in <workspaceDir>/.agents/settings.json
+// and <workspaceDir>/.gemini/settings.json, as well as host-level settings.json files,
+// ensuring permissions.allow contains all requisite headless tools.
+func EnsureWorkspaceSettingsProvisioned(workspaceDir string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	targets := []string{}
+	if workspaceDir != "" {
+		targets = append(targets,
+			filepath.Join(workspaceDir, ".agents", "settings.json"),
+			filepath.Join(workspaceDir, ".gemini", "settings.json"),
+		)
+	}
+
+	for _, target := range targets {
+		if err := mergeSettingsPermissions(target); err != nil {
+			logger.Warn("Failed to provision settings.json", "path", target, "error", err)
+		}
+	}
+
+	// Also ensure host ~/.gemini/settings.json and ~/.gemini/antigravity-cli/settings.json
+	for _, hostPath := range []string{"~/.gemini/settings.json", "~/.gemini/antigravity-cli/settings.json"} {
+		if expanded, err := config.ExpandPath(hostPath); err == nil {
+			_ = mergeSettingsPermissions(expanded)
+		}
+	}
+
+	return nil
+}
+
+func mergeSettingsPermissions(filePath string) error {
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	raw := make(map[string]any)
+	if data, err := os.ReadFile(filePath); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+
+	permsRaw, ok := raw["permissions"].(map[string]any)
+	if !ok {
+		permsRaw = make(map[string]any)
+	}
+
+	existingAllow, _ := permsRaw["allow"].([]any)
+	allowMap := make(map[string]bool)
+	for _, item := range existingAllow {
+		if str, ok := item.(string); ok {
+			allowMap[str] = true
+		}
+	}
+
+	for _, p := range DefaultToolPermissions {
+		allowMap[p] = true
+	}
+
+	finalAllow := make([]string, 0, len(allowMap))
+	for _, p := range DefaultToolPermissions {
+		if allowMap[p] {
+			finalAllow = append(finalAllow, p)
+			delete(allowMap, p)
+		}
+	}
+	for k := range allowMap {
+		finalAllow = append(finalAllow, k)
+	}
+
+	permsRaw["allow"] = finalAllow
+	raw["permissions"] = permsRaw
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpFile := fmt.Sprintf("%s.tmp.%d.%d", filePath, os.Getpid(), time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+		return err
+	}
+	_ = os.Rename(tmpFile, filePath)
+	return nil
 }
 
 // RemoveGlobalHooks cleans up any lingering agyent hooks from ~/.gemini/config/hooks.json to keep the host environment pristine.
@@ -289,38 +415,7 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 		ProjectResources: res,
 		PermissionGrants: AGYPermissionGrantsObj{
 			PermissionGrants: AGYAllowList{
-				Allow: []string{
-					"command",
-					"command(*)",
-					"command(.*)",
-					"read_file",
-					"read_file(*)",
-					"read_file(.*)",
-					"write_file",
-					"write_file(*)",
-					"write_file(.*)",
-					"edit_file",
-					"edit_file(*)",
-					"edit_file(.*)",
-					"list_dir",
-					"list_dir(*)",
-					"list_dir(.*)",
-					"read_url",
-					"read_url(*)",
-					"read_url(.*)",
-					"view_file",
-					"view_file(*)",
-					"view_file(.*)",
-					"grep_search",
-					"grep_search(*)",
-					"grep_search(.*)",
-					"find_by_name",
-					"find_by_name(*)",
-					"find_by_name(.*)",
-					"generate_image",
-					"generate_image(*)",
-					"generate_image(.*)",
-				},
+				Allow: DefaultToolPermissions,
 			},
 		},
 		Settings: &AGYProjectSettings{

@@ -117,7 +117,7 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions && req.Admission == nil {
+	if req.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
@@ -310,7 +310,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	if req.WorkspaceDir != "" {
 		args = append(args, "--add-dir", req.WorkspaceDir)
 	}
-	if req.DangerouslySkipPermissions && req.Admission == nil {
+	if req.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	if req.ConversationID != "" {
