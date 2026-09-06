@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -109,8 +110,22 @@ func NewAdapter(cfg *config.Config, bus ports.EventBusPort) (*Adapter, error) {
 		}
 		adapter.bots[name] = inst
 		adapter.bots[fmt.Sprintf("%d", ParseNumericID(name))] = inst
+
+		// If token has numeric bot ID prefix (e.g. 4293721026991223652:...), map numeric ID directly
+		tokenParts := strings.Split(token, ":")
+		if len(tokenParts) >= 2 {
+			if prefixID, err := strconv.ParseInt(tokenParts[0], 10, 64); err == nil && prefixID > 0 {
+				adapter.bots[tokenParts[0]] = inst
+				inst.botID = tokenParts[0]
+			}
+		}
+
+		// If bind_agent is configured, map bot instance under agent name
 		if b.BindAgent != "" {
+			agentKey := strings.ToLower(strings.TrimSpace(b.BindAgent))
+			adapter.bots[agentKey] = inst
 			adapter.bindAgents[name] = b.BindAgent
+			adapter.bindAgents[agentKey] = b.BindAgent
 		}
 	}
 
@@ -212,6 +227,9 @@ func (a *Adapter) pollBotUpdates(ctx context.Context, botName string, inst *botI
 		a.mu.Lock()
 		a.bots[user.ID] = inst
 		a.bots[fmt.Sprintf("%d", ParseNumericID(user.ID))] = inst
+		if inst.bindAgent != "" {
+			a.bots[strings.ToLower(strings.TrimSpace(inst.bindAgent))] = inst
+		}
 		a.mu.Unlock()
 		slog.Info("Zalo bot authenticated", "bot_name", botName, "user_id", user.ID, "display_name", user.Name)
 	} else {
@@ -339,36 +357,121 @@ func (a *Adapter) startWebhook(ctx context.Context) error {
 
 // resolveClient picks the appropriate Zalo Client based on botID or fallback.
 func (a *Adapter) resolveClient(botID string, numericID ...int64) *Client {
+	var numID int64
+	if len(numericID) > 0 {
+		numID = numericID[0]
+	}
+	return a.resolveClientEx(botID, numID, "", "")
+}
+
+// resolveClientEx performs an exhaustive lookup for the appropriate Zalo Client
+// across agent name, bot ID string, numeric bot ID, session key, and fallback.
+func (a *Adapter) resolveClientEx(botIDStr string, botID int64, agentName string, sessionKey string) *Client {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if botID != "" {
-		if inst, ok := a.bots[strings.ToLower(botID)]; ok && inst.client != nil {
+	// 1. Check by explicit agent name (e.g. "traomofc")
+	if agentName != "" {
+		cleanAgent := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(agentName)), "@")
+		if inst, ok := a.bots[cleanAgent]; ok && inst.client != nil {
 			return inst.client
 		}
+		for bKey, bName := range a.bindAgents {
+			if strings.EqualFold(strings.TrimPrefix(bName, "@"), cleanAgent) {
+				if inst, ok := a.bots[bKey]; ok && inst.client != nil {
+					return inst.client
+				}
+			}
+		}
+		for _, inst := range a.bots {
+			if inst != nil {
+				if strings.EqualFold(strings.TrimPrefix(inst.bindAgent, "@"), cleanAgent) ||
+					strings.EqualFold(strings.TrimPrefix(inst.config.BindAgent, "@"), cleanAgent) ||
+					strings.EqualFold(strings.TrimPrefix(inst.config.Name, "@"), cleanAgent) {
+					if inst.client != nil {
+						return inst.client
+					}
+				}
+			}
+		}
 	}
-	if len(numericID) > 0 && numericID[0] > 0 {
-		key := fmt.Sprintf("%d", numericID[0])
+
+	// 2. Check by bot ID string (e.g. "4293721026991223652" or "default")
+	if botIDStr != "" {
+		key := strings.ToLower(strings.TrimSpace(botIDStr))
+		if inst, ok := a.bots[key]; ok && inst.client != nil {
+			return inst.client
+		}
+		if num := ParseNumericID(key); num > 0 {
+			if inst, ok := a.bots[fmt.Sprintf("%d", num)]; ok && inst.client != nil {
+				return inst.client
+			}
+		}
+	}
+
+	// 3. Check by numeric bot ID
+	if botID > 0 {
+		key := fmt.Sprintf("%d", botID)
 		if inst, ok := a.bots[key]; ok && inst.client != nil {
 			return inst.client
 		}
 	}
-	return a.client
+
+	// 4. Check by session key (e.g. "zalo:4293721026991223652:zgr-a4781485e9de008059cf")
+	if sessionKey != "" {
+		if parsed, err := domain.ParseSessionKey(sessionKey); err == nil {
+			if parsed.BotID > 0 {
+				key := fmt.Sprintf("%d", parsed.BotID)
+				if inst, ok := a.bots[key]; ok && inst.client != nil {
+					return inst.client
+				}
+			}
+		}
+		parts := strings.Split(sessionKey, ":")
+		if len(parts) >= 3 {
+			cand := strings.ToLower(strings.TrimSpace(parts[1]))
+			if inst, ok := a.bots[cand]; ok && inst.client != nil {
+				return inst.client
+			}
+			if num := ParseNumericID(cand); num > 0 {
+				if inst, ok := a.bots[fmt.Sprintf("%d", num)]; ok && inst.client != nil {
+					return inst.client
+				}
+			}
+		}
+	}
+
+	// 5. Fallback to primary client
+	if a.client != nil {
+		return a.client
+	}
+
+	// 6. Fallback to "default" bot
+	if inst, ok := a.bots["default"]; ok && inst.client != nil {
+		return inst.client
+	}
+
+	// 7. Fallback to any first available bot in the pool
+	for _, inst := range a.bots {
+		if inst != nil && inst.client != nil {
+			return inst.client
+		}
+	}
+
+	return nil
 }
 
 // Send formats and delivers an outbound message over Zalo.
 func (a *Adapter) Send(ctx context.Context, msg domain.OutboundMessage) error {
-	client := a.resolveClient(msg.BotIDStr, msg.BotID)
+	client := a.resolveClientEx(msg.BotIDStr, msg.BotID, msg.AgentName, msg.SessionKey)
 	if client == nil {
 		return errors.New("zalo client is not initialized")
 	}
 
 	text := msg.Text
 
-	// If message was constructed with HTML parse mode, convert it to Zalo Markdown
-	if msg.ParseMode == "HTML" || strings.Contains(text, "<") {
-		text = ConvertHTMLToZaloMarkdown(text)
-	}
+	// Format to Zalo-compliant Markdown
+	text = FormatToZaloMarkdown(text)
 
 	// Sanitize privacy leaks (home paths)
 	text = SanitizePrivacyLeaks(text)
@@ -403,7 +506,7 @@ func (a *Adapter) SendTyping(ctx context.Context, target domain.TargetContext) e
 
 // SendChatAction sends a custom chat action.
 func (a *Adapter) SendChatAction(ctx context.Context, target domain.TargetContext, action string) error {
-	client := a.resolveClient(target.BotID)
+	client := a.resolveClientEx(target.BotID, 0, target.AgentName, "")
 	if client == nil {
 		return nil
 	}

@@ -29,8 +29,10 @@ const (
 
 // segment represents an internal chunk of text with associated style tokens.
 type segment struct {
-	text   string
-	styles []string
+	text         string
+	styles       []string
+	isHeading    bool
+	headingLevel int
 }
 
 // ZaloMessageFormatter provides a fluent builder for composing Zalo Bot messages.
@@ -85,12 +87,29 @@ func (f *ZaloMessageFormatter) Strikethrough(text string) *ZaloMessageFormatter 
 	return f
 }
 
-// Color appends colored text with given hex or color code.
+// Color appends colored text with given hex, color code, or named color (red, green, yellow, orange).
 func (f *ZaloMessageFormatter) Color(text string, colorCode string) *ZaloMessageFormatter {
 	if text != "" {
 		code := colorCode
-		if !strings.HasPrefix(code, "c_") {
-			code = "c_" + strings.TrimPrefix(code, "#")
+		switch strings.ToLower(code) {
+		case "red":
+			code = ColorRed
+		case "green":
+			code = ColorGreen
+		case "yellow":
+			code = ColorYellow
+		case "orange":
+			code = ColorOrange
+		case "blue":
+			code = ColorBlue
+		case "purple":
+			code = ColorPurple
+		case "gray", "grey":
+			code = ColorGray
+		default:
+			if !strings.HasPrefix(code, "c_") {
+				code = "c_" + strings.TrimPrefix(code, "#")
+			}
 		}
 		f.segments = append(f.segments, segment{text: text, styles: []string{code}})
 	}
@@ -109,6 +128,11 @@ func (f *ZaloMessageFormatter) Size(text string, fontSize string) *ZaloMessageFo
 	return f
 }
 
+// Big appends text with a large font size ("f_18" / "big").
+func (f *ZaloMessageFormatter) Big(text string) *ZaloMessageFormatter {
+	return f.Size(text, FontSizeBig)
+}
+
 // Styled appends text with multiple composite styles (e.g. bold + color + size).
 func (f *ZaloMessageFormatter) Styled(text string, styles []string) *ZaloMessageFormatter {
 	if text != "" {
@@ -119,14 +143,20 @@ func (f *ZaloMessageFormatter) Styled(text string, styles []string) *ZaloMessage
 
 // Heading appends a styled heading line with bold and larger font size.
 func (f *ZaloMessageFormatter) Heading(text string, level int) *ZaloMessageFormatter {
+	if level <= 0 {
+		level = 1
+	}
 	sizeCode := FontSizeBig
 	if level == 1 {
 		sizeCode = FontSizeHuge
 	}
 	f.segments = append(f.segments, segment{
-		text:   text + "\n",
-		styles: []string{"b", sizeCode},
+		text:         text,
+		styles:       []string{"b", sizeCode},
+		isHeading:    true,
+		headingLevel: level,
 	})
+	f.NewLine()
 	return f
 }
 
@@ -203,31 +233,55 @@ func (f *ZaloMessageFormatter) BuildMarkdown() string {
 		hasItalic := false
 		hasUnderline := false
 		hasStrikethrough := false
+		isBig := false
+		color := ""
 
 		for _, st := range seg.styles {
-			switch st {
-			case "b":
+			switch {
+			case st == "b":
 				hasBold = true
-			case "i":
+			case st == "i":
 				hasItalic = true
-			case "u":
+			case st == "u":
 				hasUnderline = true
-			case "s":
+			case st == "s":
 				hasStrikethrough = true
+			case st == "f_18" || st == "f_20" || st == "big" || st == "huge":
+				isBig = true
+			case st == ColorRed || strings.ToLower(st) == "red":
+				color = "red"
+			case st == ColorGreen || strings.ToLower(st) == "green":
+				color = "green"
+			case st == ColorYellow || strings.ToLower(st) == "yellow":
+				color = "yellow"
+			case st == ColorOrange || strings.ToLower(st) == "orange":
+				color = "orange"
+			case strings.HasPrefix(st, "c_"):
+				color = st
 			}
 		}
 
-		if hasStrikethrough {
-			text = "~" + text + "~"
-		}
-		if hasUnderline {
-			text = "_" + text + "_"
+		if hasBold && !seg.isHeading {
+			text = "**" + text + "**"
 		}
 		if hasItalic {
-			text = "*" + text + "*"
+			text = "_" + text + "_"
 		}
-		if hasBold {
-			text = "**" + text + "**"
+		if hasUnderline {
+			text = "{underline}" + text + "{/underline}"
+		}
+		if hasStrikethrough {
+			text = "~~" + text + "~~"
+		}
+		if isBig && !seg.isHeading {
+			text = "{big}" + text + "{/big}"
+		}
+		if color != "" {
+			text = fmt.Sprintf("{%s}%s{/%s}", color, text, color)
+		}
+		if seg.isHeading {
+			prefix := strings.Repeat("#", seg.headingLevel)
+			text = fmt.Sprintf("%s %s", prefix, text)
 		}
 		sb.WriteString(text)
 	}
@@ -235,16 +289,27 @@ func (f *ZaloMessageFormatter) BuildMarkdown() string {
 }
 
 var (
-	tagBoldRegex   = regexp.MustCompile(`(?i)<(?:b|strong)>(.*?)</(?:b|strong)>`)
-	tagItalicRegex = regexp.MustCompile(`(?i)<(?:i|em)>(.*?)</(?:i|em)>`)
-	tagCodeRegex   = regexp.MustCompile(`(?i)<code>(.*?)</code>`)
-	tagPreRegex    = regexp.MustCompile(`(?s)<pre(?:.*?)>(.*?)</pre>`)
-	tagAnchorRegex = regexp.MustCompile(`(?i)<a\s+href="([^"]+)">(.*?)</a>`)
-	tagBrRegex     = regexp.MustCompile(`(?i)<br\s*/?>`)
-	tagPRegex      = regexp.MustCompile(`(?i)<p>(.*?)</p>`)
-	tagGeneric     = regexp.MustCompile(`<[^>]+>`)
-	homePathWin    = regexp.MustCompile(`[a-zA-Z]:\\(?:Users|Documents and Settings)\\[^\\]+`)
-	homePathUnix   = regexp.MustCompile(`/(?:home|Users)/[^/]+`)
+	tagBoldRegex      = regexp.MustCompile(`(?i)<(?:b|strong)>(.*?)</(?:b|strong)>`)
+	tagItalicRegex    = regexp.MustCompile(`(?i)<(?:i|em)>(.*?)</(?:i|em)>`)
+	tagUnderlineRegex = regexp.MustCompile(`(?i)<(?:u|ins)>(.*?)</(?:u|ins)>`)
+	tagStrikeRegex    = regexp.MustCompile(`(?i)<(?:s|del|strike)>(.*?)</(?:s|del|strike)>`)
+	tagCodeRegex      = regexp.MustCompile(`(?i)<code>(.*?)</code>`)
+	tagPreRegex       = regexp.MustCompile(`(?s)<pre(?:.*?)>(.*?)</pre>`)
+	tagAnchorRegex    = regexp.MustCompile(`(?i)<a\s+href="([^"]+)">(.*?)</a>`)
+	tagColorRegex     = regexp.MustCompile(`(?i)<font\s+color="(red|green|yellow|orange|#[0-9a-fA-F]{6})">(.*?)</font>`)
+	tagBrRegex        = regexp.MustCompile(`(?i)<br\s*/?>`)
+	tagPRegex         = regexp.MustCompile(`(?i)<p>(.*?)</p>`)
+	tagGeneric        = regexp.MustCompile(`<[^>]+>`)
+	homePathWin       = regexp.MustCompile(`[a-zA-Z]:\\(?:Users|Documents and Settings)\\[^\\]+`)
+	homePathUnix      = regexp.MustCompile(`/(?:home|Users)/[^/]+`)
+
+	codeBlockRegex      = regexp.MustCompile("(?s)```.*?```")
+	inlineCodeRegex     = regexp.MustCompile("`[^`\n]+`")
+	bulletRegex         = regexp.MustCompile(`(?m)^([ \t]*)[-*]\s+`)
+	singleAsteriskRegex = regexp.MustCompile(`(^|[^*])\*([^*\n\r]+?)\*([^*]|$)`)
+	singleTildeRegex    = regexp.MustCompile(`(^|[^~])~([^~\n\r]+?)~([^~]|$)`)
+	markdownLinkRegex   = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s\)]+)\)`)
+	hrRegex             = regexp.MustCompile(`(?m)^([ \t]*)(?:[-*_]){3,}[ \t]*$`)
 )
 
 // ConvertHTMLToZaloMarkdown converts HTML entities and tags into Zalo-compatible Markdown.
@@ -285,23 +350,42 @@ func ConvertHTMLToZaloMarkdown(htmlContent string) string {
 	// 3. Convert <b> / <strong> to **...**
 	res = tagBoldRegex.ReplaceAllString(res, "**$1**")
 
-	// 4. Convert <i> / <em> to *...*
-	res = tagItalicRegex.ReplaceAllString(res, "*$1*")
+	// 4. Convert <i> / <em> to _..._ (Zalo Markdown italic)
+	res = tagItalicRegex.ReplaceAllString(res, "_${1}_")
 
-	// 5. Convert <a href="url">text</a> to [text](url)
+	// 5. Convert <u> / <ins> to {underline}...{/underline}
+	res = tagUnderlineRegex.ReplaceAllString(res, "{underline}$1{/underline}")
+
+	// 6. Convert <s> / <del> / <strike> to ~~...~~
+	res = tagStrikeRegex.ReplaceAllString(res, "~~$1~~")
+
+	// 7. Convert <font color="..."> to {color}...{/color}
+	res = tagColorRegex.ReplaceAllStringFunc(res, func(m string) string {
+		sub := tagColorRegex.FindStringSubmatch(m)
+		if len(sub) == 3 {
+			c := strings.ToLower(sub[1])
+			if strings.HasPrefix(c, "#") {
+				c = "c_" + strings.TrimPrefix(c, "#")
+			}
+			return fmt.Sprintf("{%s}%s{/%s}", c, sub[2], c)
+		}
+		return m
+	})
+
+	// 8. Convert <a href="url">text</a> to [text](url)
 	res = tagAnchorRegex.ReplaceAllString(res, "[$2]($1)")
 
-	// 6. Convert <br> and <p>
+	// 9. Convert <br> and <p>
 	res = tagBrRegex.ReplaceAllString(res, "\n")
 	res = tagPRegex.ReplaceAllString(res, "$1\n\n")
 
-	// 7. Strip any remaining HTML tags
+	// 10. Strip any remaining HTML tags
 	res = tagGeneric.ReplaceAllString(res, "")
 
-	// 8. Decode HTML entities for remaining text
+	// 11. Decode HTML entities for remaining text
 	res = html.UnescapeString(res)
 
-	// 9. Restore code blocks and inline code
+	// 12. Restore code blocks and inline code
 	for i, cb := range codeBlocks {
 		placeholder := fmt.Sprintf("___AGY_PRE_BLOCK_%d___", i)
 		res = strings.Replace(res, placeholder, cb, 1)
@@ -311,7 +395,83 @@ func ConvertHTMLToZaloMarkdown(htmlContent string) string {
 		res = strings.Replace(res, placeholder, ic, 1)
 	}
 
-	// 10. Normalize multiple consecutive newlines to at most 2
+	// 13. Normalize multiple consecutive newlines to at most 2
+	multipleNewlines := regexp.MustCompile(`\n{3,}`)
+	res = multipleNewlines.ReplaceAllString(res, "\n\n")
+
+	return strings.TrimSpace(res)
+}
+
+// FormatToZaloMarkdown converts standard Markdown or HTML text into Zalo-compatible Markdown format.
+func FormatToZaloMarkdown(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+
+	res := content
+
+	// 1. If content contains HTML tags, convert them first
+	if strings.Contains(res, "<") {
+		res = ConvertHTMLToZaloMarkdown(res)
+	}
+
+	// 2. Protect code blocks with placeholders
+	var codeBlocks []string
+	res = codeBlockRegex.ReplaceAllStringFunc(res, func(m string) string {
+		idx := len(codeBlocks)
+		codeBlocks = append(codeBlocks, m)
+		return fmt.Sprintf("___AGY_CODE_BLOCK_%d___", idx)
+	})
+
+	// 3. Protect inline code with placeholders
+	var inlineCodes []string
+	res = inlineCodeRegex.ReplaceAllStringFunc(res, func(m string) string {
+		idx := len(inlineCodes)
+		inlineCodes = append(inlineCodes, m)
+		return fmt.Sprintf("___AGY_INLINE_CODE_%d___", idx)
+	})
+
+	// 4. Convert markdown list items (- item, * item) to Zalo bullet points (• item)
+	res = bulletRegex.ReplaceAllString(res, "${1}• ")
+
+	// 5. Convert single asterisk italics (*italic*) to Zalo italic (_italic_), preserving **bold**
+	for i := 0; i < 2; i++ {
+		res = singleAsteriskRegex.ReplaceAllString(res, "${1}_${2}_${3}")
+	}
+
+	// 6. Convert single tilde strikethrough (~strike~) to Zalo double tildes (~~strike~~)
+	for i := 0; i < 2; i++ {
+		res = singleTildeRegex.ReplaceAllString(res, "${1}~~${2}~~${3}")
+	}
+
+	// 7. Convert Markdown links [Title](url) to Title (url) for clean display & auto-linking on Zalo
+	res = markdownLinkRegex.ReplaceAllStringFunc(res, func(m string) string {
+		sub := markdownLinkRegex.FindStringSubmatch(m)
+		if len(sub) == 3 {
+			title := strings.TrimSpace(sub[1])
+			url := strings.TrimSpace(sub[2])
+			if title == url || title == "" {
+				return url
+			}
+			return fmt.Sprintf("%s (%s)", title, url)
+		}
+		return m
+	})
+
+	// 8. Convert markdown horizontal rules (---, ***, ___) to clean Zalo divider
+	res = hrRegex.ReplaceAllString(res, "────────────────────────")
+
+	// 9. Restore code blocks and inline code
+	for i, cb := range codeBlocks {
+		placeholder := fmt.Sprintf("___AGY_CODE_BLOCK_%d___", i)
+		res = strings.Replace(res, placeholder, cb, 1)
+	}
+	for i, ic := range inlineCodes {
+		placeholder := fmt.Sprintf("___AGY_INLINE_CODE_%d___", i)
+		res = strings.Replace(res, placeholder, ic, 1)
+	}
+
+	// 10. Normalize multiple blank lines to maximum 2
 	multipleNewlines := regexp.MustCompile(`\n{3,}`)
 	res = multipleNewlines.ReplaceAllString(res, "\n\n")
 

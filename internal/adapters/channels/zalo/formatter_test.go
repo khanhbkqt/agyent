@@ -69,7 +69,7 @@ func TestConvertHTMLToZaloMarkdown(t *testing.T) {
 		{
 			name:     "Anchor and Italic",
 			input:    "Visit <i>our website</i> at <a href=\"https://example.com\">Example</a>.",
-			expected: "Visit *our website* at [Example](https://example.com).",
+			expected: "Visit _our website_ at [Example](https://example.com).",
 		},
 		{
 			name:     "Paragraphs and Line breaks",
@@ -84,6 +84,73 @@ func TestConvertHTMLToZaloMarkdown(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestFormatToZaloMarkdown(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Markdown list to bullets",
+			input:    "- First item\n- Second item\n* Third item",
+			expected: "• First item\n• Second item\n• Third item",
+		},
+		{
+			name:     "Preserve bold and convert single asterisk italic",
+			input:    "**Bold text** and *italic text* and more **bold**",
+			expected: "**Bold text** and _italic text_ and more **bold**",
+		},
+		{
+			name:     "Single tilde to strikethrough",
+			input:    "This is ~deleted~ text",
+			expected: "This is ~~deleted~~ text",
+		},
+		{
+			name:     "Markdown links converted to clickable URLs",
+			input:    "Visit [Traomo FC](https://traomofc.thevibecoding.dev) now!",
+			expected: "Visit Traomo FC (https://traomofc.thevibecoding.dev) now!",
+		},
+		{
+			name:     "Markdown horizontal divider to Zalo line",
+			input:    "Section 1\n---\nSection 2",
+			expected: "Section 1\n────────────────────────\nSection 2",
+		},
+		{
+			name:     "Code block and inline code protected",
+			input:    "Code: `*not italic*` and:\n```go\n// *not italic*\nfmt.Println(\"- not bullet\")\n```",
+			expected: "Code: `*not italic*` and:\n```go\n// *not italic*\nfmt.Println(\"- not bullet\")\n```",
+		},
+		{
+			name:     "HTML input converted properly",
+			input:    "<b>Header</b><br/><i>Subtitle</i>",
+			expected: "**Header**\n_Subtitle_",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := zalo.FormatToZaloMarkdown(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestZaloMessageFormatter_RichStyles(t *testing.T) {
+	f := zalo.NewFormatter()
+	f.Big("Tiêu đề lớn").NewLine()
+	f.Underline("Gạch chân").NewLine()
+	f.Strikethrough("Gạch ngang").NewLine()
+	f.Color("Chữ đỏ", "red").NewLine()
+	f.Color("Chữ xanh", "green").NewLine()
+
+	md := f.BuildMarkdown()
+	assert.Contains(t, md, "{big}Tiêu đề lớn{/big}")
+	assert.Contains(t, md, "{underline}Gạch chân{/underline}")
+	assert.Contains(t, md, "~~Gạch ngang~~")
+	assert.Contains(t, md, "{red}Chữ đỏ{/red}")
+	assert.Contains(t, md, "{green}Chữ xanh{/green}")
 }
 
 func TestSanitizePrivacyLeaks(t *testing.T) {

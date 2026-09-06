@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -332,4 +333,87 @@ func TestZaloAdapter_HITLCoordination(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for HITL approval via adapter")
 	}
+}
+
+func TestZaloAdapter_MultiBotRouting_AgentNameAndSessionKey(t *testing.T) {
+	var mu sync.Mutex
+	calls := make(map[string]int)
+	var lastReceivedText string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		calls[r.URL.Path]++
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			var body zalo.SendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			lastReceivedText = body.Text
+		}
+		mu.Unlock()
+
+		_ = json.NewEncoder(w).Encode(zalo.APIResponse{OK: true})
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.Zalo.APIURL = server.URL
+	cfg.Zalo.Bots = []config.BotConfig{
+		{Name: "default", BotToken: "token_default"},
+		{Name: "traomo_bot", BotToken: "4293721026991223652:secret_traomo", BindAgent: "traomofc"},
+	}
+	cfg.Storage.AgentsDir = t.TempDir()
+
+	adapter, err := zalo.NewAdapter(cfg, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// 1. Route by AgentName: "traomofc"
+	err = adapter.Send(ctx, domain.OutboundMessage{
+		AgentName: "traomofc",
+		ChatID:    "zgr-test",
+		Text:      "Hello from traomofc agent",
+	})
+	require.NoError(t, err)
+
+	// 2. Route by SessionKey: "zalo:4293721026991223652:zgr-test"
+	err = adapter.Send(ctx, domain.OutboundMessage{
+		SessionKey: "zalo:4293721026991223652:zgr-test",
+		ChatID:     "zgr-test",
+		Text:       "Hello from numeric session key",
+	})
+	require.NoError(t, err)
+
+	// 3. Route by BotID: 4293721026991223652
+	err = adapter.Send(ctx, domain.OutboundMessage{
+		BotID:  4293721026991223652,
+		ChatID: "zgr-test",
+		Text:   "Hello from numeric bot ID",
+	})
+	require.NoError(t, err)
+
+	// 4. Fallback when unknown bot is specified: should route to default without error
+	err = adapter.Send(ctx, domain.OutboundMessage{
+		BotIDStr: "unknown_bot",
+		ChatID:   "zgr-test",
+		Text:     "Hello fallback",
+	})
+	require.NoError(t, err)
+
+	// 5. Verify format conversion on outbound message
+	err = adapter.Send(ctx, domain.OutboundMessage{
+		AgentName: "traomofc",
+		ChatID:    "zgr-test",
+		Text:      "**TraoMo FC**\n- Cầu thủ A\n*italic*\n[Traomo Web](https://traomofc.thevibecoding.dev)\n---",
+	})
+	require.NoError(t, err)
+
+	mu.Lock()
+	assert.Equal(t, 4, calls["/bot4293721026991223652:secret_traomo/sendMessage"], "expected 4 messages to traomo_bot")
+	assert.Equal(t, 1, calls["/bottoken_default/sendMessage"], "expected 1 message to fallback default bot")
+	assert.Contains(t, lastReceivedText, "• Cầu thủ A")
+	assert.Contains(t, lastReceivedText, "_italic_")
+	assert.Contains(t, lastReceivedText, "Traomo Web (https://traomofc.thevibecoding.dev)")
+	assert.Contains(t, lastReceivedText, "────────────────────────")
+	mu.Unlock()
 }
