@@ -327,6 +327,49 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		SubjectID: turn.UserID,
 	}
 
+	var activeMCPServers []domain.MCPServerConfig
+	if e.pluginManager != nil && agent != nil {
+		pluginResolved, _ := e.pluginManager.AssembleActivePlugins(ctx, agent.WorkspacePath, workspaceDir)
+		if pluginResolved != nil {
+			activeMCPServers = pluginResolved.ActiveMCPServers
+		}
+	}
+	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
+		releaseMCPLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx, turn.SessionKey)
+		if leaseErr == nil {
+			defer releaseMCPLease()
+			activeServers := make([]domain.MCPServerConfig, len(activeMCPServers))
+			copy(activeServers, activeMCPServers)
+			for i := range activeServers {
+				envCopy := make(map[string]string, len(activeServers[i].Env)+5)
+				for k, v := range activeServers[i].Env {
+					envCopy[k] = v
+				}
+				if _, exists := envCopy["AGYENT_AGENT_NAME"]; !exists && agent != nil {
+					envCopy["AGYENT_AGENT_NAME"] = agent.Name
+				}
+				if _, exists := envCopy["AGYENT_AGENT_WORKSPACE"]; !exists {
+					envCopy["AGYENT_AGENT_WORKSPACE"] = workspaceDir
+				}
+				if _, exists := envCopy["AGYENT_SESSION_KEY"]; !exists && turn.SessionKey != "" {
+					envCopy["AGYENT_SESSION_KEY"] = turn.SessionKey
+				}
+				if _, exists := envCopy["AGYENT_USER_ID"]; !exists && turn.UserID != "" {
+					envCopy["AGYENT_USER_ID"] = turn.UserID
+				}
+				if _, exists := envCopy["AGYENT_TURN_ID"]; !exists && turn.TurnID != "" {
+					envCopy["AGYENT_TURN_ID"] = turn.TurnID
+				}
+				activeServers[i].Env = envCopy
+			}
+			if mountErr := e.mcpRegistry.MountServers(ctx, turn.SessionKey, activeServers); mountErr == nil {
+				defer func() {
+					_ = e.mcpRegistry.UnmountServers(context.Background(), turn.SessionKey, activeServers)
+				}()
+			}
+		}
+	}
+
 	isStream := e.IsStreamingEnabled()
 
 	// 7. Execute turn with heartbeat typing when not streaming

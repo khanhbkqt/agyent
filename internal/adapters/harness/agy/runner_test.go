@@ -903,3 +903,45 @@ func TestHarness_HeadlessFlags_DangerouslySkipPermissions(t *testing.T) {
 	assert.Contains(t, res.ResponseText, "Headless flags verified")
 }
 
+func TestHarness_ExecuteStream_TimeoutAndCancelContext(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "sleep_hang")
+
+	harness := newTestHarness("sleep_hang", 1)
+	tempDir := t.TempDir()
+
+	t.Run("WatchdogTimeoutIncludesSessionContext", func(t *testing.T) {
+		req := domain.ExecutionRequest{
+			Prompt:       "test stream timeout",
+			WorkspaceDir: tempDir,
+			Timeout:      200 * time.Millisecond,
+			Admission:    testAdmission("stream-agent", tempDir),
+		}
+
+		res, err := harness.ExecuteStream(context.Background(), req, "session-test-timeout")
+		assert.Nil(t, res)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "timed out")
+		assert.Contains(t, err.Error(), "session-test-timeout")
+	})
+
+	t.Run("ContextCancelIncludesSessionContext", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+
+		req := domain.ExecutionRequest{
+			Prompt:       "test stream cancel",
+			WorkspaceDir: tempDir,
+			Timeout:      10 * time.Second,
+			Admission:    testAdmission("stream-agent", tempDir),
+		}
+
+		res, err := harness.ExecuteStream(ctx, req, "session-test-cancel")
+		assert.Nil(t, res)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cancelled")
+		assert.Contains(t, err.Error(), "session-test-cancel")
+	})
+}
+
+

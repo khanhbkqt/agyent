@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
@@ -26,6 +27,12 @@ const (
 func AcquireOSFileLock(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if dir := filepath.Dir(lockPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, fmt.Errorf("failed to create lock directory %s: %w", dir, err)
+		}
 	}
 
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0666)

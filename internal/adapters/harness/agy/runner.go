@@ -211,15 +211,26 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 	// 3. Handle Context Timeout or Cancellation
 	if execCtx.Err() != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			slog.ErrorContext(ctx, "AGY execution timed out", slog.Duration("timeout", timeout), slog.String("workspace", req.WorkspaceDir))
+			slog.ErrorContext(ctx, "AGY execution timed out",
+				slog.Duration("timeout", timeout),
+				slog.String("workspace", req.WorkspaceDir),
+				slog.String("stderr", stderrBuf.String()),
+			)
 			return nil, domain.NewExecutionOutcomeError(
 				domain.StatusExecutionFailed,
-				fmt.Sprintf("AGY execution timed out after %v", timeout),
+				fmt.Sprintf("AGY execution timed out after %v (workspace: %s)", timeout, req.WorkspaceDir),
 				execCtx.Err(),
 			)
 		}
-		slog.WarnContext(ctx, "AGY execution cancelled", slog.String("workspace", req.WorkspaceDir))
-		return nil, domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "AGY execution cancelled", execCtx.Err())
+		slog.WarnContext(ctx, "AGY execution cancelled",
+			slog.String("workspace", req.WorkspaceDir),
+			slog.String("stderr", stderrBuf.String()),
+		)
+		return nil, domain.NewExecutionOutcomeError(
+			domain.StatusExecutionFailed,
+			fmt.Sprintf("AGY execution cancelled (workspace: %s)", req.WorkspaceDir),
+			execCtx.Err(),
+		)
 	}
 
 	// 4. Parse JSON boundary output
@@ -531,15 +542,39 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 			)
 			timeoutErr = domain.NewExecutionOutcomeError(
 				domain.StatusExecutionFailed,
-				fmt.Sprintf("AGY stream execution timed out after %v without milestone activity", timeout),
+				fmt.Sprintf("AGY stream execution timed out after %v without milestone activity (session: %s)", timeout, sessionKey),
 				context.DeadlineExceeded,
+			)
+		} else if entry != nil && entry.interrupted.Load() {
+			slog.InfoContext(ctx, "AGY stream execution interrupted by request",
+				slog.String("session_key", sessionKey),
+				slog.String("stderr", stderrBuf.String()),
+			)
+			timeoutErr = domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("AGY stream execution interrupted (session: %s)", sessionKey),
+				execCtx.Err(),
+			)
+		} else if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			slog.ErrorContext(ctx, "AGY stream caller context deadline exceeded",
+				slog.String("session_key", sessionKey),
+				slog.String("stderr", stderrBuf.String()),
+			)
+			timeoutErr = domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("AGY stream execution context deadline exceeded (session: %s)", sessionKey),
+				ctx.Err(),
 			)
 		} else {
 			slog.WarnContext(ctx, "AGY stream execution cancelled",
 				slog.String("session_key", sessionKey),
 				slog.String("stderr", stderrBuf.String()),
 			)
-			timeoutErr = domain.NewExecutionOutcomeError(domain.StatusExecutionFailed, "AGY stream execution cancelled", execCtx.Err())
+			timeoutErr = domain.NewExecutionOutcomeError(
+				domain.StatusExecutionFailed,
+				fmt.Sprintf("AGY stream execution cancelled (session: %s)", sessionKey),
+				execCtx.Err(),
+			)
 		}
 		return nil, timeoutErr
 	}
@@ -569,6 +604,9 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	res := executionResultFromStream(streamRes)
 	if streamRes.Status == "INTERRUPTED" && res.Error == "" {
 		res.Error = "INTERRUPTED"
+	}
+	if waitErr != nil && res.Error == "" {
+		res.Error = fmt.Sprintf("process exit error: %v", waitErr)
 	}
 
 	// Fallback detect artifacts if not captured during stream

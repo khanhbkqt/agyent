@@ -73,12 +73,23 @@ func NewMCPSyncer(configPath string) (*MCPSyncer, error) {
 	return syncer, nil
 }
 
-// AcquireExclusiveTurn serializes complete MCP-enabled turns. AGY currently
-// discovers MCP configuration through a process-global file rather than a
-// per-invocation flag; holding a separate OS-backed lease prevents one tenant
-// from observing another tenant's temporary server entries.
-func (s *MCPSyncer) AcquireExclusiveTurn(ctx context.Context) (func(), error) {
-	unlock, err := oslock.AcquireOSFileLock(ctx, s.turnLockPath, 30*time.Minute)
+// AcquireExclusiveTurn serializes MCP turns per session or workspace. AGY
+// discovers MCP configuration through the shared config file; using session-scoped
+// turn leases prevents multi-workspace concurrency deadlocks while isolating
+// ephemeral server mount lifetimes.
+func (s *MCPSyncer) AcquireExclusiveTurn(ctx context.Context, sessionKey ...string) (func(), error) {
+	if s == nil {
+		return func() {}, nil
+	}
+	lockPath := s.turnLockPath
+	if len(sessionKey) > 0 {
+		key := strings.TrimSpace(sessionKey[0])
+		if key != "" {
+			digest := sha256.Sum256([]byte(key))
+			lockPath = fmt.Sprintf("%s.%s.turn.lock", s.configPath, hex.EncodeToString(digest[:16]))
+		}
+	}
+	unlock, err := oslock.AcquireOSFileLock(ctx, lockPath, 30*time.Minute)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire exclusive MCP turn lease: %w", err)
 	}
@@ -118,7 +129,7 @@ func (s *MCPSyncer) bootstrapClean() error {
 
 // MountServers registers the given MCP servers for a turn with reference counting.
 func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers []domain.MCPServerConfig) error {
-	if len(servers) == 0 {
+	if s == nil || len(servers) == 0 {
 		return nil
 	}
 
@@ -178,7 +189,7 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 
 // UnmountServers removes or decrements reference count of ephemeral MCP servers upon turn finish.
 func (s *MCPSyncer) UnmountServers(ctx context.Context, sessionKey string, servers []domain.MCPServerConfig) error {
-	if len(servers) == 0 {
+	if s == nil || len(servers) == 0 {
 		return nil
 	}
 
@@ -216,6 +227,8 @@ func (s *MCPSyncer) UnmountServers(ctx context.Context, sessionKey string, serve
 			} else {
 				s.activeMounts[key] = count - 1
 			}
+		} else {
+			delete(cfg.MCPServers, key)
 		}
 	}
 
@@ -289,12 +302,15 @@ func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 }
 
 func formatEphemeralKey(name string, scope ...string) string {
-	if len(scope) > 0 && scope[0] != "" {
-		digest := sha256.Sum256([]byte(scope[0]))
-		// The full session string is never persisted in the global config; a
-		// 128-bit digest prefix avoids Telegram's shared `telegram` prefix and
-		// makes practical name collisions infeasible.
-		return fmt.Sprintf("__agyent_ephemeral_%s_%s", hex.EncodeToString(digest[:16]), name)
+	if len(scope) > 0 {
+		key := strings.TrimSpace(scope[0])
+		if key != "" {
+			digest := sha256.Sum256([]byte(key))
+			// The full session string is never persisted in the global config; a
+			// 128-bit digest prefix avoids Telegram's shared `telegram` prefix and
+			// makes practical name collisions infeasible.
+			return fmt.Sprintf("__agyent_ephemeral_%s_%s", hex.EncodeToString(digest[:16]), name)
+		}
 	}
 	return "__agyent_ephemeral_" + name
 }

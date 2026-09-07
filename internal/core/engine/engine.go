@@ -923,7 +923,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	// 7. Dynamic MCP Mounting (with deferred unmount for Zero Context Leakage)
 	if len(activeMCPServers) > 0 && e.mcpRegistry != nil {
-		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx)
+		releaseMCPLease, err := e.mcpRegistry.AcquireExclusiveTurn(turnCtx, sessionKey)
 		if err != nil {
 			slog.ErrorContext(turnCtx, "MCP turn lease failed; refusing execution", "session_key", sessionKey, "error", err)
 			if e.channel != nil {
@@ -941,21 +941,26 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 		defer releaseMCPLease()
 
 		for i := range activeMCPServers {
-			if activeMCPServers[i].Env == nil {
-				activeMCPServers[i].Env = make(map[string]string)
+			envCopy := make(map[string]string, len(activeMCPServers[i].Env)+5)
+			for k, v := range activeMCPServers[i].Env {
+				envCopy[k] = v
 			}
-			if _, exists := activeMCPServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
-				activeMCPServers[i].Env["AGYENT_AGENT_NAME"] = agent.Name
+			if _, exists := envCopy["AGYENT_AGENT_NAME"]; !exists && agent != nil {
+				envCopy["AGYENT_AGENT_NAME"] = agent.Name
 			}
-			if _, exists := activeMCPServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
-				activeMCPServers[i].Env["AGYENT_AGENT_WORKSPACE"] = workspaceDir
+			if _, exists := envCopy["AGYENT_AGENT_WORKSPACE"]; !exists {
+				envCopy["AGYENT_AGENT_WORKSPACE"] = workspaceDir
 			}
-			if _, exists := activeMCPServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
-				activeMCPServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+			if _, exists := envCopy["AGYENT_SESSION_KEY"]; !exists && sessionKey != "" {
+				envCopy["AGYENT_SESSION_KEY"] = sessionKey
 			}
-			if _, exists := activeMCPServers[i].Env["AGYENT_USER_ID"]; !exists {
-				activeMCPServers[i].Env["AGYENT_USER_ID"] = msg.Sender.ID
+			if _, exists := envCopy["AGYENT_USER_ID"]; !exists && msg.Sender.ID != "" {
+				envCopy["AGYENT_USER_ID"] = msg.Sender.ID
 			}
+			if _, exists := envCopy["AGYENT_TURN_ID"]; !exists && turnID != "" {
+				envCopy["AGYENT_TURN_ID"] = turnID
+			}
+			activeMCPServers[i].Env = envCopy
 		}
 		if err := e.mcpRegistry.MountServers(turnCtx, sessionKey, activeMCPServers); err != nil {
 			slog.ErrorContext(turnCtx, "MCP mount failed; refusing execution", "session_key", sessionKey, "error", err)

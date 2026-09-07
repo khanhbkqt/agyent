@@ -91,3 +91,19 @@ func TestAcquireOSFileLock_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestAcquireOSFileLock_AutoCreatesParentDir(t *testing.T) {
+	tempDir := t.TempDir()
+	lockPath := filepath.Join(tempDir, "deep", "nested", "subpath", "test.lock")
+
+	unlock, err := AcquireOSFileLock(context.Background(), lockPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected lock to create parent directory automatically, got err: %v", err)
+	}
+	defer unlock()
+
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("expected lock file to exist at %s", lockPath)
+	}
+}
+

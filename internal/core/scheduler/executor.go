@@ -96,27 +96,29 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 	if e.pluginManager != nil && e.mcpRegistry != nil {
 		resolvedCtx, err := e.pluginManager.AssembleActivePlugins(ctx, "", agentWS)
 		if err == nil && resolvedCtx != nil && len(resolvedCtx.ActiveMCPServers) > 0 {
-			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx)
+			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx, sessionKey)
 			if leaseErr == nil {
 				defer releaseLease()
 				activeServers := make([]domain.MCPServerConfig, len(resolvedCtx.ActiveMCPServers))
 				copy(activeServers, resolvedCtx.ActiveMCPServers)
 				for i := range activeServers {
-					if activeServers[i].Env == nil {
-						activeServers[i].Env = make(map[string]string)
+					envCopy := make(map[string]string, len(activeServers[i].Env)+5)
+					for k, v := range activeServers[i].Env {
+						envCopy[k] = v
 					}
-					if _, exists := activeServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
-						activeServers[i].Env["AGYENT_AGENT_NAME"] = task.AgentName
+					if _, exists := envCopy["AGYENT_AGENT_NAME"]; !exists {
+						envCopy["AGYENT_AGENT_NAME"] = task.AgentName
 					}
-					if _, exists := activeServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
-						activeServers[i].Env["AGYENT_AGENT_WORKSPACE"] = agentWS
+					if _, exists := envCopy["AGYENT_AGENT_WORKSPACE"]; !exists {
+						envCopy["AGYENT_AGENT_WORKSPACE"] = agentWS
 					}
-					if _, exists := activeServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
-						activeServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+					if _, exists := envCopy["AGYENT_SESSION_KEY"]; !exists {
+						envCopy["AGYENT_SESSION_KEY"] = sessionKey
 					}
-					if _, exists := activeServers[i].Env["AGYENT_USER_ID"]; !exists {
-						activeServers[i].Env["AGYENT_USER_ID"] = task.CreatedBy
+					if _, exists := envCopy["AGYENT_USER_ID"]; !exists {
+						envCopy["AGYENT_USER_ID"] = task.CreatedBy
 					}
+					activeServers[i].Env = envCopy
 				}
 				if mountErr := e.mcpRegistry.MountServers(ctx, sessionKey, activeServers); mountErr == nil {
 					defer func() {
@@ -304,24 +306,26 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 	if e.pluginManager != nil && e.mcpRegistry != nil {
 		resolvedCtx, err := e.pluginManager.AssembleActivePlugins(ctx, "", agentWS)
 		if err == nil && resolvedCtx != nil && len(resolvedCtx.ActiveMCPServers) > 0 {
-			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx)
+			releaseLease, leaseErr := e.mcpRegistry.AcquireExclusiveTurn(ctx, sessionKey)
 			if leaseErr == nil {
 				defer releaseLease()
 				activeServers := make([]domain.MCPServerConfig, len(resolvedCtx.ActiveMCPServers))
 				copy(activeServers, resolvedCtx.ActiveMCPServers)
 				for i := range activeServers {
-					if activeServers[i].Env == nil {
-						activeServers[i].Env = make(map[string]string)
+					envCopy := make(map[string]string, len(activeServers[i].Env)+4)
+					for k, v := range activeServers[i].Env {
+						envCopy[k] = v
 					}
-					if _, exists := activeServers[i].Env["AGYENT_AGENT_NAME"]; !exists {
-						activeServers[i].Env["AGYENT_AGENT_NAME"] = hb.AgentName
+					if _, exists := envCopy["AGYENT_AGENT_NAME"]; !exists {
+						envCopy["AGYENT_AGENT_NAME"] = hb.AgentName
 					}
-					if _, exists := activeServers[i].Env["AGYENT_AGENT_WORKSPACE"]; !exists {
-						activeServers[i].Env["AGYENT_AGENT_WORKSPACE"] = agentWS
+					if _, exists := envCopy["AGYENT_AGENT_WORKSPACE"]; !exists {
+						envCopy["AGYENT_AGENT_WORKSPACE"] = agentWS
 					}
-					if _, exists := activeServers[i].Env["AGYENT_SESSION_KEY"]; !exists {
-						activeServers[i].Env["AGYENT_SESSION_KEY"] = sessionKey
+					if _, exists := envCopy["AGYENT_SESSION_KEY"]; !exists {
+						envCopy["AGYENT_SESSION_KEY"] = sessionKey
 					}
+					activeServers[i].Env = envCopy
 				}
 				if mountErr := e.mcpRegistry.MountServers(ctx, sessionKey, activeServers); mountErr == nil {
 					defer func() {
