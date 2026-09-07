@@ -5,14 +5,24 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.49] - 2026-09-07
+## [1.0.51] - 2026-09-07
 
 ### Fixed
-- **Zalo Media JSON String & Webhook Envelope Unmarshaling (`channels/zalo`):**
-  - **Custom Unmarshaler for Media Fields:** Implemented custom `UnmarshalJSON` on `ZaloInboundMessage` with `parseFlexibleAttachments`, supporting plain string media URLs (`"photo": "https://..."`, `"image": "https://..."`, `"voice_url": "https://..."`, `"document": "https://..."`, `"sticker": "..."`) as well as single object and array attachment structures without unmarshal type mismatch errors.
-  - **Wrapped Webhook & Polling Envelope Normalization:** Implemented custom `UnmarshalJSON` on `ZaloUpdate` to automatically extract updates wrapped in `{ "ok": true, "result": { "event_name": "...", "message": { ... } } }` or `{ "data": { ... } }`.
-  - **Zalo Chat & User Normalization:** Added `DisplayName` fallback on `ZaloUser` (`GetEffectiveName()`), `ChatType` / `Type` normalization on `ZaloChat` (`IsPrivate()`, `EffectiveType()`), and millisecond timestamp parsing (`time.UnixMilli`).
-  - **Webhook Secret Header:** Added support for official `X-Bot-Api-Secret-Token` header alongside `X-Secret-Token` and `X-Bot-Token`.
+- **Zalo Native `photo_url` & Direct Media Unmarshaling (`channels/zalo`):**
+  - **Native Media Field Mapping:** Added support for official Zalo Bot Platform media fields: `photo_url`, `image_url`, `doc_url`, `document_url`, `file_url`, `audio_url`, `voice_url`, `video_url`, and `message_type: CHAT_PHOTO`.
+  - **Direct CDN Media Ingress:** Accurately unmarshals direct Zalo CDN image links (`https://photo-stal-*.zdn.vn/...`) into `domain.InboundAttachmentRef`, enabling full multimodal processing for single and batch/album photo updates.
+  - **Live Payload Inspector Script:** Added `scripts/debug_zalo_polling.go` utility for real-time Zalo update stream inspection.
+  - **Comprehensive Test Coverage:** Added unit test `TestZaloInboundMessage_UnmarshalJSON_RealZaloPlatformPhotoURL`.
+
+---
+
+## [1.0.50] - 2026-09-07
+
+### Fixed
+- **Session-Scoped MCP Turn Leases, Deep-Copied Environment Isolation & Dynamic Versioning (`mcp`, `concurrency`, `harness/agy`):**
+  - **Turn Leases:** Implemented session-scoped MCP turn lease acquisition and release to prevent tool unmounting races across concurrent sessions.
+  - **Environment Isolation:** Deep-copied environment variables in runner to guarantee complete subprocess isolation.
+  - **Dynamic Versioning:** Dynamically derived CLI version from git tags during build and release packaging.
 
 ---
 

@@ -313,13 +313,20 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 		Description string              `json:"description"`
 		Attachments json.RawMessage     `json:"attachments"`
 		Photo       json.RawMessage     `json:"photo"`
+		PhotoURL    json.RawMessage     `json:"photo_url"`
 		Image       json.RawMessage     `json:"image"`
+		ImageURL    json.RawMessage     `json:"image_url"`
 		Document    json.RawMessage     `json:"document"`
+		DocURL      json.RawMessage     `json:"doc_url"`
+		DocumentURL json.RawMessage     `json:"document_url"`
 		File        json.RawMessage     `json:"file"`
+		FileURL     json.RawMessage     `json:"file_url"`
 		Audio       json.RawMessage     `json:"audio"`
+		AudioURL    json.RawMessage     `json:"audio_url"`
 		Voice       json.RawMessage     `json:"voice"`
 		VoiceURL    json.RawMessage     `json:"voice_url"`
 		Video       json.RawMessage     `json:"video"`
+		VideoURL    json.RawMessage     `json:"video_url"`
 		Sticker     json.RawMessage     `json:"sticker"`
 		URL         json.RawMessage     `json:"url"`
 		ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message"`
@@ -353,12 +360,24 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 	m.Attachments = parseFlexibleAttachments(raw.Attachments, "file")
 	m.Photo = parseFlexibleAttachments(raw.Photo, "photo")
 	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.PhotoURL, "photo")
+	}
+	if len(m.Photo) == 0 {
 		m.Photo = parseFlexibleAttachments(raw.Image, "photo")
+	}
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.ImageURL, "photo")
 	}
 	if docs := parseFlexibleAttachments(raw.Document, "document"); len(docs) > 0 {
 		m.Document = &docs[0]
+	} else if docURLs := parseFlexibleAttachments(raw.DocURL, "document"); len(docURLs) > 0 {
+		m.Document = &docURLs[0]
+	} else if docURLs := parseFlexibleAttachments(raw.DocumentURL, "document"); len(docURLs) > 0 {
+		m.Document = &docURLs[0]
 	} else if files := parseFlexibleAttachments(raw.File, "document"); len(files) > 0 {
 		m.Document = &files[0]
+	} else if fileURLs := parseFlexibleAttachments(raw.FileURL, "document"); len(fileURLs) > 0 {
+		m.Document = &fileURLs[0]
 	}
 	if voices := parseFlexibleAttachments(raw.Voice, "voice"); len(voices) > 0 {
 		m.Voice = &voices[0]
@@ -367,9 +386,13 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 	}
 	if audios := parseFlexibleAttachments(raw.Audio, "audio"); len(audios) > 0 {
 		m.Audio = &audios[0]
+	} else if audioURLs := parseFlexibleAttachments(raw.AudioURL, "audio"); len(audioURLs) > 0 {
+		m.Audio = &audioURLs[0]
 	}
 	if videos := parseFlexibleAttachments(raw.Video, "video"); len(videos) > 0 {
 		m.Video = &videos[0]
+	} else if videoURLs := parseFlexibleAttachments(raw.VideoURL, "video"); len(videoURLs) > 0 {
+		m.Video = &videoURLs[0]
 	}
 	if stickers := parseFlexibleAttachments(raw.Sticker, "sticker"); len(stickers) > 0 {
 		m.Attachments = append(m.Attachments, stickers...)

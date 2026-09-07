@@ -540,5 +540,45 @@ func TestZaloInboundMessage_UnmarshalJSON_VoiceAudioDocumentSticker(t *testing.T
 	assert.True(t, foundSticker, "expected sticker attachment")
 }
 
+func TestZaloInboundMessage_UnmarshalJSON_RealZaloPlatformPhotoURL(t *testing.T) {
+	raw := `{
+		"ok": true,
+		"result": {
+			"event_name": "message.image.received",
+			"message": {
+				"chat": {
+					"id": "704aebb9aff246ac1fe3",
+					"chat_type": "PRIVATE"
+				},
+				"message_id": "2e4c923d75b4e1edb8a2",
+				"date": 1788780810265,
+				"message_type": "CHAT_PHOTO",
+				"from": {
+					"id": "704aebb9aff246ac1fe3",
+					"is_bot": false,
+					"display_name": "Khánh Nguyễn"
+				},
+				"photo_url": "https://photo-stal-22.zdn.vn/no/jpg/5bff10c65d12874cde03/2aOboQwymKj2LsvOdya2Km2y6nWmXwUA0coI68mG.jpg",
+				"caption": "photo with captions"
+			}
+		},
+		"error_code": 0
+	}`
 
+	var update zalo.ZaloUpdate
+	err := json.Unmarshal([]byte(raw), &update)
+	require.NoError(t, err)
+	require.NotNil(t, update.Message)
+
+	msg := update.Message
+	assert.Equal(t, "2e4c923d75b4e1edb8a2", msg.MessageID)
+	assert.Equal(t, "Khánh Nguyễn", msg.From.GetEffectiveName())
+	assert.True(t, msg.Chat.IsPrivate())
+	assert.Equal(t, "photo with captions", msg.Caption)
+
+	atts := msg.CollectAttachments()
+	require.Len(t, atts, 1)
+	assert.Equal(t, "photo", atts[0].Type)
+	assert.Equal(t, "https://photo-stal-22.zdn.vn/no/jpg/5bff10c65d12874cde03/2aOboQwymKj2LsvOdya2Km2y6nWmXwUA0coI68mG.jpg", atts[0].GetEffectiveURL())
+}
 
