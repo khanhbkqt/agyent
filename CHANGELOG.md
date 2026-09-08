@@ -5,6 +5,22 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.53] - 2026-09-08
+
+### Fixed
+- **Session Lock Deadlock Elimination on Force Kill (`concurrency`, `engine`):**
+  - Refactored `SessionLockManager` to replace channel-closure aborts with monotonic token-based holder revocation (`holderToken`).
+  - When `ForceUnlock` is invoked (via `/force_unlock` or HITL "Force Kill Agent"), the current lock holder's token is immediately revoked and the semaphore released, allowing queued turns or new prompts to seamlessly acquire the session lock without deadlock or abort errors (`ErrLockCanceled`).
+  - `ForceUnlockSession` now proactively cancels any active subagent tasks scoped to the session via `subagentDispatcher.CancelTaskScoped`.
+- **Subprocess Pipe & Stream Cleanup on Process Termination (`harness/agy`):**
+  - Added background context monitors in `Execute` and `ExecuteStream` to proactively kill the process tree and close `stdoutPipe` and `stdinPipe` immediately upon cancellation or timeout, eliminating pipe read blocking hangs.
+  - Shortened post-stream grace periods to accelerate prompt handoff and turn unwinding.
+- **Fail-Closed Authorization Enforcement (`engine`):**
+  - Strengthened `authorizeAgentAction` to strictly return `ErrAccessDenied` if the policy engine is uninitialized.
+  - Bound turn security registration to specific turn IDs (`UnregisterTurnByID(turnID)`).
+
+---
+
 ## [1.0.52] - 2026-09-08
 
 ### Added
