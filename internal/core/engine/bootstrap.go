@@ -184,10 +184,33 @@ func LoadAgentKnowledgeDirectives(workspaceDir string) string {
 	return strings.TrimSpace(sb.String())
 }
 
+// appendReplyContext formats and appends the short context of a replied-to message in Level 4.
+func appendReplyContext(sb *strings.Builder, replyCtx *domain.ReplyContext) {
+	if replyCtx == nil {
+		return
+	}
+	sender := strings.TrimSpace(replyCtx.Sender)
+	text := strings.TrimSpace(replyCtx.Text)
+	if sender == "" && text == "" {
+		return
+	}
+	sb.WriteString("[REPLIED MESSAGE CONTEXT]\n")
+	if sender != "" {
+		sb.WriteString(fmt.Sprintf("- From: %s\n", sender))
+	}
+	if text != "" {
+		sb.WriteString(fmt.Sprintf("- Content: %s\n", text))
+	}
+	sb.WriteString("\n")
+}
+
 // ComposeTurnPrompt formats the execution prompt with Level 0 system foundation, knowledge directives, attached files, and user text.
 func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) string {
 	var sb strings.Builder
 	estimatedSize := len(systemRuntimeFoundationTemplate) + len(knowledgeDirectives) + len(msg.Text) + 256
+	if msg.ReplyContext != nil {
+		estimatedSize += len(msg.ReplyContext.Text) + len(msg.ReplyContext.Sender) + 64
+	}
 	sb.Grow(estimatedSize)
 
 	// Level 0: Static System Runtime Foundation
@@ -198,6 +221,8 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 		sb.WriteString(knowledgeDirectives)
 		sb.WriteString("\n\n")
 	}
+
+	appendReplyContext(&sb, msg.ReplyContext)
 
 	userText := msg.Text
 	if strings.TrimSpace(userText) == "" {
@@ -215,7 +240,7 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 		}
 		sb.WriteString("\nUser Prompt: ")
 		sb.WriteString(userText)
-	} else if knowledgeDirectives != "" {
+	} else if knowledgeDirectives != "" || msg.ReplyContext != nil {
 		sb.WriteString("[USER MESSAGE]\n")
 		sb.WriteString(userText)
 	} else {
@@ -230,12 +255,15 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 // Level 1: [GLOBAL CORE DIRECTIVES] (Identity, Soul, User, Long-Term Memory, Today Memory, Core Rules)
 // Level 2: [WORKSPACE PROJECT DIRECTIVES]
 // Level 3: [PLUGIN RULES] & [AVAILABLE SKILLS INDEX - PROGRESSIVE DISCLOSURE]
-// Level 4: [ATTACHED FILES RECEIVED], [TEMPORAL CONTEXT] & [USER MESSAGE]
+// Level 4: [ATTACHED FILES RECEIVED], [REPLIED MESSAGE CONTEXT], [TEMPORAL CONTEXT] & [USER MESSAGE]
 func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.CanonicalMessage, temporalTagOpt ...string) string {
 	var sb strings.Builder
 	estimatedSize := len(systemRuntimeFoundationTemplate) + len(msg.Text) + 512
 	if resolved != nil {
 		estimatedSize += len(resolved.CombinedDirectives) + len(resolved.SkillHeaders)*120
+	}
+	if msg.ReplyContext != nil {
+		estimatedSize += len(msg.ReplyContext.Text) + len(msg.ReplyContext.Sender) + 64
 	}
 	sb.Grow(estimatedSize)
 
@@ -265,6 +293,9 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 		}
 		sb.WriteString("\n")
 	}
+
+	// Level 4: Replied Message Short Context (if turn is a reply)
+	appendReplyContext(&sb, msg.ReplyContext)
 
 	// Level 4: Temporal Context Marker (~6 tokens)
 	if len(temporalTagOpt) > 0 && strings.TrimSpace(temporalTagOpt[0]) != "" {
@@ -307,10 +338,13 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 
 // ComposeContinuationPrompt assembles a lightweight turn prompt for ongoing conversations.
 // Because AGY CLI maintains full conversation transcript and workspace directives in its brain,
-// subsequent turns only need attachments, temporal tag (if any), and the user's message.
+// subsequent turns only need attachments, reply context (if any), temporal tag (if any), and the user's message.
 func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...string) string {
 	var sb strings.Builder
 	estimatedSize := len(msg.Text) + 256
+	if msg.ReplyContext != nil {
+		estimatedSize += len(msg.ReplyContext.Text) + len(msg.ReplyContext.Sender) + 64
+	}
 	sb.Grow(estimatedSize)
 
 	if len(msg.Attachments) > 0 {
@@ -320,6 +354,8 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 		}
 		sb.WriteString("\n")
 	}
+
+	appendReplyContext(&sb, msg.ReplyContext)
 
 	if len(temporalTagOpt) > 0 && strings.TrimSpace(temporalTagOpt[0]) != "" {
 		sb.WriteString(strings.TrimSpace(temporalTagOpt[0]))
@@ -337,6 +373,9 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 
 	if len(msg.Attachments) > 0 {
 		sb.WriteString("User Prompt: ")
+		sb.WriteString(continuationUserText)
+	} else if msg.ReplyContext != nil {
+		sb.WriteString("[USER MESSAGE]\n")
 		sb.WriteString(continuationUserText)
 	} else {
 		sb.WriteString(continuationUserText)

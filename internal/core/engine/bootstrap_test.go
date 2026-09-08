@@ -301,3 +301,72 @@ func TestPrefixKVCache_PrefixInvariance(t *testing.T) {
 	assert.Contains(t, prompt2[idx2:], ctx2.TodayMemory)
 	assert.Contains(t, prompt3[idx3:], ctx3.TodayMemory)
 }
+
+func TestComposePrompts_WithReplyContext(t *testing.T) {
+	resolved := &domain.ResolvedContext{
+		CombinedDirectives: "[GLOBAL CORE DIRECTIVES]\n<IDENTITY>\nName: agyent\n</IDENTITY>",
+	}
+
+	replyCtx := &domain.ReplyContext{
+		MessageID: "12345",
+		Sender:    "@agyent_bot",
+		Text:      "Em đề xuất phương án triển khai qua worker pool.",
+	}
+
+	msg := domain.CanonicalMessage{
+		ID:           "67890",
+		Text:         "Đồng ý, triển khai luôn nhé",
+		ReplyContext: replyCtx,
+	}
+
+	t.Run("ComposeTurnPrompt_WithReplyContext", func(t *testing.T) {
+		prompt := engine.ComposeTurnPrompt("[KNOWLEDGE]\nDirectives", msg)
+		assert.Contains(t, prompt, "[REPLIED MESSAGE CONTEXT]")
+		assert.Contains(t, prompt, "- From: @agyent_bot")
+		assert.Contains(t, prompt, "- Content: Em đề xuất phương án triển khai qua worker pool.")
+		assert.Contains(t, prompt, "[USER MESSAGE]\nĐồng ý, triển khai luôn nhé")
+	})
+
+	t.Run("ComposeResolvedTurnPrompt_WithReplyContext", func(t *testing.T) {
+		prompt := engine.ComposeResolvedTurnPrompt(resolved, msg, "[TEMPORAL CONTEXT: 10:00]")
+		assert.Contains(t, prompt, "[REPLIED MESSAGE CONTEXT]")
+		assert.Contains(t, prompt, "- From: @agyent_bot")
+		assert.Contains(t, prompt, "- Content: Em đề xuất phương án triển khai qua worker pool.")
+		assert.Contains(t, prompt, "[TEMPORAL CONTEXT: 10:00]")
+		assert.Contains(t, prompt, "[USER MESSAGE]\nĐồng ý, triển khai luôn nhé")
+
+		// Verify ordering: Level 0-3 must precede Level 4 Replied Context, which precedes User Message
+		idxFoundation := strings.Index(prompt, "[SYSTEM RUNTIME FOUNDATION]")
+		idxDirectives := strings.Index(prompt, "[GLOBAL CORE DIRECTIVES]")
+		idxReply := strings.Index(prompt, "[REPLIED MESSAGE CONTEXT]")
+		idxUser := strings.Index(prompt, "[USER MESSAGE]")
+
+		assert.True(t, idxFoundation < idxDirectives)
+		assert.True(t, idxDirectives < idxReply)
+		assert.True(t, idxReply < idxUser)
+	})
+
+	t.Run("ComposeContinuationPrompt_WithReplyContext", func(t *testing.T) {
+		prompt := engine.ComposeContinuationPrompt(msg, "[TEMPORAL CONTEXT: 10:05]")
+		assert.Contains(t, prompt, "[REPLIED MESSAGE CONTEXT]")
+		assert.Contains(t, prompt, "- From: @agyent_bot")
+		assert.Contains(t, prompt, "- Content: Em đề xuất phương án triển khai qua worker pool.")
+		assert.Contains(t, prompt, "[TEMPORAL CONTEXT: 10:05]")
+		assert.Contains(t, prompt, "[USER MESSAGE]\nĐồng ý, triển khai luôn nhé")
+
+		idxReply := strings.Index(prompt, "[REPLIED MESSAGE CONTEXT]")
+		idxUser := strings.Index(prompt, "[USER MESSAGE]")
+		assert.True(t, idxReply < idxUser)
+	})
+
+	t.Run("ComposeContinuationPrompt_WithoutReplyContext_CleanOutput", func(t *testing.T) {
+		normalMsg := domain.CanonicalMessage{
+			ID:   "67891",
+			Text: "Tiếp tục làm task tiếp theo",
+		}
+		prompt := engine.ComposeContinuationPrompt(normalMsg)
+		assert.NotContains(t, prompt, "[REPLIED MESSAGE CONTEXT]")
+		assert.Equal(t, "Tiếp tục làm task tiếp theo", prompt)
+	})
+}
+

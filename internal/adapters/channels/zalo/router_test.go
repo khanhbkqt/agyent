@@ -612,5 +612,68 @@ func TestZaloRouter_OfficialZaloWebhookImagePayload(t *testing.T) {
 	}
 }
 
+func TestZaloRouter_ReplyToMessageContext(t *testing.T) {
+	rawJSON := `{
+		"event_name": "message.text.received",
+		"message": {
+			"message_id": "zalo_reply_999",
+			"from": {
+				"id": "user_khanh",
+				"name": "Khanh Nguyen",
+				"display_name": "Khanh Nguyen"
+			},
+			"chat": {
+				"id": "group_123",
+				"type": "group"
+			},
+			"text": "Đồng ý phương án này nhé",
+			"date": 1750316131602,
+			"reply_to_message": {
+				"message_id": "zalo_orig_111",
+				"from": {
+					"id": "bot_assistant",
+					"name": "Agyent Bot",
+					"is_bot": true
+				},
+				"text": "Em đề xuất triển khai cơ chế caching Level 0-3."
+			}
+		}
+	}`
+
+	var update zalo.ZaloUpdate
+	err := json.Unmarshal([]byte(rawJSON), &update)
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			AllowedGroupIDs: []string{"group_123"},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 1)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
+
+	botCtx := zalo.BotContext{
+		BotID:       "bot_assistant",
+		BotName:     "Agyent Bot",
+		BotUsername: "agyent_bot",
+	}
+	router.RouteUpdate(context.Background(), update, botCtx)
+
+	select {
+	case msg := <-inbound:
+		assert.Equal(t, "zalo_reply_999", msg.ID)
+		assert.Equal(t, "Đồng ý phương án này nhé", msg.Text)
+		assert.Equal(t, "zalo_orig_111", msg.ReplyToMessageID)
+		assert.True(t, msg.IsReplyToBot)
+		require.NotNil(t, msg.ReplyContext)
+		assert.Equal(t, "zalo_orig_111", msg.ReplyContext.MessageID)
+		assert.Equal(t, "@agyent_bot", msg.ReplyContext.Sender)
+		assert.Equal(t, "Em đề xuất triển khai cơ chế caching Level 0-3.", msg.ReplyContext.Text)
+	case <-time.After(time.Second):
+		t.Fatal("expected canonical message for reply update")
+	}
+}
+
+
 
 

@@ -64,6 +64,14 @@ type CanonicalMessage struct {
 	IsMentioned      bool                   `json:"is_mentioned"`
 	IsReplyToBot     bool                   `json:"is_reply_to_bot"`
 	ReplyToMessageID string                 `json:"reply_to_message_id,omitempty"`
+	ReplyContext     *ReplyContext          `json:"reply_context,omitempty"`
+}
+
+// ReplyContext contains short summary context of a referenced message being replied/quoted.
+type ReplyContext struct {
+	MessageID string `json:"message_id,omitempty"`
+	Sender    string `json:"sender,omitempty"`
+	Text      string `json:"text,omitempty"`
 }
 
 // OutboundAttachment represents a file or artifact to send out.
@@ -200,4 +208,29 @@ func (m *CanonicalMessage) CommandArgs() (string, []string) {
 
 	args := fields[1:]
 	return rawCmd, args
+}
+
+// TruncateSnippet normalizes whitespace and safely truncates text to maxRunes runes,
+// appending "..." if truncated.
+func TruncateSnippet(text string, maxRunes int) string {
+	cleaned := strings.TrimSpace(text)
+	if cleaned == "" {
+		return ""
+	}
+	// Normalize multiple consecutive newlines or whitespace runs for clean snippet rendering
+	lines := strings.Split(cleaned, "\n")
+	var normLines []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			normLines = append(normLines, trimmed)
+		}
+	}
+	cleaned = strings.Join(normLines, " ")
+
+	runes := []rune(cleaned)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return cleaned
+	}
+	return string(runes[:maxRunes]) + "..."
 }

@@ -5,6 +5,17 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.52] - 2026-09-08
+
+### Added
+- **Replied Message Short Context Capture & Injection (`channels/telegram`, `channels/zalo`, `debouncer`, `engine`):**
+  - **Inbound Context Extraction:** Telegram and Zalo channel routers extract the sender name, message ID, and a clean truncated snippet (up to 300 runes) from referenced reply messages (`ReplyToMessage` on Telegram, `ReplyToMsg` on Zalo).
+  - **Multimodal Summary Fallback:** If the replied message contains media without text, cleanly generates descriptive placeholders (`[Photo]`, `[Document: <filename>]`, `[Voice Audio]`, `[Audio]`, `[Video]`, `[Sticker]`, `[Attachment]`).
+  - **Debouncer Coalescing:** Preserves `ReplyContext` across debounced message batches.
+  - **Level 4 Prompt Injection:** Injects `[REPLIED MESSAGE CONTEXT]` with sender and snippet above the user prompt in `ComposeTurnPrompt`, `ComposeResolvedTurnPrompt`, and `ComposeContinuationPrompt`, giving agents immediate quote comprehension while strictly preserving KV-cache prefix invariance for Levels 0–3.
+
+---
+
 ## [1.0.51] - 2026-09-07
 
 ### Fixed

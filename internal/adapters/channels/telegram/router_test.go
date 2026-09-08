@@ -206,6 +206,7 @@ func TestRouter_GroupMessageWithMentionOrReply(t *testing.T) {
 						Id:       555, // bot ID
 						Username: "agyent_bot",
 					},
+					Text: "Would you like me to deploy?",
 				},
 				Text: "Yes please proceed",
 			},
@@ -219,6 +220,10 @@ func TestRouter_GroupMessageWithMentionOrReply(t *testing.T) {
 			assert.True(t, msg.IsReplyToBot)
 			assert.Equal(t, "39", msg.ReplyToMessageID)
 			assert.Equal(t, "Yes please proceed", msg.Text)
+			assert.NotNil(t, msg.ReplyContext)
+			assert.Equal(t, "39", msg.ReplyContext.MessageID)
+			assert.Equal(t, "@agyent_bot", msg.ReplyContext.Sender)
+			assert.Equal(t, "Would you like me to deploy?", msg.ReplyContext.Text)
 		case <-time.After(1 * time.Second):
 			t.Fatal("timed out waiting for message")
 		}

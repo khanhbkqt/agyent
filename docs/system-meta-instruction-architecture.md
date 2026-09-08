@@ -57,7 +57,7 @@ When assembling the prompt for each execution turn, `agyent` enforces a strict d
 | **Level 1** | **`[GLOBAL CORE DIRECTIVES]`** | Dynamic | `~/.agyent/agents/<agent_name>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `AGENTS.md`). |
 | **Level 2** | **`[WORKSPACE PROJECT DIRECTIVES]`** | Dynamic | `<project>/.agents/` or `<project>/` (Technical standards, codebase architecture). |
 | **Level 3** | **`[SKILLS INDEX & PLUGIN RULES]`** | Dynamic | Summary catalog of YAML frontmatter headers for active skills + plugin rules. |
-| **Level 4** | **`[USER MESSAGE & ATTACHMENTS]`** | Dynamic | Attached files, temporal tags, and incoming user prompt. |
+| **Level 4** | **`[USER MESSAGE, ATTACHMENTS & REPLIED CONTEXT]`** | Dynamic | Attached files, replied message short context, temporal tags, dynamic episodic daily memory, and incoming user prompt. |
 
 ---
 
@@ -151,6 +151,10 @@ When initiating a fresh conversation (`activeConvID == ""`) or executing an ephe
 
 [ATTACHED FILES RECEIVED]
 - File: <path> (Type: <mime>, Size: <size>)
+
+[REPLIED MESSAGE CONTEXT]
+- From: <Sender>
+- Content: <Quoted snippet>
 
 [TEMPORAL CONTEXT]
 [GAP: Next morning, 07:11] (If elapsed time >= 30 minutes)

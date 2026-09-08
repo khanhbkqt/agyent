@@ -291,6 +291,54 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	}
 	if msg.ReplyToMsg != nil {
 		canonical.ReplyToMessageID = msg.ReplyToMsg.MessageID
+
+		senderName := msg.ReplyToMsg.From.GetEffectiveName()
+		if senderName == "" {
+			senderName = msg.ReplyToMsg.From.Username
+		}
+		if msg.ReplyToMsg.From.IsBot || (botCtxObj.BotID != "" && msg.ReplyToMsg.From.ID == botCtxObj.BotID) {
+			canonical.IsReplyToBot = true
+			if botCtxObj.BotUsername != "" {
+				senderName = "@" + botCtxObj.BotUsername
+			} else if senderName == "" || senderName == "Bot" {
+				senderName = "Assistant"
+			}
+		}
+
+		repliedText := msg.ReplyToMsg.Text
+		if repliedText == "" {
+			repliedText = msg.ReplyToMsg.Caption
+		}
+		if repliedText == "" {
+			repliedText = msg.ReplyToMsg.Description
+		}
+		if repliedText == "" {
+			if len(msg.ReplyToMsg.Photo) > 0 || msg.ReplyToMsg.Image != nil {
+				repliedText = "[Photo]"
+			} else if msg.ReplyToMsg.Document != nil {
+				docName := msg.ReplyToMsg.Document.GetEffectiveFileName()
+				if docName != "" {
+					repliedText = "[Document: " + docName + "]"
+				} else {
+					repliedText = "[Document]"
+				}
+			} else if msg.ReplyToMsg.Audio != nil || msg.ReplyToMsg.Voice != nil {
+				repliedText = "[Audio]"
+			} else if msg.ReplyToMsg.Video != nil {
+				repliedText = "[Video]"
+			} else if len(msg.ReplyToMsg.Attachments) > 0 {
+				repliedText = "[Attachment]"
+			}
+		}
+
+		repliedText = domain.TruncateSnippet(repliedText, 300)
+		if msg.ReplyToMsg.MessageID != "" || senderName != "" || repliedText != "" {
+			canonical.ReplyContext = &domain.ReplyContext{
+				MessageID: msg.ReplyToMsg.MessageID,
+				Sender:    senderName,
+				Text:      repliedText,
+			}
+		}
 	}
 
 	if r.inbound == nil {

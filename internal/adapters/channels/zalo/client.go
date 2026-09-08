@@ -329,8 +329,10 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 		VideoURL    json.RawMessage     `json:"video_url"`
 		Sticker     json.RawMessage     `json:"sticker"`
 		URL         json.RawMessage     `json:"url"`
-		ReplyToMsg  *ZaloInboundMessage `json:"reply_to_message"`
-		ReplyTo     *ZaloInboundMessage `json:"reply_to"`
+		ReplyToMsg       *ZaloInboundMessage `json:"reply_to_message"`
+		ReplyTo          *ZaloInboundMessage `json:"reply_to"`
+		ReplyToID        string              `json:"reply_to_id"`
+		ReplyToMessageID string              `json:"reply_to_message_id"`
 	}
 
 	var raw rawInbound
@@ -355,6 +357,15 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 	m.ReplyToMsg = raw.ReplyToMsg
 	if m.ReplyToMsg == nil {
 		m.ReplyToMsg = raw.ReplyTo
+	}
+	if m.ReplyToMsg == nil {
+		id := raw.ReplyToMessageID
+		if id == "" {
+			id = raw.ReplyToID
+		}
+		if id != "" {
+			m.ReplyToMsg = &ZaloInboundMessage{MessageID: id}
+		}
 	}
 
 	m.Attachments = parseFlexibleAttachments(raw.Attachments, "file")

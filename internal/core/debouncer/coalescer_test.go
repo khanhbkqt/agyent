@@ -47,6 +47,11 @@ func TestCoalescer_SingleAndMultipleMessages(t *testing.T) {
 				IsMentioned:      true,
 				IsReplyToBot:     false,
 				ReplyToMessageID: "reply-123",
+				ReplyContext: &domain.ReplyContext{
+					MessageID: "reply-123",
+					Sender:    "User 1",
+					Text:      "Quoted text 1",
+				},
 				Attachments: []domain.Attachment{
 					{ID: "att-2", FileName: "chart.png", FilePath: "/tmp/chart.png"},
 				},
@@ -59,6 +64,11 @@ func TestCoalescer_SingleAndMultipleMessages(t *testing.T) {
 				IsMentioned:      false,
 				IsReplyToBot:     true,
 				ReplyToMessageID: "reply-456",
+				ReplyContext: &domain.ReplyContext{
+					MessageID: "reply-456",
+					Sender:    "Assistant",
+					Text:      "Quoted text 2",
+				},
 				Attachments: []domain.Attachment{
 					// Duplicate attachment
 					{ID: "att-1", FileName: "doc1.pdf", FilePath: "/tmp/doc1.pdf"},
@@ -72,6 +82,10 @@ func TestCoalescer_SingleAndMultipleMessages(t *testing.T) {
 		assert.True(t, coalesced.IsMentioned)
 		assert.True(t, coalesced.IsReplyToBot)
 		assert.Equal(t, "reply-456", coalesced.ReplyToMessageID)
+		assert.NotNil(t, coalesced.ReplyContext)
+		assert.Equal(t, "reply-456", coalesced.ReplyContext.MessageID)
+		assert.Equal(t, "Assistant", coalesced.ReplyContext.Sender)
+		assert.Equal(t, "Quoted text 2", coalesced.ReplyContext.Text)
 		assert.Len(t, coalesced.Attachments, 2, "duplicate attachment should be deduplicated")
 		assert.Equal(t, "doc1.pdf", coalesced.Attachments[0].FileName)
 		assert.Equal(t, "chart.png", coalesced.Attachments[1].FileName)

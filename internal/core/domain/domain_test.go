@@ -500,3 +500,67 @@ func TestSecurityPresetHierarchy(t *testing.T) {
 		domain.PresetReadOnly,
 	}, strictAllowed)
 }
+
+func TestTruncateSnippet(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxRunes int
+		expected string
+	}{
+		{
+			name:     "Empty string",
+			input:    "",
+			maxRunes: 100,
+			expected: "",
+		},
+		{
+			name:     "Short string without truncation",
+			input:    "Hello world",
+			maxRunes: 50,
+			expected: "Hello world",
+		},
+		{
+			name:     "Multi-line string normalizes whitespace",
+			input:    "Hello\n\n  world  \nthis is a test",
+			maxRunes: 50,
+			expected: "Hello world this is a test",
+		},
+		{
+			name:     "Truncates at rune boundary and appends ellipsis",
+			input:    "Xin chào thế giới lập trình AI gateway",
+			maxRunes: 12,
+			expected: "Xin chào thế...",
+		},
+		{
+			name:     "Unicode surrogate / multi-byte characters",
+			input:    "🚀 Tiếng Việt có dấu rất đẹp và chuẩn xác",
+			maxRunes: 10,
+			expected: "🚀 Tiếng Vi...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, domain.TruncateSnippet(tt.input, tt.maxRunes))
+		})
+	}
+}
+
+func TestCanonicalMessage_ReplyContext(t *testing.T) {
+	msg := domain.CanonicalMessage{
+		ID:   "msg-1",
+		Text: "Follow up question",
+		ReplyContext: &domain.ReplyContext{
+			MessageID: "msg-0",
+			Sender:    "Assistant",
+			Text:      "Here is the answer to your previous query",
+		},
+	}
+
+	assert.NotNil(t, msg.ReplyContext)
+	assert.Equal(t, "msg-0", msg.ReplyContext.MessageID)
+	assert.Equal(t, "Assistant", msg.ReplyContext.Sender)
+	assert.Equal(t, "Here is the answer to your previous query", msg.ReplyContext.Text)
+}
+

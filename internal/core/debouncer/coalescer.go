@@ -41,6 +41,7 @@ func CoalesceMessages(msgs []domain.CanonicalMessage) domain.CanonicalMessage {
 	isMentioned := false
 	isReplyToBot := false
 	latestReplyToID := ""
+	var latestReplyContext *domain.ReplyContext
 
 	currentBytes := 0
 	truncated := false
@@ -90,6 +91,9 @@ func CoalesceMessages(msgs []domain.CanonicalMessage) domain.CanonicalMessage {
 		if m.ReplyToMessageID != "" {
 			latestReplyToID = m.ReplyToMessageID
 		}
+		if m.ReplyContext != nil {
+			latestReplyContext = m.ReplyContext
+		}
 
 		for _, att := range m.Attachments {
 			key := att.FilePath
@@ -130,6 +134,9 @@ func CoalesceMessages(msgs []domain.CanonicalMessage) domain.CanonicalMessage {
 	result.IsReplyToBot = isReplyToBot
 	if latestReplyToID != "" {
 		result.ReplyToMessageID = latestReplyToID
+	}
+	if latestReplyContext != nil {
+		result.ReplyContext = latestReplyContext
 	}
 
 	return result

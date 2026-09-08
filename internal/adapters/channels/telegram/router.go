@@ -163,8 +163,56 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 	}
 
 	var replyToMsgID string
+	var replyContext *domain.ReplyContext
 	if msg.ReplyToMessage != nil {
 		replyToMsgID = strconv.FormatInt(msg.ReplyToMessage.MessageId, 10)
+		senderName := ""
+		if msg.ReplyToMessage.From != nil {
+			if msg.ReplyToMessage.From.Id == botID {
+				senderName = "Assistant"
+				if botUsername != "" {
+					senderName = "@" + botUsername
+				}
+			} else {
+				senderName = strings.TrimSpace(msg.ReplyToMessage.From.FirstName + " " + msg.ReplyToMessage.From.LastName)
+				if senderName == "" {
+					senderName = msg.ReplyToMessage.From.Username
+				}
+			}
+		}
+
+		repliedText := msg.ReplyToMessage.Text
+		if repliedText == "" {
+			repliedText = msg.ReplyToMessage.Caption
+		}
+		if repliedText == "" {
+			if len(msg.ReplyToMessage.Photo) > 0 {
+				repliedText = "[Photo]"
+			} else if msg.ReplyToMessage.Document != nil {
+				docName := msg.ReplyToMessage.Document.FileName
+				if docName != "" {
+					repliedText = "[Document: " + docName + "]"
+				} else {
+					repliedText = "[Document]"
+				}
+			} else if msg.ReplyToMessage.Voice != nil {
+				repliedText = "[Voice Audio]"
+			} else if msg.ReplyToMessage.Audio != nil {
+				repliedText = "[Audio]"
+			} else if msg.ReplyToMessage.Video != nil {
+				repliedText = "[Video]"
+			} else if msg.ReplyToMessage.Sticker != nil {
+				repliedText = "[Sticker]"
+			}
+		}
+		repliedText = domain.TruncateSnippet(repliedText, 300)
+		if replyToMsgID != "" || senderName != "" || repliedText != "" {
+			replyContext = &domain.ReplyContext{
+				MessageID: replyToMsgID,
+				Sender:    senderName,
+				Text:      repliedText,
+			}
+		}
 	}
 
 	r.mu.RLock()
@@ -199,6 +247,7 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		IsMentioned:      isMentioned,
 		IsReplyToBot:     isReplyToBot,
 		ReplyToMessageID: replyToMsgID,
+		ReplyContext:     replyContext,
 	}
 
 	// 5. Proactively trigger typing indicator immediately (<200ms user feedback)
