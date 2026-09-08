@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Debouncer Coalescing:** Preserves `ReplyContext` across debounced message batches.
   - **Level 4 Prompt Injection:** Injects `[REPLIED MESSAGE CONTEXT]` with sender and snippet above the user prompt in `ComposeTurnPrompt`, `ComposeResolvedTurnPrompt`, and `ComposeContinuationPrompt`, giving agents immediate quote comprehension while strictly preserving KV-cache prefix invariance for Levels 0–3.
 
+### Fixed
+- **Cron Next Run Minute Step & In-Flight Re-Trigger Prevention (`scheduler`):**
+  - **Minute-Aligned Search Step:** Fixed `parseCronNext` in `internal/core/scheduler/cron_parser.go` to advance search start by truncating to minute and adding one full minute (`fromTime.Truncate(time.Minute).Add(1 * time.Minute)`), preventing standard 5-part cron expressions from evaluating as due again within the same minute when advanced or claimed mid-minute.
+
+
 ---
 
 ## [1.0.51] - 2026-09-07

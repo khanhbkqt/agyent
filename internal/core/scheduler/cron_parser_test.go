@@ -89,3 +89,52 @@ func TestParseNextRun_PastTimeRejection(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrPastScheduleTime)
 }
+
+func TestParseNextRun_Cron_SameMinuteExecution(t *testing.T) {
+	loc := time.UTC
+
+	// Case 1: Daily 05:30 morning greeting when evaluated at exactly 05:30:00
+	baseExact := time.Date(2026, 9, 8, 5, 30, 0, 0, loc)
+	nextExact, err := ParseNextRun(domain.ScheduleTypeCron, "30 5 * * *", baseExact, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 9, 5, 30, 0, 0, loc), nextExact, "should advance to tomorrow 05:30:00 when evaluated at 05:30:00")
+
+	// Case 2: Daily 05:30 morning greeting when evaluated mid-minute at 05:30:54 (the bug scenario)
+	baseMidMinute := time.Date(2026, 9, 8, 5, 30, 54, 500000000, loc)
+	nextMidMinute, err := ParseNextRun(domain.ScheduleTypeCron, "30 5 * * *", baseMidMinute, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 9, 5, 30, 0, 0, loc), nextMidMinute, "should advance to tomorrow 05:30:00 when evaluated at 05:30:54")
+
+	// Case 3: Daily 05:30 morning greeting evaluated 1 second before at 05:29:59
+	baseJustBefore := time.Date(2026, 9, 8, 5, 29, 59, 0, loc)
+	nextJustBefore, err := ParseNextRun(domain.ScheduleTypeCron, "30 5 * * *", baseJustBefore, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 8, 5, 30, 0, 0, loc), nextJustBefore, "should yield today 05:30:00 when evaluated at 05:29:59")
+
+	// Case 4: Step interval */15 evaluated mid-minute at 08:15:30
+	baseStep := time.Date(2026, 9, 8, 8, 15, 30, 0, loc)
+	nextStep, err := ParseNextRun(domain.ScheduleTypeCron, "*/15 * * * *", baseStep, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 8, 8, 30, 0, 0, loc), nextStep, "should advance to next 15-minute interval (08:30:00)")
+
+	// Case 5: Timezone awareness (Vietnam ICT +07:00)
+	locVN := time.FixedZone("ICT", 7*3600)
+	baseVN := time.Date(2026, 9, 8, 5, 30, 54, 0, locVN)
+	nextVN, err := ParseNextRun(domain.ScheduleTypeCron, "30 5 * * *", baseVN, locVN)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 9, 9, 5, 30, 0, 0, locVN), nextVN, "should advance to tomorrow 05:30:00 ICT")
+
+	// Case 6: Month rollover at end of month (e.g. Sept 30 23:59:00 -> Oct 1)
+	baseMonthEnd := time.Date(2026, 9, 30, 23, 59, 30, 0, loc)
+	nextMonthEnd, err := ParseNextRun(domain.ScheduleTypeCron, "0 0 * * *", baseMonthEnd, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2026, 10, 1, 0, 0, 0, 0, loc), nextMonthEnd, "should advance across month boundary to Oct 1 00:00:00")
+
+	// Case 7: Year rollover (e.g. Dec 31 23:59:30 -> Jan 1)
+	baseYearEnd := time.Date(2026, 12, 31, 23, 59, 30, 0, loc)
+	nextYearEnd, err := ParseNextRun(domain.ScheduleTypeCron, "0 0 * * *", baseYearEnd, loc)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2027, 1, 1, 0, 0, 0, 0, loc), nextYearEnd, "should advance across year boundary to Jan 1 00:00:00")
+}
+
+

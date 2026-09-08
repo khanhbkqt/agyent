@@ -97,8 +97,9 @@ func parseCronNext(expr string, fromTime time.Time, loc *time.Location) (time.Ti
 		return time.Time{}, err
 	}
 
-	// Start searching 1 second after fromTime to ensure forward progress
-	t := fromTime.Add(1 * time.Second).Truncate(time.Second)
+	// Start searching at the next minute after fromTime to ensure forward progress
+	// for 5-field standard cron expressions with minute resolution.
+	t := fromTime.Truncate(time.Minute).Add(1 * time.Minute)
 
 	// Search up to 5 years into the future
 	limit := t.AddDate(5, 0, 0)
