@@ -285,6 +285,9 @@ func (h *HITLCoordinator) HandleCallbackWithBot(ctx context.Context, callbackID 
 		if !approved {
 			toast = "❌ Action denied."
 		}
+		if act == "force_kill" {
+			toast = "🛑 Agent termination requested."
+		}
 		_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
 			Text: toast,
 		})
@@ -303,15 +306,17 @@ func (h *HITLCoordinator) CancelPendingRequest(requestID string) {
 	if val, exists := h.pending.Load(requestID); exists {
 		entry := val.(*pendingHITL)
 		if entry.resolved.CompareAndSwap(false, true) {
-			select {
-			case entry.respChan <- domain.ApprovalDecision{
+			dec := domain.ApprovalDecision{
 				RequestID: requestID,
 				Action:    "cancelled",
 				Approved:  false,
 				Timestamp: time.Now(),
-			}:
+			}
+			select {
+			case entry.respChan <- dec:
 			default:
 			}
+			h.updateCardOnDecision(entry, dec)
 		}
 	}
 }

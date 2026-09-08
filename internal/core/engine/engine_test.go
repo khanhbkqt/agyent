@@ -20,6 +20,7 @@ import (
 	"agyent/internal/adapters/storage/sqlite"
 	workspaceAdapter "agyent/internal/adapters/workspace"
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
 	"agyent/internal/core/domain"
@@ -228,6 +229,7 @@ func setupTestEngine(t *testing.T) (*engine.Engine, *mockRunner, *mockChannel, p
 
 	eng = engine.NewEngine(cfg, store, runner, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
 	eng.SetSecurityManager(secMgr)
+	eng.SetPolicyEngine(auth.NewEngine(store, cfg))
 
 	cleanup := func() {
 		_ = eng.Stop(context.Background())
@@ -1601,6 +1603,94 @@ func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {
 	}
 	err = eng.HandleDebouncedMessage(ctx, newMsg)
 	require.NoError(t, err)
+}
+
+func TestEngine_ForceUnlock_ConcurrentPromptHandoff_NoDeadlock(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	require.NoError(t, eng.Start(ctx))
+
+	sessionKey := "telegram:123456"
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+
+	turn1Unwound := make(chan struct{})
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		<-ctx.Done()
+		// Simulate slight unwinding latency
+		time.Sleep(20 * time.Millisecond)
+		close(turn1Unwound)
+		return nil, ctx.Err()
+	}
+
+	// 1. Start Turn 1 in background
+	go func() {
+		msg := domain.CanonicalMessage{
+			ID:        "msg-t1",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "first prompt running",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, eng.HasActiveTurn(sessionKey), "Turn 1 must be active")
+
+	// 2. User sends Turn 2 (a normal prompt, not a slash command) while Turn 1 is executing
+	turn2Done := make(chan error, 1)
+	go func() {
+		msg2 := domain.CanonicalMessage{
+			ID:        "msg-t2",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "second prompt queued",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		turn2Done <- eng.HandleDebouncedMessage(ctx, msg2)
+	}()
+
+	// Wait for Turn 2 to queue on session lock
+	time.Sleep(50 * time.Millisecond)
+
+	// Configure runner for Turn 2
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-t2",
+			ResponseText:   "Second prompt completed successfully!",
+		}, nil
+	})
+
+	// 3. Emit EventForceKillRequested (simulating HITL Force Kill)
+	bus := eng.EventBus()
+	require.NotNil(t, bus)
+	err := bus.SyncEmit(ctx, domain.NewEvent(domain.EventForceKillRequested, domain.ForceKillPayload{
+		SessionKey: sessionKey,
+		Reason:     "User clicked Force Kill Agent",
+		Timestamp:  time.Now(),
+	}))
+	require.NoError(t, err)
+
+	// 4. Wait for Turn 2 to complete
+	select {
+	case err := <-turn2Done:
+		require.NoError(t, err, "Turn 2 must succeed without lock timeout or rejection")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Turn 2 timed out / deadlocked waiting for session lock handoff")
+	}
+
+	// Ensure Turn 1 unwound cleanly
+	select {
+	case <-turn1Unwound:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Turn 1 failed to unwind after force kill")
+	}
 }
 
 func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {

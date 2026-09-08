@@ -20,7 +20,7 @@ func (e *Engine) authorizeAgentAction(
 	session *domain.Session,
 ) error {
 	if e.policyEngine == nil {
-		return nil
+		return fmt.Errorf("%w: policy engine is not initialized", ports.ErrAccessDenied)
 	}
 	if session == nil || session.ActiveAgent == "" {
 		return fmt.Errorf("%w: missing active agent context", ports.ErrAccessDenied)

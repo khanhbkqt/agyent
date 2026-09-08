@@ -1025,6 +1025,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	if e.executionService == nil && e.securityManager != nil {
 		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         turnID,
 			ConversationID: activeConvID,
 			SessionKey:     sessionKey,
 			WorkspaceDir:   workspaceDir,
@@ -1032,7 +1033,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			AgentName:      agent.Name,
 			CreatedAt:      time.Now(),
 		})
-		defer e.securityManager.UnregisterActiveTurn(activeConvID, workspaceDir)
+		defer e.securityManager.UnregisterTurnByID(turnID)
 	}
 
 	if isStream {
@@ -1489,10 +1490,19 @@ func (e *Engine) cancelActiveTurn(sessionKey string) {
 }
 
 // ForceUnlockSession cancels any running turn subprocess, resets the lock manager,
-// cancels any pending HITL security approvals, and emits stream cleanup events.
+// cancels any active subagent tasks for the session, cancels any pending HITL security approvals,
+// and emits stream cleanup events.
 func (e *Engine) ForceUnlockSession(sessionKey string) {
 	e.cancelActiveTurn(sessionKey)
 	e.lockManager.ForceUnlock(sessionKey)
+
+	if e.subagentDispatcher != nil {
+		if tasks, err := e.subagentDispatcher.ListActiveTasks(context.Background(), sessionKey); err == nil {
+			for _, t := range tasks {
+				_ = e.subagentDispatcher.CancelTaskScoped(context.Background(), sessionKey, t.ID)
+			}
+		}
+	}
 
 	if e.securityManager != nil {
 		e.securityManager.CancelSessionApprovals(sessionKey)

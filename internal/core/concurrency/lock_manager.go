@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agyent/internal/core/ports"
@@ -18,17 +19,18 @@ var (
 )
 
 type lockEntry struct {
-	sem      chan struct{}
-	cancelCh chan struct{}
-	refCount int
-	isClosed bool
+	mu          sync.Mutex
+	sem         chan struct{}
+	refCount    int
+	holderToken uint64
 }
 
 // SessionLockManager coordinates per-session mutual exclusion with automatic reference counting
 // to eliminate memory leaks and ensure serial execution of turns for the same session.
 type SessionLockManager struct {
-	mu    sync.Mutex
-	locks map[string]*lockEntry
+	mu       sync.Mutex
+	locks    map[string]*lockEntry
+	tokenSeq atomic.Uint64
 }
 
 var _ ports.LockManager = (*SessionLockManager)(nil)
@@ -48,7 +50,6 @@ func (m *SessionLockManager) Acquire(ctx context.Context, sessionKey string, tim
 	if !exists {
 		entry = &lockEntry{
 			sem:      make(chan struct{}, 1),
-			cancelCh: make(chan struct{}),
 			refCount: 0,
 		}
 		m.locks[sessionKey] = entry
@@ -80,33 +81,27 @@ func (m *SessionLockManager) Acquire(ctx context.Context, sessionKey string, tim
 
 	select {
 	case entry.sem <- struct{}{}:
-		// Non-blocking check to guard against select pseudo-randomness if cancelCh closed simultaneously
-		select {
-		case <-entry.cancelCh:
-			select {
-			case <-entry.sem:
-			default:
-			}
-			cleanupRef()
-			return nil, ErrLockCanceled
-		default:
-		}
+		token := m.tokenSeq.Add(1)
+		entry.mu.Lock()
+		entry.holderToken = token
+		entry.mu.Unlock()
 
 		var once sync.Once
 		unlock := func() {
 			once.Do(func() {
-				select {
-				case <-entry.sem:
-				default:
+				entry.mu.Lock()
+				if entry.holderToken == token {
+					entry.holderToken = 0
+					select {
+					case <-entry.sem:
+					default:
+					}
 				}
+				entry.mu.Unlock()
 				cleanupRef()
 			})
 		}
 		return unlock, nil
-
-	case <-entry.cancelCh:
-		cleanupRef()
-		return nil, ErrLockCanceled
 
 	case <-ctx.Done():
 		cleanupRef()
@@ -126,7 +121,8 @@ func (m *SessionLockManager) ActiveLockCount() int {
 }
 
 // ForceUnlock unconditionally resets the lock state for sessionKey.
-// Any in-flight goroutines waiting to acquire the lock for this key are immediately aborted with ErrLockCanceled.
+// If an active turn holds the lock, its token is revoked and the semaphore is released
+// so that any in-flight or subsequent turns can acquire the session lock immediately.
 // Returns true if a lock entry existed.
 func (m *SessionLockManager) ForceUnlock(sessionKey string) bool {
 	m.mu.Lock()
@@ -135,13 +131,18 @@ func (m *SessionLockManager) ForceUnlock(sessionKey string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	delete(m.locks, sessionKey)
 
-	// Close cancelCh to immediately unblock and abort all waiting goroutines on this entry
-	if !entry.isClosed {
-		entry.isClosed = true
-		close(entry.cancelCh)
+	entry.mu.Lock()
+	if entry.holderToken != 0 {
+		entry.holderToken = 0
+		select {
+		case <-entry.sem:
+		default:
+		}
+	} else if entry.refCount <= 0 {
+		delete(m.locks, sessionKey)
 	}
+	entry.mu.Unlock()
 	m.mu.Unlock()
 
 	return true

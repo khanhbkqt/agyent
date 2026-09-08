@@ -2,11 +2,12 @@ package concurrency
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"agyent/internal/core/ports"
 )
 
 func TestSafeGo_NormalExecution(t *testing.T) {
@@ -114,22 +115,23 @@ func TestSessionLockManager_ForceUnlock(t *testing.T) {
 		t.Errorf("expected ForceUnlock to return true for active key")
 	}
 
-	if mgr.ActiveLockCount() != 0 {
-		t.Fatalf("expected 0 active locks after ForceUnlock, got %d", mgr.ActiveLockCount())
-	}
-
-	// Calling old unlock func should not panic or corrupt state
-	unlock()
-
 	// 4. Subsequent acquire should succeed immediately
 	unlock2, err := mgr.Acquire(ctx, "session_1", 1*time.Second)
 	if err != nil {
 		t.Fatalf("unexpected acquire error after force unlock: %v", err)
 	}
-	defer unlock2()
+
+	// Calling old unlock func should not panic, corrupt state, or revoke unlock2
+	unlock()
+
+	// unlock2 is still valid and releasing it should clean up lock count
+	unlock2()
+	if mgr.ActiveLockCount() != 0 {
+		t.Fatalf("expected 0 active locks after all unlocks, got %d", mgr.ActiveLockCount())
+	}
 }
 
-func TestSessionLockManager_ForceUnlock_WaitersAborted(t *testing.T) {
+func TestSessionLockManager_ForceUnlock_WaitersHandedOff(t *testing.T) {
 	mgr := NewSessionLockManager()
 	ctx := context.Background()
 
@@ -139,46 +141,52 @@ func TestSessionLockManager_ForceUnlock_WaitersAborted(t *testing.T) {
 		t.Fatalf("failed initial acquire: %v", err)
 	}
 
-	// 2. Start 3 concurrent waiters
-	const numWaiters = 3
+	// 2. Start a concurrent waiter
 	var (
-		errs = make([]error, numWaiters)
+		waiterErr error
+		waiterUnlock ports.UnlockFunc
 		wg   sync.WaitGroup
 	)
 
-	for i := 0; i < numWaiters; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			_, errs[idx] = mgr.Acquire(ctx, "session_wait", 5*time.Second)
-		}(i)
-	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		waiterUnlock, waiterErr = mgr.Acquire(ctx, "session_wait", 5*time.Second)
+	}()
 
-	// Give goroutines time to block in Acquire
+	// Give goroutine time to block in Acquire
 	time.Sleep(50 * time.Millisecond)
 
-	// 3. ForceUnlock while waiters are blocked
+	// 3. ForceUnlock while waiter is blocked
 	if !mgr.ForceUnlock("session_wait") {
 		t.Fatalf("expected ForceUnlock to return true")
 	}
 
-	// Wait for all waiters to unblock
+	// Wait for waiter to unblock and acquire lock
 	wg.Wait()
 
-	// 4. Verify all waiters received ErrLockCanceled and did NOT acquire lock
-	for i := 0; i < numWaiters; i++ {
-		if !errors.Is(errs[i], ErrLockCanceled) {
-			t.Errorf("waiter %d expected ErrLockCanceled, got %v", i, errs[i])
-		}
+	// 4. Verify waiter successfully acquired the lock instead of failing with ErrLockCanceled
+	if waiterErr != nil {
+		t.Fatalf("expected waiter to acquire lock, got error: %v", waiterErr)
+	}
+	if waiterUnlock == nil {
+		t.Fatal("expected waiter unlock func to be non-nil")
 	}
 
-	// 5. Old holder unlocks safely
+	// 5. Old holder unlocks safely (must not release waiter's lock)
 	unlock1()
 
-	// 6. Fresh Acquire succeeds immediately
+	// 6. Waiter finishes and unlocks
+	waiterUnlock()
+
+	// 7. Fresh Acquire succeeds immediately
 	unlockFresh, err := mgr.Acquire(ctx, "session_wait", 1*time.Second)
 	if err != nil {
 		t.Fatalf("expected fresh acquire to succeed, got %v", err)
 	}
 	unlockFresh()
+
+	if mgr.ActiveLockCount() != 0 {
+		t.Fatalf("expected 0 active locks at the end, got %d", mgr.ActiveLockCount())
+	}
 }

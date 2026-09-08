@@ -272,6 +272,17 @@ func (e *taskExecutor) executeTurn(
 		}
 	}
 
+	monitorDone := make(chan struct{})
+	defer close(monitorDone)
+	go func() {
+		select {
+		case <-execCtx.Done():
+			_ = agy.KillProcessTree(cmd)
+			_ = stdoutPipe.Close()
+		case <-monitorDone:
+		}
+	}()
+
 	scanner := bufio.NewScanner(stdoutPipe)
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024)
@@ -377,7 +388,30 @@ func (e *taskExecutor) executeTurn(
 
 	_ = stdoutPipe.Close()
 	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-time.After(1 * time.Second):
+		_ = agy.KillProcessTree(cmd)
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(500 * time.Millisecond):
+			waitErr = fmt.Errorf("subagent subprocess wait timed out")
+		}
+	case <-execCtx.Done():
+		_ = agy.KillProcessTree(cmd)
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(500 * time.Millisecond):
+			waitErr = execCtx.Err()
+		}
+	}
 
 	response := strings.TrimSpace(lastResponseBuilder.String())
 	durationSec := time.Since(tCtx.startedAt).Seconds()

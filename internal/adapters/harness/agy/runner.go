@@ -206,6 +206,16 @@ func (h *Harness) Execute(ctx context.Context, req domain.ExecutionRequest) (*do
 		}
 	}
 
+	monitorDone := make(chan struct{})
+	defer close(monitorDone)
+	go func() {
+		select {
+		case <-execCtx.Done():
+			_ = killProcessTree(cmd)
+		case <-monitorDone:
+		}
+	}()
+
 	runErr := cmd.Wait()
 
 	// 3. Handle Context Timeout or Cancellation
@@ -452,6 +462,19 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 		}
 	}
 
+	// Background monitor to terminate process tree and close pipes immediately on context cancellation/timeout
+	monitorDone := make(chan struct{})
+	defer close(monitorDone)
+	go func() {
+		select {
+		case <-execCtx.Done():
+			_ = killProcessTree(cmd)
+			_ = stdoutPipe.Close()
+			_ = stdinPipe.Close()
+		case <-monitorDone:
+		}
+	}()
+
 	// Write initial turn payload to stdin pipe with synchronization
 	stdinDone := make(chan struct{})
 	go func() {
@@ -489,7 +512,7 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	// Ensure stdin writing is done before closing pipe
 	select {
 	case <-stdinDone:
-	case <-time.After(1 * time.Second):
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	if entry != nil {
@@ -513,21 +536,21 @@ func (h *Harness) ExecuteStream(ctx context.Context, req domain.ExecutionRequest
 	select {
 	case waitErr = <-waitDone:
 		// Subprocess exited cleanly
-	case <-time.After(4 * time.Second):
+	case <-time.After(1 * time.Second):
 		slog.WarnContext(ctx, "AGY process did not exit within grace period after stream completion, terminating process tree",
 			slog.String("session_key", sessionKey),
 		)
 		_ = killProcessTree(cmd)
 		select {
 		case waitErr = <-waitDone:
-		case <-time.After(1 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 			waitErr = fmt.Errorf("subprocess wait timed out")
 		}
 	case <-execCtx.Done():
 		_ = killProcessTree(cmd)
 		select {
 		case waitErr = <-waitDone:
-		case <-time.After(1 * time.Second):
+		case <-time.After(500 * time.Millisecond):
 			waitErr = execCtx.Err()
 		}
 	}

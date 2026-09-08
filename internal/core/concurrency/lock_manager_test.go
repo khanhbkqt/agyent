@@ -119,4 +119,69 @@ func TestSessionLockManager_ExhaustiveSuite(t *testing.T) {
 
 		assert.Equal(t, 2, lm.ActiveLockCount())
 	})
+
+	t.Run("ForceUnlock_ReleasesTokenToNextWaiter", func(t *testing.T) {
+		lm := concurrency.NewSessionLockManager()
+		ctx := context.Background()
+
+		unlock1, err := lm.Acquire(ctx, "session-fu-1", 5*time.Second)
+		require.NoError(t, err)
+
+		var (
+			wg           sync.WaitGroup
+			waiterErr    error
+			waiterUnlock func()
+		)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			waiterUnlock, waiterErr = lm.Acquire(ctx, "session-fu-1", 5*time.Second)
+		}()
+
+		// Give waiter time to block in Acquire
+		time.Sleep(50 * time.Millisecond)
+
+		// ForceUnlock session
+		assert.True(t, lm.ForceUnlock("session-fu-1"))
+
+		// Waiter must acquire immediately
+		wg.Wait()
+		require.NoError(t, waiterErr)
+		require.NotNil(t, waiterUnlock)
+
+		// Old holder unlocks deferred (must not revoke waiter's lock)
+		unlock1()
+
+		// Waiter finishes and unlocks
+		waiterUnlock()
+		assert.Equal(t, 0, lm.ActiveLockCount())
+	})
+
+	t.Run("ForceUnlock_OldHolderDoesNotStealSubsequentLock", func(t *testing.T) {
+		lm := concurrency.NewSessionLockManager()
+		ctx := context.Background()
+
+		unlock1, err := lm.Acquire(ctx, "session-fu-2", 5*time.Second)
+		require.NoError(t, err)
+
+		// ForceUnlock while holder is running
+		assert.True(t, lm.ForceUnlock("session-fu-2"))
+
+		// New turn acquires lock
+		unlock2, err := lm.Acquire(ctx, "session-fu-2", 1*time.Second)
+		require.NoError(t, err)
+
+		// Old turn cleans up and runs deferred unlock1()
+		unlock1()
+
+		// Ensure unlock2 is STILL valid and mutually exclusive against a competing turn
+		competingCtx, competingCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer competingCancel()
+		_, errCompeting := lm.Acquire(competingCtx, "session-fu-2", 100*time.Millisecond)
+		require.Error(t, errCompeting, "competing acquire must fail while unlock2 is still held")
+
+		// unlock2 completes
+		unlock2()
+		assert.Equal(t, 0, lm.ActiveLockCount())
+	})
 }
