@@ -129,13 +129,15 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		}
 	}
 
-	timeout := 1800 * time.Second
-	if e.cfg != nil {
-		if e.cfg.Scheduler.DefaultTaskTimeoutSeconds > 0 {
-			timeout = time.Duration(e.cfg.Scheduler.DefaultTaskTimeoutSeconds) * time.Second
-		} else if e.cfg.AGY.DefaultTimeoutSeconds > 0 {
-			timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
-		}
+	var timeout time.Duration
+	if task.TimeoutSeconds > 0 {
+		timeout = time.Duration(task.TimeoutSeconds) * time.Second
+	} else if e.cfg != nil && e.cfg.Scheduler.DefaultTaskTimeoutSeconds > 0 {
+		timeout = time.Duration(e.cfg.Scheduler.DefaultTaskTimeoutSeconds) * time.Second
+	} else if e.cfg != nil && e.cfg.AGY.DefaultTimeoutSeconds > 0 {
+		timeout = time.Duration(e.cfg.AGY.DefaultTimeoutSeconds) * time.Second
+	} else {
+		timeout = 1800 * time.Second
 	}
 	if timeout < 30*time.Second {
 		timeout = 30 * time.Second

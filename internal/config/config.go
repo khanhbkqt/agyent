@@ -305,7 +305,7 @@ func DefaultConfig() *Config {
 		Scheduler: SchedulerConfig{
 			Enabled:                   true,
 			PollIntervalSeconds:       1,
-			DefaultTaskTimeoutSeconds: 300,
+			DefaultTaskTimeoutSeconds: 1800,
 			HeartbeatTimeoutSeconds:   120,
 		},
 		Logging: LoggingConfig{

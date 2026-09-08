@@ -551,6 +551,13 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 		createdBy = "agent"
 	}
 
+	var timeoutSeconds int
+	if timeoutVal, ok := p["timeout_seconds"].(float64); ok && timeoutVal > 0 {
+		timeoutSeconds = int(timeoutVal)
+	} else if timeoutVal, ok := p["timeout_seconds"].(int); ok && timeoutVal > 0 {
+		timeoutSeconds = timeoutVal
+	}
+
 	task := domain.ScheduleTask{
 		AgentName:        agentName,
 		Title:            title,
@@ -562,6 +569,7 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 		ChatID:           chatID,
 		ThreadID:         threadID,
 		OverlapPolicy:    domain.OverlapPolicy(overlap),
+		TimeoutSeconds:   timeoutSeconds,
 		CreatedBy:        createdBy,
 	}
 

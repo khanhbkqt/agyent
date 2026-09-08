@@ -91,6 +91,10 @@ def handle_message(msg):
                                     "enum": ["skip", "cancel_previous", "queue"],
                                     "description": "Concurrency policy if previous run is still in-flight",
                                     "default": "skip"
+                                },
+                                "timeout_seconds": {
+                                    "type": "integer",
+                                    "description": "Optional maximum execution duration in seconds for this scheduled task (e.g. 1800 for 30m, 3600 for 1h). Defaults to daemon scheduler default."
                                 }
                             },
                             "required": ["prompt", "time_expression"]

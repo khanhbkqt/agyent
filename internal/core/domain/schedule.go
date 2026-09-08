@@ -60,6 +60,7 @@ type ScheduleTask struct {
 	LastRunAt        time.Time      `json:"last_run_at,omitempty"`
 	RunCount         int            `json:"run_count"`
 	MaxRuns          int            `json:"max_runs"`
+	TimeoutSeconds   int            `json:"timeout_seconds,omitempty"`
 	LastError        string         `json:"last_error,omitempty"`
 	CreatedBy        string         `json:"created_by"`
 	CreatedAt        time.Time      `json:"created_at"`

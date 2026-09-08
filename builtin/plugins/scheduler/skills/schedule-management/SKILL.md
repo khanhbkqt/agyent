@@ -20,6 +20,8 @@ Use `schedule_task` with a self-contained `prompt` and `time_expression`:
 - When the expression makes the type obvious, `schedule_type: "auto"` is valid.
 - Default `overlap_policy` to `skip` unless the user explicitly needs queued work
   or cancellation of the previous run.
+- For long-running tasks (e.g. data scraping, extensive reports), supply
+  `timeout_seconds` (e.g. `1800` for 30m, `3600` for 1h) to prevent premature timeout.
 
 Do not silently turn an immediate request into a scheduled task. The stored prompt
 must contain the context needed at wake time without relying on the current chat

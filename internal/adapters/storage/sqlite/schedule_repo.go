@@ -29,9 +29,9 @@ func (s *SQLiteStore) SaveSchedule(ctx context.Context, task *domain.ScheduleTas
 			id, agent_name, title, schedule_type, schedule_expr, prompt,
 			target_session_key, chat_id, thread_id, channel,
 			status, overlap_policy, misfire_policy,
-			next_run_at, last_run_at, run_count, max_runs,
+			next_run_at, last_run_at, run_count, max_runs, timeout_seconds,
 			last_error, created_by, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			agent_name = excluded.agent_name,
 			title = excluded.title,
@@ -49,6 +49,7 @@ func (s *SQLiteStore) SaveSchedule(ctx context.Context, task *domain.ScheduleTas
 			last_run_at = excluded.last_run_at,
 			run_count = excluded.run_count,
 			max_runs = excluded.max_runs,
+			timeout_seconds = excluded.timeout_seconds,
 			last_error = excluded.last_error,
 			created_by = excluded.created_by,
 			updated_at = excluded.updated_at
@@ -90,7 +91,7 @@ func (s *SQLiteStore) SaveSchedule(ctx context.Context, task *domain.ScheduleTas
 		task.ID, task.AgentName, task.Title, string(task.ScheduleType), task.ScheduleExpr, task.Prompt,
 		task.TargetSessionKey, task.ChatID, task.ThreadID, channel,
 		status, overlapPolicy, misfirePolicy,
-		nextRunMs, lastRunMs, task.RunCount, task.MaxRuns,
+		nextRunMs, lastRunMs, task.RunCount, task.MaxRuns, task.TimeoutSeconds,
 		task.LastError, task.CreatedBy, createdMs, updatedMs,
 	)
 	if err != nil {
@@ -110,7 +111,7 @@ func (s *SQLiteStore) GetSchedule(ctx context.Context, id string) (*domain.Sched
 		SELECT id, agent_name, title, schedule_type, schedule_expr, prompt,
 		       target_session_key, chat_id, thread_id, channel,
 		       status, overlap_policy, misfire_policy,
-		       next_run_at, last_run_at, run_count, max_runs,
+		       next_run_at, last_run_at, run_count, max_runs, timeout_seconds,
 		       last_error, created_by, created_at, updated_at
 		FROM agent_schedules
 		WHERE id = ?
@@ -132,7 +133,7 @@ func (s *SQLiteStore) GetSchedule(ctx context.Context, id string) (*domain.Sched
 		&t.ID, &t.AgentName, &t.Title, &schedTypeStr, &t.ScheduleExpr, &t.Prompt,
 		&t.TargetSessionKey, &t.ChatID, &t.ThreadID, &t.Channel,
 		&statusStr, &overlapStr, &misfireStr,
-		&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns,
+		&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns, &t.TimeoutSeconds,
 		&t.LastError, &t.CreatedBy, &createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -210,7 +211,7 @@ func (s *SQLiteStore) ListSchedules(ctx context.Context, agentName string, statu
 		SELECT id, agent_name, title, schedule_type, schedule_expr, prompt,
 		       target_session_key, chat_id, thread_id, channel,
 		       status, overlap_policy, misfire_policy,
-		       next_run_at, last_run_at, run_count, max_runs,
+		       next_run_at, last_run_at, run_count, max_runs, timeout_seconds,
 		       last_error, created_by, created_at, updated_at
 		FROM agent_schedules
 		%s
@@ -243,7 +244,7 @@ func (s *SQLiteStore) ListSchedules(ctx context.Context, agentName string, statu
 			&t.ID, &t.AgentName, &t.Title, &schedTypeStr, &t.ScheduleExpr, &t.Prompt,
 			&t.TargetSessionKey, &t.ChatID, &t.ThreadID, &t.Channel,
 			&statusStr, &overlapStr, &misfireStr,
-			&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns,
+			&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns, &t.TimeoutSeconds,
 			&t.LastError, &t.CreatedBy, &createdAt, &updatedAt,
 		)
 		if err != nil {
@@ -295,7 +296,7 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 		SELECT id, agent_name, title, schedule_type, schedule_expr, prompt,
 		       target_session_key, chat_id, thread_id, channel,
 		       status, overlap_policy, misfire_policy,
-		       next_run_at, last_run_at, run_count, max_runs,
+		       next_run_at, last_run_at, run_count, max_runs, timeout_seconds,
 		       last_error, created_by, created_at, updated_at
 		FROM agent_schedules
 		WHERE status = 'ACTIVE' AND next_run_at > 0 AND next_run_at <= ?
@@ -329,7 +330,7 @@ func (s *SQLiteStore) AcquireDueSchedules(ctx context.Context, nowUnixMs int64, 
 			&t.ID, &t.AgentName, &t.Title, &schedTypeStr, &t.ScheduleExpr, &t.Prompt,
 			&t.TargetSessionKey, &t.ChatID, &t.ThreadID, &t.Channel,
 			&statusStr, &overlapStr, &misfireStr,
-			&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns,
+			&nextRunAt, &lastRunAt, &t.RunCount, &t.MaxRuns, &t.TimeoutSeconds,
 			&t.LastError, &t.CreatedBy, &createdAt, &updatedAt,
 		)
 		if err != nil {

@@ -220,6 +220,32 @@ func TestTaskExecutor_ExecuteSchedule_DynamicImageTimeout(t *testing.T) {
 	require.NoError(t, err)
 	lastReq = runner.receivedReqs[len(runner.receivedReqs)-1]
 	assert.Equal(t, 30*time.Second, lastReq.Timeout, "Non-image task should keep configured timeout")
+
+	// Case 3: Explicit task-level timeout overrides config default
+	taskCustom := domain.ScheduleTask{
+		ID:             "cron-deep-crawl",
+		AgentName:      "agyent",
+		Title:          "Deep Web Research",
+		Prompt:         "Crawl 50 web pages and synthesize data",
+		TimeoutSeconds: 3600,
+	}
+	_, err = exec.ExecuteSchedule(context.Background(), taskCustom)
+	require.NoError(t, err)
+	lastReq = runner.receivedReqs[len(runner.receivedReqs)-1]
+	assert.Equal(t, 3600*time.Second, lastReq.Timeout, "Custom task timeout must override config default")
+
+	// Case 4: Explicit task-level timeout on image task >= 300s
+	taskCustomImage := domain.ScheduleTask{
+		ID:             "cron-image-render",
+		AgentName:      "agyent",
+		Title:          "Render 4K Avatar",
+		Prompt:         "Generate high-resolution 3D character render image",
+		TimeoutSeconds: 900,
+	}
+	_, err = exec.ExecuteSchedule(context.Background(), taskCustomImage)
+	require.NoError(t, err)
+	lastReq = runner.receivedReqs[len(runner.receivedReqs)-1]
+	assert.Equal(t, 900*time.Second, lastReq.Timeout, "Custom image task timeout must be preserved when >= 300s")
 }
 
 type mockExecutionService struct {

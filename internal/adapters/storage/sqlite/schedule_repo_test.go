@@ -41,6 +41,7 @@ func TestScheduleRepo_Lifecycle(t *testing.T) {
 		NextRunAt:        now.Add(-10 * time.Minute), // Due in the past
 		RunCount:         0,
 		MaxRuns:          0,
+		TimeoutSeconds:   1200,
 		CreatedBy:        "user-999",
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -56,6 +57,7 @@ func TestScheduleRepo_Lifecycle(t *testing.T) {
 	assert.Equal(t, task.ID, fetched.ID)
 	assert.Equal(t, task.AgentName, fetched.AgentName)
 	assert.Equal(t, domain.ScheduleStatusActive, fetched.Status)
+	assert.Equal(t, 1200, fetched.TimeoutSeconds)
 
 	// 3. List
 	tasks, total, err := store.ListSchedules(ctx, "dev_architect", "", 10, 0)
