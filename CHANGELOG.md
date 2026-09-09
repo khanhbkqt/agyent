@@ -5,6 +5,30 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.56] - 2026-09-09
+
+### Added
+- **Flexible 3-Way Zalo HITL Approval Flow (`channels/zalo`):**
+  - Designed specifically for channels without inline button keyboards: supports quote-reply with approval keywords, quick slash commands (`/approve`, `/deny`, `/approve_session`, `/approve_all`), and 4-digit shortcodes (`#1234`).
+  - Multi-lingual alias parser supporting English and Vietnamese (accented and unaccented, e.g. `đồng ý`, `dong y`, `duyệt`, `từ chối`, `tu choi`, `hủy`) as well as numeric quick-replies (`1`, `2`, `3`, `4`).
+  - Enforced fail-closed admin RBAC, anti-hijacking message validation, and pointer-identity safe pending request eviction.
+- **Canonical Approval Actions & Session Grants Architecture (`domain`, `security`, `engine`):**
+  - Introduced canonical `domain.ApprovalAction` (`allow_once`, `allow_session`, `allow_all_session`, `deny`) and `domain.SessionGrant` models.
+  - Implemented 3-Tier Guardrail Evaluation Hierarchy: Inviolable Hard Guardrails (tampering, destruction, PathJail) -> In-memory Session Grants -> HITL Approval.
+  - Added `/security grants` slash command and interactive dashboard view to display active session permission grants.
+  - Added `ParentExec` metadata to `ParsedCommand` to permit interpreter subcommands while preventing chained pipe bypasses.
+- **Agyent Architecture Skill & Foundation Directives (`skills`, `engine`):**
+  - Added `.agents/skills/agyent-architecture/SKILL.md` covering Ports & Adapters boundaries, Channel Ingress RBAC, Two-Layer Security (Presets vs Filesystem Scope), and agent operating boundaries.
+  - Updated Level 0 system runtime foundation template and genesis onboarding prompt in `bootstrap.go`.
+
+### Fixed
+- **Wildcard Session Permission Grants for `allow_all_session` (`security`):**
+  - Normalized `all`, `all_session`, and `*` wildcard grants in `GrantSessionPermission` and `evaluateCommandWithBundle`.
+  - Added `HasWildcardGrant` to auto-approve askable actions during active wildcard grants while strictly defending inviolable hard guardrails.
+  - Supported wildcard `*` and `all` in `/security grant` slash command and `/approve <id> all`.
+
+---
+
 ## [1.0.55] - 2026-09-09
 
 ### Added
