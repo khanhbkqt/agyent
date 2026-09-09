@@ -371,6 +371,169 @@ func TestIPC_ScheduleAndHeartbeatActions(t *testing.T) {
 	assert.Contains(t, string(trigResp.Data), "TRIGGERED")
 }
 
+func TestIPC_Schedule_CrossAgentRouting_And_Authorization(t *testing.T) {
+	addr := "127.0.0.1:49990"
+	mockMgr := &mockSecurityManager{}
+	var capturedTask domain.ScheduleTask
+	mockSched := &mockScheduler{
+		createScheduleFn: func(ctx context.Context, task domain.ScheduleTask) (*domain.ScheduleTask, error) {
+			capturedTask = task
+			task.ID = "sched-wife-1"
+			return &task, nil
+		},
+	}
+
+	server := NewServer(mockMgr, addr, nil)
+	server.SetPolicyEngine(allowPolicy{})
+	server.SetScheduler(mockSched)
+	server.SetScheduleStore(&mockScheduleRepository{task: &domain.ScheduleTask{
+		ID:               "sched-wife-1",
+		AgentName:        "wife_assistant",
+		TargetSessionKey: "telegram:8220274185",
+		CreatedBy:        "12345",
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+
+	client := NewClient(addr)
+	client.SetTurnID("turn-admin-session")
+
+	// 1. Cross-agent schedule creation: Admin in @agyent session schedules task for @wife_assistant to chat 8220274185
+	schedResp, err := client.SendAction("schedule_task", map[string]interface{}{
+		"title":           "Radar POD DE",
+		"prompt":          "Search POD trends",
+		"time_expression": "0 8 * * *",
+		"schedule_type":   "cron",
+		"agent_name":      "wife_assistant",
+		"chat_id":         "8220274185",
+		"channel":         "telegram",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, schedResp.Success, "Expected schedule_task to succeed for cross-agent routing")
+	assert.Equal(t, "wife_assistant", capturedTask.AgentName)
+	assert.Equal(t, "8220274185", capturedTask.ChatID)
+	assert.Equal(t, "telegram", capturedTask.Channel)
+	assert.Equal(t, "telegram:8220274185", capturedTask.TargetSessionKey)
+
+	// 2. Cross-agent cancel: Admin in @agyent session cancels task belonging to @wife_assistant
+	cancelResp, err := client.SendAction("cancel_schedule", map[string]interface{}{
+		"task_id": "sched-wife-1",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, cancelResp.Success, "Expected cancel_schedule to succeed for authorized cross-agent caller")
+}
+
+type denyPolicy struct{}
+
+func (denyPolicy) Authorize(context.Context, domain.Principal, domain.Action, domain.Resource) error {
+	return ports.ErrAccessDenied
+}
+
+func (denyPolicy) ResolveAgentRole(context.Context, domain.Principal, string) (domain.AgentRole, error) {
+	return domain.AgentRoleNone, nil
+}
+
+func TestIPC_Schedule_UnauthorizedCrossAgent_FailsClosed(t *testing.T) {
+	addr := "127.0.0.1:49991"
+	mockMgr := &mockSecurityManager{}
+	mockSched := &mockScheduler{}
+
+	server := NewServer(mockMgr, addr, nil)
+	server.SetPolicyEngine(denyPolicy{})
+	server.SetScheduler(mockSched)
+	server.SetScheduleStore(&mockScheduleRepository{task: &domain.ScheduleTask{
+		ID:               "sched-other-user",
+		AgentName:        "wife_assistant",
+		TargetSessionKey: "telegram:8220274185",
+		CreatedBy:        "other_user_999",
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+
+	client := NewClient(addr)
+	client.SetTurnID("turn-unauthorized-session")
+
+	// 1. Unauthorized schedule creation for another agent must be denied
+	schedResp, err := client.SendAction("schedule_task", map[string]interface{}{
+		"title":           "Unauthorized Schedule",
+		"prompt":          "Steal data",
+		"time_expression": "0 8 * * *",
+		"schedule_type":   "cron",
+		"agent_name":      "wife_assistant",
+		"chat_id":         "8220274185",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.False(t, schedResp.Success, "Expected schedule_task to fail for unauthorized cross-agent request")
+	assert.Contains(t, schedResp.Error, "access denied")
+
+	// 2. Unauthorized cancel of someone else's task must be denied
+	cancelResp, err := client.SendAction("cancel_schedule", map[string]interface{}{
+		"task_id": "sched-other-user",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.False(t, cancelResp.Success, "Expected cancel_schedule to fail for unauthorized user")
+	assert.Contains(t, cancelResp.Error, "access denied")
+}
+
+func TestIPC_ConfigureHeartbeat_WithChatID(t *testing.T) {
+	addr := "127.0.0.1:49992"
+	mockMgr := &mockSecurityManager{}
+	var capturedCfg domain.HeartbeatConfig
+	mockSched := &mockScheduler{
+		configureHeartbeatFn: func(ctx context.Context, cfg domain.HeartbeatConfig, prompt string) error {
+			capturedCfg = cfg
+			return nil
+		},
+	}
+
+	server := NewServer(mockMgr, addr, nil)
+	server.SetPolicyEngine(allowPolicy{})
+	server.SetScheduler(mockSched)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	time.Sleep(20 * time.Millisecond)
+
+	client := NewClient(addr)
+	client.SetTurnID("turn-hb-test")
+
+	hbResp, err := client.SendAction("configure_heartbeat", map[string]interface{}{
+		"agent_name": "wife_assistant",
+		"enabled":    true,
+		"interval":   "30m",
+		"chat_id":    "8220274185",
+		"channel":    "telegram",
+		"prompt":     "Pulse check",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.True(t, hbResp.Success)
+	assert.Equal(t, "wife_assistant", capturedCfg.AgentName)
+	assert.Equal(t, "8220274185", capturedCfg.ChatID)
+	assert.Equal(t, "telegram", capturedCfg.Channel)
+	assert.Equal(t, "telegram:8220274185", capturedCfg.TargetSessionKey)
+}
+
+
+
 type mockSubagentDispatcher struct {
 	dispatchTaskFn func(ctx context.Context, task domain.SubagentTask) (string, error)
 	getTaskFn      func(ctx context.Context, taskID string) (*domain.SubagentTask, error)

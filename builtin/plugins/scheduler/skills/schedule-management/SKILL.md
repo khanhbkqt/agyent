@@ -22,13 +22,16 @@ Use `schedule_task` with a self-contained `prompt` and `time_expression`:
   or cancellation of the previous run.
 - For long-running tasks (e.g. data scraping, extensive reports), supply
   `timeout_seconds` (e.g. `1800` for 30m, `3600` for 1h) to prevent premature timeout.
+- When scheduling a task on behalf of another persona or delivering to a specific
+  recipient, specify `agent_name` (e.g. `wife_assistant`) and `chat_id` (e.g. `8220274185`).
+  If omitted, notifications route to the active conversation session.
 
 Do not silently turn an immediate request into a scheduled task. The stored prompt
 must contain the context needed at wake time without relying on the current chat
 turn.
 
 After creation, report the task ID, interpreted next run time with timezone, target
-agent, recurrence, and overlap policy from the tool response.
+agent, recipient chat, recurrence, and overlap policy from the tool response.
 
 ## Listing and cancellation
 

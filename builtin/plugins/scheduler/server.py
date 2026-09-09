@@ -86,6 +86,18 @@ def handle_message(msg):
                                     "type": "string",
                                     "description": "Target agent persona name (default: active session agent or 'agyent')"
                                 },
+                                "chat_id": {
+                                    "type": "string",
+                                    "description": "Target chat ID or recipient user ID to receive task notifications/results (e.g. '8220274185'). If omitted, defaults to active chat session."
+                                },
+                                "channel": {
+                                    "type": "string",
+                                    "description": "Target messaging channel (e.g. 'telegram', 'zalo'). Defaults to current channel."
+                                },
+                                "target_session_key": {
+                                    "type": "string",
+                                    "description": "Explicit destination session key (e.g. 'telegram:8220274185'). If omitted, derived from channel + chat_id or active session."
+                                },
                                 "overlap_policy": {
                                     "type": "string",
                                     "enum": ["skip", "cancel_previous", "queue"],
@@ -108,7 +120,7 @@ def handle_message(msg):
                             "properties": {
                                 "agent_name": {
                                     "type": "string",
-                                    "description": "Filter tasks by agent name (optional)"
+                                    "description": "Filter tasks by agent name (optional). SuperAdmins and authorized agent admins can list tasks across agents."
                                 },
                                 "status": {
                                     "type": "string",
@@ -128,6 +140,10 @@ def handle_message(msg):
                                 "task_id": {
                                     "type": "string",
                                     "description": "Task ID ticket to cancel (e.g. 'sched-cron-a1b2c3' or 'sched-once-1a2b3c')"
+                                },
+                                "agent_name": {
+                                    "type": "string",
+                                    "description": "Optional agent name scope for the schedule"
                                 }
                             },
                             "required": ["task_id"]
@@ -198,10 +214,17 @@ def handle_message(msg):
 
         if not args.get("agent_name") and env_agent:
             args["agent_name"] = env_agent
-        if not args.get("session_key") and session_key:
-            args["session_key"] = session_key
         if not args.get("user_id") and user_id:
             args["user_id"] = user_id
+
+        # Preserve explicit chat_id or target_session_key if specified.
+        # Otherwise fallback to active caller session key.
+        if not args.get("session_key") and not args.get("target_session_key") and not args.get("chat_id") and session_key:
+            args["session_key"] = session_key
+            args["target_session_key"] = session_key
+        elif session_key and not args.get("session_key"):
+            args["session_key"] = session_key
+
 
         resp = send_ipc_action(tool_name, args)
 

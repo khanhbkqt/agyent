@@ -265,20 +265,20 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, actionOnly
 		if params == nil {
 			params = raw
 		}
-		params, err = scopeActionParams(params, callerTurn)
+		params, err = scopeActionParams(action, params, callerTurn)
 		if err != nil {
 			s.logger.Warn("IPC action scope denied", "action", action, "turn_id", callerTurn.TurnID, "error", err)
 			s.writeActionError(conn, action, err)
 			return
 		}
-		if err := s.authorizeAction(ctx, action, callerTurn); err != nil {
+		if err := s.authorizeAction(ctx, action, params, callerTurn); err != nil {
 			s.logger.Warn("IPC action policy denied", "action", action, "turn_id", callerTurn.TurnID, "error", err)
 			s.writeActionError(conn, action, err)
 			return
 		}
 		raw["params"] = params
 
-		s.handleAction(ctx, conn, action, raw)
+		s.handleAction(ctx, conn, action, raw, callerTurn)
 		return
 	}
 	if actionOnly && s.actionAddr != s.addr {
@@ -327,7 +327,7 @@ func (s *Server) resolveActionTurn(turnID string) (domain.TurnSecurityContext, e
 	return turn, nil
 }
 
-func (s *Server) authorizeAction(ctx context.Context, action string, turn domain.TurnSecurityContext) error {
+func (s *Server) authorizeAction(ctx context.Context, action string, params map[string]interface{}, turn domain.TurnSecurityContext) error {
 	policyAction, kind, err := ipcPolicyAction(action)
 	if err != nil {
 		return err
@@ -338,12 +338,41 @@ func (s *Server) authorizeAction(ctx context.Context, action string, turn domain
 	if policy == nil {
 		return fmt.Errorf("authorization unavailable: policy engine is not initialized")
 	}
-	resource := turn.Resource
-	resource.Kind = kind
-	resource.SessionKey = turn.SessionKey
-	resource.AgentName = turn.AgentName
-	if resource.ID == "" {
-		resource.ID = turn.AgentName
+
+	targetAgent, _ := params["agent_name"].(string)
+	if strings.TrimSpace(targetAgent) == "" {
+		targetAgent = turn.AgentName
+	}
+	targetSessionKey, _ := params["target_session_key"].(string)
+	if strings.TrimSpace(targetSessionKey) == "" {
+		if chatID, ok := params["chat_id"].(string); ok && strings.TrimSpace(chatID) != "" {
+			channel, _ := params["channel"].(string)
+			if channel == "" {
+				channel = "telegram"
+			}
+			var tid int64
+			if tidStr, ok := params["thread_id"].(string); ok && tidStr != "" {
+				tid, _ = strconv.ParseInt(tidStr, 10, 64)
+			}
+			targetSessionKey = domain.FormatSessionKey(channel, strings.TrimSpace(chatID), tid)
+		} else {
+			targetSessionKey, _ = params["session_key"].(string)
+		}
+	}
+	if strings.TrimSpace(targetSessionKey) == "" {
+		targetSessionKey = turn.SessionKey
+	}
+
+	targetID := targetAgent
+	if taskID, ok := params["task_id"].(string); ok && strings.TrimSpace(taskID) != "" {
+		targetID = strings.TrimSpace(taskID)
+	}
+
+	resource := domain.Resource{
+		Kind:       kind,
+		ID:         targetID,
+		SessionKey: targetSessionKey,
+		AgentName:  targetAgent,
 	}
 	return policy.Authorize(ctx, turn.Principal, policyAction, resource)
 }
@@ -373,30 +402,17 @@ func ipcPolicyAction(action string) (domain.Action, domain.ResourceKind, error) 
 	}
 }
 
-// scopeActionParams copies untrusted request parameters then fixes all
-// identity-bearing values to the active turn. A turn capability can only act
-// inside its own session and agent; callers cannot redirect a future schedule
-// or task to another conversation by supplying a different target key.
-func scopeActionParams(input map[string]interface{}, turn domain.TurnSecurityContext) (map[string]interface{}, error) {
+// scopeActionParams copies untrusted request parameters then fixes identity-bearing
+// values to the active turn. Subagents remain strictly scoped to the active caller session.
+// Schedule and heartbeat actions preserve target persona and routing, which are then
+// rigorously evaluated by the PolicyEngine.
+func scopeActionParams(action string, input map[string]interface{}, turn domain.TurnSecurityContext) (map[string]interface{}, error) {
 	params := make(map[string]interface{}, len(input)+6)
 	for key, value := range input {
 		params[key] = value
 	}
 
-	for _, key := range []string{"parent_session_key", "session_key", "target_session_key"} {
-		if value, ok := params[key].(string); ok && value != "" && value != turn.SessionKey {
-			return nil, fmt.Errorf("forbidden: %s is outside the caller session scope", key)
-		}
-		params[key] = turn.SessionKey
-	}
-	if value, ok := params["agent_name"].(string); ok && value != "" && value != turn.AgentName {
-		return nil, fmt.Errorf("forbidden: agent_name is outside the caller agent scope")
-	}
-	params["agent_name"] = turn.AgentName
-	if value, ok := params["project_name"].(string); ok && value != "" && value != turn.ProjectName {
-		return nil, fmt.Errorf("forbidden: project_name is outside the caller project scope")
-	}
-	params["project_name"] = turn.ProjectName
+	// Always bind immutable user creator identity so caller cannot impersonate another user
 	if turn.Principal.Kind == domain.PrincipalUser && turn.Principal.SubjectID != "" {
 		for _, key := range []string{"user_id", "created_by"} {
 			if value, ok := params[key].(string); ok && value != "" && value != turn.Principal.SubjectID {
@@ -405,6 +421,52 @@ func scopeActionParams(input map[string]interface{}, turn domain.TurnSecurityCon
 			params[key] = turn.Principal.SubjectID
 		}
 	}
+
+	switch action {
+	case "dispatch_subagent", "check_subagent_progress", "get_subagent_task", "cancel_subagent_task", "list_subagents":
+		// Subagents are strictly bound to caller's active session and persona
+		for _, key := range []string{"parent_session_key", "session_key"} {
+			if value, ok := params[key].(string); ok && value != "" && value != turn.SessionKey {
+				return nil, fmt.Errorf("forbidden: %s is outside the caller session scope", key)
+			}
+			params[key] = turn.SessionKey
+		}
+		if value, ok := params["agent_name"].(string); ok && value != "" && value != turn.AgentName {
+			return nil, fmt.Errorf("forbidden: agent_name is outside the caller agent scope")
+		}
+		params["agent_name"] = turn.AgentName
+		if value, ok := params["project_name"].(string); ok && value != "" && value != turn.ProjectName {
+			return nil, fmt.Errorf("forbidden: project_name is outside the caller project scope")
+		}
+		params["project_name"] = turn.ProjectName
+
+	case "schedule_task", "create_schedule", "list_schedules", "cancel_schedule", "delete_schedule",
+		"configure_heartbeat", "get_heartbeat", "trigger_heartbeat":
+		// Target agent persona, destination routing, and project are evaluated by PolicyEngine
+		if value, ok := params["agent_name"].(string); !ok || strings.TrimSpace(value) == "" {
+			params["agent_name"] = turn.AgentName
+		}
+		if value, ok := params["session_key"].(string); !ok || strings.TrimSpace(value) == "" {
+			params["session_key"] = turn.SessionKey
+		}
+		if value, ok := params["project_name"].(string); !ok || strings.TrimSpace(value) == "" {
+			params["project_name"] = turn.ProjectName
+		}
+
+	default:
+		// Strict fallback scoping
+		for _, key := range []string{"parent_session_key", "session_key", "target_session_key"} {
+			if value, ok := params[key].(string); ok && value != "" && value != turn.SessionKey {
+				return nil, fmt.Errorf("forbidden: %s is outside the caller session scope", key)
+			}
+			params[key] = turn.SessionKey
+		}
+		if value, ok := params["agent_name"].(string); ok && value != "" && value != turn.AgentName {
+			return nil, fmt.Errorf("forbidden: agent_name is outside the caller agent scope")
+		}
+		params["agent_name"] = turn.AgentName
+	}
+
 	return params, nil
 }
 
@@ -416,7 +478,7 @@ func (s *Server) writeActionError(conn net.Conn, action string, err error) {
 	_, _ = conn.Write(append(respBytes, '\n'))
 }
 
-func (s *Server) handleAction(ctx context.Context, conn net.Conn, action string, raw map[string]interface{}) {
+func (s *Server) handleAction(ctx context.Context, conn net.Conn, action string, raw map[string]interface{}, callerTurn domain.TurnSecurityContext) {
 	params, _ := raw["params"].(map[string]interface{})
 	if params == nil {
 		params = raw
@@ -441,7 +503,7 @@ func (s *Server) handleAction(ctx context.Context, conn net.Conn, action string,
 	case "list_schedules":
 		res, err = s.handleListSchedules(ctx, params)
 	case "cancel_schedule", "delete_schedule":
-		res, err = s.handleCancelSchedule(ctx, params)
+		res, err = s.handleCancelSchedule(ctx, params, callerTurn)
 	case "configure_heartbeat":
 		res, err = s.handleConfigureHeartbeat(ctx, params)
 	case "get_heartbeat":
@@ -518,9 +580,6 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 
 	sessionKey, _ := p["session_key"].(string)
 	targetSessionKey, _ := p["target_session_key"].(string)
-	if targetSessionKey == "" {
-		targetSessionKey = sessionKey
-	}
 	overlap, _ := p["overlap_policy"].(string)
 	if overlap == "" {
 		overlap = string(domain.OverlapPolicySkip)
@@ -529,7 +588,29 @@ func (s *Server) handleScheduleTask(ctx context.Context, p map[string]interface{
 	chatID, _ := p["chat_id"].(string)
 	threadID, _ := p["thread_id"].(string)
 
-	if targetSessionKey != "" {
+	if strings.TrimSpace(targetSessionKey) != "" {
+		if parsed, err := domain.ParseSessionKey(targetSessionKey); err == nil {
+			if chatID == "" {
+				chatID = parsed.ChatID
+			}
+			if threadID == "" && parsed.ThreadID > 0 {
+				threadID = strconv.FormatInt(parsed.ThreadID, 10)
+			}
+			if channel == "" {
+				channel = parsed.Channel
+			}
+		}
+	} else if strings.TrimSpace(chatID) != "" {
+		if channel == "" {
+			channel = "telegram"
+		}
+		var tid int64
+		if threadID != "" {
+			tid, _ = strconv.ParseInt(threadID, 10, 64)
+		}
+		targetSessionKey = domain.FormatSessionKey(channel, strings.TrimSpace(chatID), tid)
+	} else if strings.TrimSpace(sessionKey) != "" {
+		targetSessionKey = sessionKey
 		if parsed, err := domain.ParseSessionKey(targetSessionKey); err == nil {
 			if chatID == "" {
 				chatID = parsed.ChatID
@@ -589,10 +670,11 @@ func (s *Server) handleListSchedules(ctx context.Context, p map[string]interface
 	return sched.ListSchedules(ctx, agentName, domain.ScheduleStatus(statusStr))
 }
 
-func (s *Server) handleCancelSchedule(ctx context.Context, p map[string]interface{}) (any, error) {
+func (s *Server) handleCancelSchedule(ctx context.Context, p map[string]interface{}, callerTurn domain.TurnSecurityContext) (any, error) {
 	s.mu.RLock()
 	sched := s.scheduler
 	scheduleDB := s.scheduleDB
+	policy := s.policy
 	s.mu.RUnlock()
 	if sched == nil || scheduleDB == nil {
 		return nil, fmt.Errorf("scheduler is not initialized")
@@ -606,11 +688,25 @@ func (s *Server) handleCancelSchedule(ctx context.Context, p map[string]interfac
 	if err != nil {
 		return nil, err
 	}
-	agentName, _ := p["agent_name"].(string)
-	targetSessionKey, _ := p["target_session_key"].(string)
-	if stored.AgentName != agentName || stored.TargetSessionKey != targetSessionKey {
-		return nil, fmt.Errorf("forbidden: schedule is outside caller scope")
+
+	// 1. Creator can always cancel their own task
+	isCreator := (stored.CreatedBy != "" && callerTurn.Principal.SubjectID != "" && stored.CreatedBy == callerTurn.Principal.SubjectID)
+	if !isCreator {
+		if policy == nil {
+			return nil, fmt.Errorf("authorization unavailable: policy engine is not initialized")
+		}
+		// 2. Otherwise evaluate PolicyEngine authorization for ActionScheduleCancel on target schedule resource
+		resource := domain.Resource{
+			Kind:       domain.ResourceKindSchedule,
+			ID:         stored.ID,
+			AgentName:  stored.AgentName,
+			SessionKey: stored.TargetSessionKey,
+		}
+		if authErr := policy.Authorize(ctx, callerTurn.Principal, domain.ActionScheduleCancel, resource); authErr != nil {
+			return nil, fmt.Errorf("forbidden: not authorized to cancel schedule %q: %w", taskID, authErr)
+		}
 	}
+
 	if err := sched.CancelSchedule(ctx, taskID); err != nil {
 		return nil, err
 	}
@@ -661,6 +757,16 @@ func (s *Server) handleConfigureHeartbeat(ctx context.Context, p map[string]inte
 
 	if targetKey, ok := p["target_session_key"].(string); ok && targetKey != "" {
 		cfg.TargetSessionKey = targetKey
+	} else if chatID, ok := p["chat_id"].(string); ok && strings.TrimSpace(chatID) != "" {
+		channel, _ := p["channel"].(string)
+		if channel == "" {
+			channel = "telegram"
+		}
+		var threadID int64
+		if tidStr, ok := p["thread_id"].(string); ok && tidStr != "" {
+			threadID, _ = strconv.ParseInt(tidStr, 10, 64)
+		}
+		cfg.TargetSessionKey = domain.FormatSessionKey(channel, strings.TrimSpace(chatID), threadID)
 	} else if sessionKey, ok := p["session_key"].(string); ok && sessionKey != "" && cfg.TargetSessionKey == "" {
 		cfg.TargetSessionKey = sessionKey
 	}
