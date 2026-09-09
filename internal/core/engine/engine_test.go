@@ -1495,23 +1495,11 @@ func TestEngine_ForceUnlockSession_AndNewConversation(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.True(t, eng.HasActiveTurn(sessionKey), "expected active turn in flight")
 
-	// 2. Calling /new while turn is active should fail with busy error
-	busyMsg := domain.CanonicalMessage{
-		ID:        "msg-new-fail",
-		Timestamp: time.Now(),
-		Channel:   "telegram",
-		Text:      "/new",
-		Sender:    sender,
-		Chat:      chat,
-	}
-	err := eng.HandleDebouncedMessage(ctx, busyMsg)
-	require.NoError(t, err)
-
-	// 3. Force unlock the session
+	// 2. Force unlock the session explicitly
 	eng.ForceUnlockSession(sessionKey)
 	assert.False(t, eng.HasActiveTurn(sessionKey), "expected active turn to be cleaned up after ForceUnlockSession")
 
-	// 4. Calling /new now should succeed immediately
+	// 3. Calling /new now should succeed immediately
 	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
 		return &domain.ExecutionResult{
 			Success:        true,
@@ -1528,8 +1516,118 @@ func TestEngine_ForceUnlockSession_AndNewConversation(t *testing.T) {
 		Sender:    sender,
 		Chat:      chat,
 	}
-	err = eng.HandleDebouncedMessage(ctx, newMsg)
+	err := eng.HandleDebouncedMessage(ctx, newMsg)
 	require.NoError(t, err)
+}
+
+func TestEngine_NewCommand_AutoCancelsActiveTurn(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionKey := "telegram:123456"
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+
+	// Set runner to block until cancelled
+	blockingCh := make(chan struct{})
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-blockingCh:
+			return &domain.ExecutionResult{Success: true, ResponseText: "done"}, nil
+		}
+	}
+
+	// 1. Start long-running turn in background
+	go func() {
+		msg := domain.CanonicalMessage{
+			ID:        "msg-block-active",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "long running task",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg)
+	}()
+
+	// Wait for turn to start and register active turn
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, eng.HasActiveTurn(sessionKey), "expected active turn in flight")
+
+	// 2. Set executeFunc to return a fresh conversation for /new greeting turn
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-fresh-auto-unlock",
+			ResponseText:   "Xin chào! Cuộc trò chuyện mới đã bắt đầu.",
+		}, nil
+	})
+
+	// 3. Sending /new directly while turn is active should auto-cancel the active turn and establish new conversation
+	newMsg := domain.CanonicalMessage{
+		ID:        "msg-new-auto",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/new",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	err := eng.HandleDebouncedMessage(ctx, newMsg)
+	require.NoError(t, err)
+}
+
+func TestEngine_ResetCommand_AutoCancelsActiveTurn(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionKey := "telegram:123456"
+	sender := domain.SenderUser{ID: "123456", Username: "admin"}
+	chat := domain.ChatContext{ID: "123456", Type: "private"}
+
+	blockingCh := make(chan struct{})
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-blockingCh:
+			return &domain.ExecutionResult{Success: true, ResponseText: "done"}, nil
+		}
+	}
+
+	// 1. Start long-running turn in background
+	go func() {
+		msg := domain.CanonicalMessage{
+			ID:        "msg-block-reset",
+			Timestamp: time.Now(),
+			Channel:   "telegram",
+			Text:      "long running task",
+			Sender:    sender,
+			Chat:      chat,
+		}
+		_ = eng.HandleDebouncedMessage(ctx, msg)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, eng.HasActiveTurn(sessionKey), "expected active turn in flight")
+
+	// 2. Sending /reset directly while turn is active should auto-cancel and reset session
+	resetMsg := domain.CanonicalMessage{
+		ID:        "msg-reset-auto",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Text:      "/reset",
+		Sender:    sender,
+		Chat:      chat,
+	}
+	outbound, err := eng.HandleCommand(ctx, resetMsg)
+	require.NoError(t, err)
+	require.NotNil(t, outbound)
+	assert.Contains(t, outbound.Text, "Short-term conversation context reset")
+	assert.False(t, eng.HasActiveTurn(sessionKey), "expected active turn to be cleared after /reset")
 }
 
 func TestEngine_EventForceKillRequested_UnlocksAndAllowsNew(t *testing.T) {

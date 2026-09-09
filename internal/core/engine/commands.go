@@ -229,28 +229,27 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 			}
 		}
 		if e.HasActiveTurn(sessionKey) {
-			responseText = "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before resetting."
+			e.ForceUnlockSession(sessionKey)
+		}
+		oldConvID := session.GetActiveConversationID()
+		if oldConvID != "" && e.evolution != nil {
+			bgCtx := context.WithoutCancel(ctx)
+			concurrency.SafeGo(func() {
+				_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
+			})
+		}
+		session.ResetActiveConversationID()
+		if e.securityManager != nil {
+			e.securityManager.ClearSessionGrants(sessionKey)
+		}
+		if err := e.storage.SaveSession(ctx, session); err != nil {
+			responseText = fmt.Sprintf("⚠️ Failed to reset conversation context: %v", err)
 		} else {
-			oldConvID := session.GetActiveConversationID()
-			if oldConvID != "" && e.evolution != nil {
-				bgCtx := context.WithoutCancel(ctx)
-				concurrency.SafeGo(func() {
-					_ = e.evolution.TriggerConversationEvolution(bgCtx, oldConvID, domain.TriggerExplicitSwitch)
-				})
+			scope := "Global Mode"
+			if session.ActiveProject != "" {
+				scope = fmt.Sprintf("Project: %s", session.ActiveProject)
 			}
-			session.ResetActiveConversationID()
-			if e.securityManager != nil {
-				e.securityManager.ClearSessionGrants(sessionKey)
-			}
-			if err := e.storage.SaveSession(ctx, session); err != nil {
-				responseText = fmt.Sprintf("⚠️ Failed to reset conversation context: %v", err)
-			} else {
-				scope := "Global Mode"
-				if session.ActiveProject != "" {
-					scope = fmt.Sprintf("Project: %s", session.ActiveProject)
-				}
-				responseText = fmt.Sprintf("🧹 **Short-term conversation context reset** for [%s • %s].\nYour next message will begin in a fresh, clean context.", session.ActiveAgent, scope)
-			}
+			responseText = fmt.Sprintf("🧹 **Short-term conversation context reset** for [%s • %s].\nYour next message will begin in a fresh, clean context.", session.ActiveAgent, scope)
 		}
 
 	case "/force_unlock", "/unlock":
@@ -1650,7 +1649,7 @@ func (e *Engine) renderConversationsList(ctx context.Context, session *domain.Se
 
 func (e *Engine) handleNewConversationCommand(ctx context.Context, session *domain.Session, args []string) string {
 	if e.HasActiveTurn(session.SessionKey) {
-		return "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation."
+		e.ForceUnlockSession(session.SessionKey)
 	}
 
 	oldConvID := session.GetActiveConversationID()

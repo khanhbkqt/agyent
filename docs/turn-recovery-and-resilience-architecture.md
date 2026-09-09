@@ -21,7 +21,7 @@ In the current architecture of `agyent`:
 ### 1.2. Non-Negotiable Invariants
 - **CGO-Free SQLite WAL & Timestamp Standard:** All persistent state machines must use `modernc.org/sqlite` with WAL mode, dual-pool access (single writer, multi-reader), and persist timestamps strictly as **Unix Milliseconds** (`time.Now().UnixMilli()`) compatible with `FlexTime`.
 - **Fail-Closed Security & APIS-4D Identity:** Recovery mechanisms must never bypass RBAC authorization policies or execute tools in an unmonitored security context. `AGYENT_TURN_ID`, `AGYENT_SESSION_KEY`, `AGYENT_AGENT_WORKSPACE`, `AGYENT_AGENT_NAME`, and `AGYENT_USER_ID` must be regenerated and bound to the recovery turn.
-- **Strict FIFO Lock Manager Adherence:** Every recovery turn must acquire the per-session FIFO lock (`lockManager.Acquire`) prior to execution to prevent race conditions with new incoming user messages and eliminate transcript corruption.
+- **Strict FIFO Lock & Active Turn Registration:** Every recovery turn must acquire the per-session FIFO lock (`lockManager.Acquire`) and register in `activeTurns` with a cancellable context prior to execution. This guarantees clean integration with `/force_unlock`, `/new`, and `/reset` commands to eliminate deadlocks.
 - **Idempotency & Side-Effect Safety:** Automatic recovery must leverage Antigravity's conversation brain history (`--conversation <id>`) to resume execution context without blindly replaying side-effecting actions (file writes, bash scripts, git operations).
 - **Crash-Loop Prevention (Circuit Breaker) & Bounded Concurrency:** Interrupted turns are permitted a maximum of one automatic recovery attempt (`max_retries = 1`). Startup recovery must be rate-limited via a bounded worker pool (`max_concurrent_recoveries = 2`) to prevent CPU/memory exhaustion crash storms.
 
@@ -139,12 +139,14 @@ During engine initialization in `Engine.Start`:
 
 ```go
 func (e *Engine) startRecoveryWorker(ctx context.Context) {
+    e.wg.Add(1)
     concurrency.SafeGo(func() {
-        // Small delay to allow channel adapters and lock managers to become fully ready
+        defer e.wg.Done()
+        // Small delay (50ms) to allow channel adapters and lock managers to become fully ready
         select {
         case <-ctx.Done():
             return
-        case <-time.After(500 * time.Millisecond):
+        case <-time.After(50 * time.Millisecond):
         }
         _ = e.RecoverInterruptedTurns(ctx)
     })

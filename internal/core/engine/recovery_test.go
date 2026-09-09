@@ -451,4 +451,88 @@ func TestEngine_TurnAutoRecovery_BootstrapFreshTurn(t *testing.T) {
 	assert.Contains(t, sent[1].Text, "Mock response for:")
 }
 
+func TestEngine_TurnAutoRecovery_ForceUnlockCancellation(t *testing.T) {
+	eng, store, runner, channel := setupTestRecoveryEngine(t)
+	defer store.Close()
+
+	ctx := context.Background()
+	sessionKey := "telegram:recovcancel"
+
+	agent := &domain.Agent{
+		Name:          "agyent",
+		OwnerID:       "user-1",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: t.TempDir(),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	session, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
+	require.NoError(t, err)
+	session.SetActiveConversationID("conv-recov-cancel")
+	require.NoError(t, store.SaveSession(ctx, session))
+
+	// Setup runner to block until its context is cancelled
+	blockingCh := make(chan struct{})
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-blockingCh:
+			return &domain.ExecutionResult{Success: true, ResponseText: "done"}, nil
+		}
+	})
+
+	turn := &domain.InFlightTurn{
+		TurnID:           "turn-recov-block-001",
+		SessionKey:       sessionKey,
+		ConversationID:   "conv-recov-cancel",
+		AgentName:        "agyent",
+		Channel:          "telegram",
+		ChatID:           "12345",
+		InboundMessageID: 777,
+		UserID:           "user-1",
+		Prompt:           "Hanging task to recover",
+		IsEphemeral:      false,
+		Status:           domain.TurnStatusExecuting,
+		RetryCount:       0,
+		MaxRetries:       1,
+		RecoveryMode:     "auto",
+		CreatedAt:        time.Now().Add(-1 * time.Minute),
+		UpdatedAt:        time.Now().Add(-1 * time.Minute),
+	}
+	require.NoError(t, store.SaveInFlightTurn(ctx, turn))
+
+	// Trigger recovery in background
+	err = eng.RecoverInterruptedTurns(ctx)
+	require.NoError(t, err)
+
+	// Wait until recovery acquires lock and registers active turn
+	require.Eventually(t, func() bool {
+		return eng.HasActiveTurn(sessionKey)
+	}, 2*time.Second, 20*time.Millisecond, "expected active turn registered during recovery")
+
+	// Proactively call ForceUnlockSession (or /force_unlock)
+	eng.ForceUnlockSession(sessionKey)
+
+	// Active turn should be immediately cleared
+	assert.False(t, eng.HasActiveTurn(sessionKey), "expected active turn to be cleared after force unlock")
+
+	// Wait for recovery goroutine to exit
+	time.Sleep(50 * time.Millisecond)
+
+	// In-flight turn status should be updated to FAILED with cancellation message
+	recovTurn, err := store.GetInFlightTurn(ctx, "turn-recov-block-001")
+	require.NoError(t, err)
+	assert.Equal(t, domain.TurnStatusFailed, recovTurn.Status)
+	assert.Contains(t, recovTurn.ErrorMessage, "cancelled")
+
+	// Channel should have received proactive startup notification, but NO failure crash spam
+	sent := channel.GetSentMessages()
+	require.Len(t, sent, 1)
+	assert.Contains(t, sent[0].Text, "Hệ thống vừa khởi động lại")
+}
+
+
 

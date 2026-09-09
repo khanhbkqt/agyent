@@ -386,21 +386,6 @@ func (e *Engine) HandleDebouncedMessage(ctx context.Context, msg domain.Canonica
 func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalMessage, args []string) error {
 	sessionKey := msg.SessionKey()
 
-	if e.HasActiveTurn(sessionKey) {
-		if e.channel != nil {
-			_ = e.channel.Send(ctx, domain.OutboundMessage{
-				Channel:          msg.Channel,
-				BotID:            msg.BotID,
-				ChatID:           msg.Chat.ID,
-				ThreadID:         msg.Chat.ThreadID,
-				Text:             "⚠️ A turn is currently executing in this conversation. Please wait for completion or send `/force_unlock` before creating a new conversation.",
-				ParseMode:        "Markdown",
-				ReplyToMessageID: msg.ID,
-			})
-		}
-		return nil
-	}
-
 	// 1. Reset active conversation in session
 	defaultAgent := "agyent"
 	if msg.BindAgent != "" {
@@ -420,6 +405,16 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 		}
 		return nil
 	}
+
+	// 2. Proactively cancel and unlock any running turn for this session (authorized caller only)
+	if e.HasActiveTurn(sessionKey) {
+		slog.InfoContext(ctx, "Active turn detected during authorized /new, forcefully releasing session mutex and terminating running turn",
+			slog.String("session_key", sessionKey),
+			slog.String("sender", msg.Sender.Username),
+		)
+		e.ForceUnlockSession(sessionKey)
+	}
+
 	if msg.BindAgent != "" {
 		session.ActiveAgent = msg.BindAgent
 		session.ActiveProject = ""
@@ -432,15 +427,18 @@ func (e *Engine) handleNewSessionTurn(ctx context.Context, msg domain.CanonicalM
 		})
 	}
 	session.ResetActiveConversationID()
+	if e.securityManager != nil {
+		e.securityManager.ClearSessionGrants(sessionKey)
+	}
 	if err := e.storage.SaveSession(ctx, session); err != nil {
 		return fmt.Errorf("reset active conversation: %w", err)
 	}
 
-	// 2. Prepare proactive greeting prompt with optional topic
+	// 3. Prepare proactive greeting prompt with optional topic
 	topic := strings.TrimSpace(strings.Join(args, " "))
 	msg.Text = BuildNewSessionGreetingPrompt(topic)
 
-	// 3. Execute Turn to proactively greet user and establish the new conversation
+	// 4. Execute Turn to proactively greet user and establish the new conversation
 	return e.executeTurn(ctx, msg, false)
 }
 
