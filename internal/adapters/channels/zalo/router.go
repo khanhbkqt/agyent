@@ -111,15 +111,8 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		return
 	}
 
-	if r.cfg != nil && len(r.cfg.Zalo.AllowedGroupIDs) > 0 && !msg.Chat.IsPrivate() {
-		allowed := false
-		for _, groupID := range r.cfg.Zalo.AllowedGroupIDs {
-			if groupID == msg.Chat.ID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
+	if r.cfg != nil && (len(r.cfg.Zalo.AllowedGroupIDs) > 0 || r.cfg.Zalo.GroupID != "") && !msg.Chat.IsPrivate() {
+		if !r.cfg.IsGroupAllowed(msg.Chat.ID, "zalo") {
 			slog.DebugContext(ctx, "ignoring message from unlisted Zalo group", "chat_id", msg.Chat.ID)
 			return
 		}

@@ -61,7 +61,7 @@ func NewEvaluator(cfg config.FilesystemGuardrailConfig, manageableFiles []string
 }
 
 // EvaluatePath validates whether access to targetPath is permitted within workspaceDir.
-func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite bool, allowDelegatedConfig bool) (domain.SecurityDecision, error) {
+func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite bool, allowDelegatedConfig bool, extraAllowedPaths ...string) (domain.SecurityDecision, error) {
 	if targetPath == "" {
 		return domain.SecurityDecision{
 			Decision: domain.DecisionDeny,
@@ -142,6 +142,29 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 		if !isInside {
 			for _, allowed := range e.allowedPaths {
 				if pathMatches(canonTarget, allowed) {
+					isInside = true
+					break
+				}
+			}
+		}
+
+		if !isInside && len(extraAllowedPaths) > 0 {
+			for _, extra := range extraAllowedPaths {
+				if extra == "" {
+					continue
+				}
+				expandedExtra, err := config.ExpandPath(extra)
+				if err != nil {
+					expandedExtra = extra
+				}
+				var absExtra string
+				if filepath.IsAbs(expandedExtra) {
+					absExtra = filepath.Clean(expandedExtra)
+				} else {
+					absExtra = filepath.Clean(filepath.Join(workspaceDir, expandedExtra))
+				}
+				canonExtra := resolveSymlinksAndCanonicalize(absExtra)
+				if canonExtra != "" && pathMatches(canonTarget, canonExtra) {
 					isInside = true
 					break
 				}

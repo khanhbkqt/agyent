@@ -28,12 +28,7 @@ func IsGroupAllowed(cfg *config.Config, chatID int64) bool {
 		return false
 	}
 	chatIDStr := strconv.FormatInt(chatID, 10)
-	for _, allowed := range cfg.Telegram.AllowedGroupIDs {
-		if allowed == chatIDStr {
-			return true
-		}
-	}
-	return false
+	return cfg.IsGroupAllowed(chatIDStr, "telegram")
 }
 
 // IsMessageForBot determines if a message in group/supergroup should be processed by the bot.

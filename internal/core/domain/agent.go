@@ -23,8 +23,9 @@ type Agent struct {
 	SecurityPreset SecurityPreset `json:"security_preset,omitempty"` // Baseline / active security preset (e.g. balanced, strict)
 
 	// Ownership & Access Control
-	OwnerID  string `json:"owner_id"`  // Channel-agnostic User ID of the creator
-	IsPublic bool   `json:"is_public"` // true: Accessible by all; false: Owner + Shared members only
+	OwnerID      string   `json:"owner_id"`  // Channel-agnostic User ID of the creator
+	IsPublic     bool     `json:"is_public"` // true: Accessible by all; false: Owner + Shared members only
+	AllowedPaths []string `json:"allowed_paths,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

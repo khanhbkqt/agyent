@@ -313,12 +313,114 @@ func TestSecurityManager_PathJailAndDashboard(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAllow, decSearch.Decision)
-
 	// Dashboard summary check
 	summary := mgr.GetDashboardSummary("session-1")
 	assert.Equal(t, domain.PresetBalanced, summary.Preset)
 	assert.True(t, summary.TotalEvaluations > 0)
 	assert.True(t, summary.BlockedToday > 0)
+}
+
+func TestSecurityManager_LayerSeparation_PresetCommand_ScopePaths(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	extraDir := filepath.Join(tempDir, "extra_scope")
+	forbiddenDir := filepath.Join(tempDir, "forbidden_outside")
+
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+	require.NoError(t, os.MkdirAll(extraDir, 0755))
+	require.NoError(t, os.MkdirAll(forbiddenDir, 0755))
+
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mgr := NewManager(cfg, nil, nil)
+	ctx := context.Background()
+
+	// 1. Agent has developer preset, but NO AllowedPaths.
+	// Layer 1: developer allows commands like `ls -la`.
+	// Layer 2: Scope is ONLY workspaceDir. Access outside workspaceDir is strictly Denied even on developer preset!
+	devTurn := domain.TurnSecurityContext{
+		TurnID:         "turn-dev-1",
+		ConversationID: "conv-dev-1",
+		SessionKey:     "session-dev-1",
+		WorkspaceDir:   workspaceDir,
+		Preset:         domain.PresetDeveloper,
+		AllowedPaths:   nil, // Scope is only workspaceDir
+	}
+	mgr.RegisterActiveTurn(devTurn)
+
+	// Tool outside workspace is DENIED despite developer preset
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-dev-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "view_file",
+		Args:           map[string]interface{}{"TargetFile": filepath.Join(forbiddenDir, "secret.txt")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "developer preset must NOT bypass workspace jail without explicit allowed_paths")
+
+	// Command with Cwd outside workspace is DENIED despite developer preset
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-dev-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "run_command",
+		Args:           map[string]interface{}{"CommandLine": "ls -la", "Cwd": forbiddenDir},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Cwd outside workspace must be denied despite developer preset")
+
+	// Command with Cwd inside workspace is ALLOWED under developer preset
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-dev-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "run_command",
+		Args:           map[string]interface{}{"CommandLine": "ls -la", "Cwd": workspaceDir},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	mgr.UnregisterTurnByID("turn-dev-1")
+
+	// 2. Agent with explicit AllowedPaths configured (Layer 2 Scope expansion)
+	scopedTurn := domain.TurnSecurityContext{
+		TurnID:         "turn-scoped-1",
+		ConversationID: "conv-scoped-1",
+		SessionKey:     "session-scoped-1",
+		WorkspaceDir:   workspaceDir,
+		Preset:         domain.PresetDeveloper,
+		AllowedPaths:   []string{extraDir},
+	}
+	mgr.RegisterActiveTurn(scopedTurn)
+
+	// File inside extraDir is ALLOWED
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-scoped-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "view_file",
+		Args:           map[string]interface{}{"TargetFile": filepath.Join(extraDir, "doc.txt")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision, "File in agent's allowed_paths must be allowed")
+
+	// Command with Cwd in extraDir is ALLOWED
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-scoped-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "run_command",
+		Args:           map[string]interface{}{"CommandLine": "ls -la", "Cwd": extraDir},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision, "Cwd in agent's allowed_paths must be allowed")
+
+	// File in forbiddenDir (outside both workspaceDir and extraDir) is still DENIED
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ConversationID: "conv-scoped-1",
+		WorkspaceDir:   workspaceDir,
+		ToolName:       "view_file",
+		Args:           map[string]interface{}{"TargetFile": filepath.Join(forbiddenDir, "forbidden.txt")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "File outside both workspace and allowed_paths must be denied")
+
+	mgr.UnregisterTurnByID("turn-scoped-1")
 }
 
 func TestSecurityManager_PerTurnIsolation(t *testing.T) {

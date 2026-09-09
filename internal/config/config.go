@@ -30,6 +30,7 @@ type BotConfig struct {
 type TelegramConfig struct {
 	BotToken        string      `yaml:"bot_token" json:"bot_token"` // Legacy single-bot token fallback
 	Bots            []BotConfig `yaml:"bots" json:"bots"`           // Multi-bot lifecycle pool
+	BindAgent       string      `yaml:"bind_agent" json:"bind_agent"` // Optional: Dedicated agent persona binding for single-bot setup
 	Mode            string      `yaml:"mode" json:"mode"`           // "polling" or "webhook"
 	WebhookURL      string      `yaml:"webhook_url" json:"webhook_url"`
 	SecretToken     string      `yaml:"secret_token" json:"secret_token"` // Secret token for X-Telegram-Bot-Api-Secret-Token
@@ -46,8 +47,9 @@ func (t TelegramConfig) GetNormalizedBots() []BotConfig {
 	if strings.TrimSpace(t.BotToken) != "" {
 		return []BotConfig{
 			{
-				Name:     "default",
-				BotToken: strings.TrimSpace(t.BotToken),
+				Name:      "default",
+				BotToken:  strings.TrimSpace(t.BotToken),
+				BindAgent: strings.TrimSpace(t.BindAgent),
 			},
 		}
 	}
@@ -58,6 +60,7 @@ func (t TelegramConfig) GetNormalizedBots() []BotConfig {
 type ZaloConfig struct {
 	BotToken        string      `yaml:"bot_token" json:"bot_token"` // Bot Token from Zalo Bot Platform
 	Bots            []BotConfig `yaml:"bots" json:"bots"`           // Multi-bot lifecycle pool
+	BindAgent       string      `yaml:"bind_agent" json:"bind_agent"` // Optional: Dedicated agent persona binding for single-bot setup
 	GroupID         string      `yaml:"group_id" json:"group_id"`   // Target Group Chat ID
 	AdminUserIDs    []string    `yaml:"admin_user_ids" json:"admin_user_ids"`
 	AllowedGroupIDs []string    `yaml:"allowed_group_ids" json:"allowed_group_ids"`
@@ -76,8 +79,9 @@ func (z ZaloConfig) GetNormalizedBots() []BotConfig {
 	if strings.TrimSpace(z.BotToken) != "" {
 		return []BotConfig{
 			{
-				Name:     "default",
-				BotToken: strings.TrimSpace(z.BotToken),
+				Name:      "default",
+				BotToken:  strings.TrimSpace(z.BotToken),
+				BindAgent: strings.TrimSpace(z.BindAgent),
 			},
 		}
 	}
@@ -212,13 +216,15 @@ type SecurityConfig struct {
 
 // AgentProfileConfig defines per-agent declarative configuration overrides in config.yaml.
 type AgentProfileConfig struct {
-	Name           string `yaml:"name" json:"name"`
-	SecurityPreset string `yaml:"security_preset" json:"security_preset"` // e.g. "unrestricted", "developer", "balanced", "strict", "read_only"
-	DefaultModel   string `yaml:"default_model" json:"default_model"`
-	DefaultEffort  string `yaml:"default_effort" json:"default_effort"`
-	WorkspacePath  string `yaml:"workspace_path" json:"workspace_path"`
-	Description    string `yaml:"description" json:"description"`
-	IsPublic       bool   `yaml:"is_public" json:"is_public"`
+	Name           string   `yaml:"name" json:"name"`
+	SecurityPreset string   `yaml:"security_preset" json:"security_preset"` // e.g. "unrestricted", "developer", "balanced", "strict", "read_only"
+	DefaultModel   string   `yaml:"default_model" json:"default_model"`
+	DefaultEffort  string   `yaml:"default_effort" json:"default_effort"`
+	WorkspacePath  string   `yaml:"workspace_path" json:"workspace_path"`
+	Description    string   `yaml:"description" json:"description"`
+	IsPublic       bool     `yaml:"is_public" json:"is_public"`
+	OwnerID        string   `yaml:"owner_id" json:"owner_id"`
+	AllowedPaths   []string `yaml:"allowed_paths" json:"allowed_paths"`
 }
 
 // RecoveryConfig controls turn auto-recovery and crash resilience.
@@ -406,8 +412,8 @@ func GetEffectiveSecurityPreset(preset string) SecurityConfig {
 				CustomBlacklist: []string{`(?i)rm\s+-rf\s+/(boot|sys|etc)?$`, `(?i)mkfs`, `(?i)format\s+[a-z]:`},
 			},
 			Filesystem: FilesystemGuardrailConfig{
-				EnforceWorkspaceJail: false,
-				AllowedPaths:         []string{"~", "."},
+				EnforceWorkspaceJail: true,
+				AllowedPaths:         []string{"."},
 				ForbiddenPaths:       []string{"~/.ssh", "~/.aws", "~/.agyent/agyent.db", ".agents/hooks.json", "~/.gemini/config/hooks.json"},
 			},
 			Subagents: SubagentGuardrailConfig{
@@ -796,6 +802,36 @@ func (c *Config) IsSuperAdmin(principal domain.Principal) bool {
 		return false
 	}
 	return c.IsAdminForProvider(principal.SubjectID, principal.Provider)
+}
+
+// IsGroupAllowed checks whether the given group ID is whitelisted for the specified messaging provider.
+func (c *Config) IsGroupAllowed(groupID string, provider string) bool {
+	if c == nil || strings.TrimSpace(groupID) == "" {
+		return false
+	}
+	groupID = strings.TrimSpace(groupID)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = "telegram"
+	}
+	switch provider {
+	case "telegram":
+		for _, allowed := range c.Telegram.AllowedGroupIDs {
+			if strings.TrimSpace(allowed) == groupID {
+				return true
+			}
+		}
+	case "zalo":
+		if strings.TrimSpace(c.Zalo.GroupID) != "" && strings.EqualFold(strings.TrimSpace(c.Zalo.GroupID), groupID) {
+			return true
+		}
+		for _, allowed := range c.Zalo.AllowedGroupIDs {
+			if strings.EqualFold(strings.TrimSpace(allowed), groupID) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Validate checks required fields and configuration constraints.

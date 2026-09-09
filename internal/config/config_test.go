@@ -562,3 +562,44 @@ func TestConfig_IsAdmin(t *testing.T) {
 		assert.False(t, cfg.IsAdmin("invalid_id_9999"))
 	})
 }
+
+func TestConfig_IsGroupAllowed(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Telegram.AllowedGroupIDs = []string{"-100123456", "-100789012"}
+	cfg.Zalo.GroupID = "2498572093845"
+	cfg.Zalo.AllowedGroupIDs = []string{"987654321"}
+
+	// Telegram matches
+	assert.True(t, cfg.IsGroupAllowed("-100123456", "telegram"))
+	assert.True(t, cfg.IsGroupAllowed("-100789012", "telegram"))
+	assert.False(t, cfg.IsGroupAllowed("-100999999", "telegram"))
+	assert.False(t, cfg.IsGroupAllowed("", "telegram"))
+
+	// Zalo matches
+	assert.True(t, cfg.IsGroupAllowed("2498572093845", "zalo"))
+	assert.True(t, cfg.IsGroupAllowed("987654321", "zalo"))
+	assert.False(t, cfg.IsGroupAllowed("111111111", "zalo"))
+	assert.False(t, cfg.IsGroupAllowed("", "zalo"))
+
+	// Nil config safety
+	var nilCfg *config.Config
+	assert.False(t, nilCfg.IsGroupAllowed("-100123456", "telegram"))
+}
+
+func TestConfig_SingleBotBindAgent(t *testing.T) {
+	tg := config.TelegramConfig{
+		BotToken:  "123:TG_TOKEN",
+		BindAgent: "traomofc",
+	}
+	tgBots := tg.GetNormalizedBots()
+	assert.Len(t, tgBots, 1)
+	assert.Equal(t, "traomofc", tgBots[0].BindAgent)
+
+	zalo := config.ZaloConfig{
+		BotToken:  "456:ZALO_TOKEN",
+		BindAgent: "traomofc",
+	}
+	zaloBots := zalo.GetNormalizedBots()
+	assert.Len(t, zaloBots, 1)
+	assert.Equal(t, "traomofc", zaloBots[0].BindAgent)
+}

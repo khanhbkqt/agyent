@@ -22,7 +22,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 	cmd = strings.ToLower(cmd)
 	sessionKey := msg.SessionKey()
 
-	defaultAgent := "agyent"
+	defaultAgent := e.resolveDefaultAgent(msg.BindAgent)
 	if msg.BindAgent != "" {
 		defaultAgent = msg.BindAgent
 	}
@@ -41,7 +41,7 @@ func (e *Engine) HandleCommand(ctx context.Context, msg domain.CanonicalMessage)
 
 		agent, getErr := e.storage.GetAgent(ctx, targetAgent)
 		if getErr == nil && agent != nil {
-			allowed, _, checkErr := e.CheckAccessForProvider(ctx, agent, msg.Sender.ID, msg.Channel)
+			allowed, _, checkErr := e.CheckAccessForChat(ctx, agent, msg.Sender.ID, msg.Channel, msg.Chat.ID, msg.Chat.Type)
 			if checkErr != nil || !allowed {
 				return &domain.OutboundMessage{
 					Channel:          msg.Channel,

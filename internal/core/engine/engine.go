@@ -497,6 +497,56 @@ func (e *Engine) CheckAccessForProvider(ctx context.Context, agent *domain.Agent
 	return e.storage.CheckAgentAccess(ctx, agent.Name, senderID)
 }
 
+// resolveDefaultAgent returns bindAgent if provided. If not provided and exactly one custom agent is configured in config.yaml, it returns that agent. Otherwise, returns "agyent".
+func (e *Engine) resolveDefaultAgent(bindAgent string) string {
+	if bindAgent != "" {
+		return bindAgent
+	}
+	if e.cfg != nil && len(e.cfg.Agents) > 0 {
+		var customAgents []string
+		for name := range e.cfg.Agents {
+			if name != "agyent" && name != "default" {
+				customAgents = append(customAgents, name)
+			}
+		}
+		if len(customAgents) == 1 {
+			return customAgents[0]
+		}
+	}
+	return "agyent"
+}
+
+// IsGroupAllowed checks if a group ID is allowed either via config.yaml or SQLite database.
+func (e *Engine) IsGroupAllowed(ctx context.Context, groupID string, provider string) bool {
+	if e.cfg != nil && e.cfg.IsGroupAllowed(groupID, provider) {
+		return true
+	}
+	if e.storage != nil {
+		if allowed, err := e.storage.IsGroupAllowed(ctx, groupID); err == nil && allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckAccessForChat evaluates access taking into account whether the message is in a whitelisted group chat or direct message (1-1).
+// In a whitelisted group chat: anyone in the group has "member" access (allowed to chat).
+// In direct message (1-1): if agent is private (is_public: false), only admin/owner has access; strangers are dropped/denied.
+func (e *Engine) CheckAccessForChat(ctx context.Context, agent *domain.Agent, senderID, provider, chatID, chatType string) (bool, string, error) {
+	if agent == nil {
+		return false, "", nil
+	}
+
+	// 1. Group Chat Whitelist Check
+	isGroup := chatType == "group" || chatType == "supergroup" || chatType == "channel" || strings.HasPrefix(chatID, "-")
+	if isGroup && chatID != "" && e.IsGroupAllowed(ctx, chatID, provider) {
+		return true, "member", nil
+	}
+
+	// 2. Direct Message (or non-group): fallback to standard provider check (admin, owner, collaborator, public)
+	return e.CheckAccessForProvider(ctx, agent, senderID, provider)
+}
+
 // AuthorizeInbound evaluates whether an inbound message sender has permission to interact
 // with an agent persona before message processing or side effects occur.
 func (e *Engine) AuthorizeInbound(ctx context.Context, senderID string, bindAgent string, chatType string) (bool, error) {
@@ -508,18 +558,26 @@ func (e *Engine) AuthorizeInbound(ctx context.Context, senderID string, bindAgen
 // being incorrectly evaluated against the unrelated default persona, while a
 // dedicated bot binding remains authoritative.
 func (e *Engine) AuthorizeInboundSession(ctx context.Context, senderID string, bindAgent string, chatType string, sessionKey string) (bool, error) {
-	_ = chatType // Group admission is checked by the channel adapter; RBAC is sender/agent scoped.
 	provider := "telegram"
+	chatID := ""
 	if parsed, err := domain.ParseSessionKey(sessionKey); err == nil && parsed.Channel != "" {
 		provider = parsed.Channel
+		chatID = parsed.ChatID
 	}
 	if e.IsSuperAdminForProvider(senderID, provider) {
 		return true, nil
 	}
+
+	// Group check: If it's a whitelisted group, allow any sender to interact
+	isGroup := chatType == "group" || chatType == "supergroup" || chatType == "channel" || strings.HasPrefix(chatID, "-")
+	if isGroup && chatID != "" && e.IsGroupAllowed(ctx, chatID, provider) {
+		return true, nil
+	}
+
 	if e.storage == nil {
 		return false, fmt.Errorf("inbound authorization unavailable: storage is not initialized")
 	}
-	targetAgent := "agyent"
+	targetAgent := e.resolveDefaultAgent(bindAgent)
 	if bindAgent != "" {
 		targetAgent = bindAgent
 	} else if sessionKey != "" {
@@ -531,7 +589,7 @@ func (e *Engine) AuthorizeInboundSession(ctx context.Context, senderID string, b
 	if err != nil || agent == nil {
 		return false, nil
 	}
-	allowed, _, err := e.CheckAccessForProvider(ctx, agent, senderID, provider)
+	allowed, _, err := e.CheckAccessForChat(ctx, agent, senderID, provider, chatID, chatType)
 	return allowed, err
 }
 
@@ -612,7 +670,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	_ = e.channel.SendTyping(turnCtx, msg.TargetContext())
 
 	// 3. Inbound RBAC Checkpoint: Evaluate access BEFORE mutating session or agent state
-	defaultAgent := "agyent"
+	defaultAgent := e.resolveDefaultAgent(msg.BindAgent)
 	if msg.BindAgent != "" {
 		defaultAgent = msg.BindAgent
 	}
@@ -627,7 +685,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 
 	agent, getErr := e.storage.GetAgent(turnCtx, targetAgent)
 	if getErr == nil && agent != nil {
-		allowed, _, checkErr := e.CheckAccessForProvider(turnCtx, agent, msg.Sender.ID, msg.Channel)
+		allowed, _, checkErr := e.CheckAccessForChat(turnCtx, agent, msg.Sender.ID, msg.Channel, msg.Chat.ID, msg.Chat.Type)
 		if checkErr != nil || !allowed {
 			slog.WarnContext(turnCtx, "RBAC Access Denied to agent",
 				slog.String("agent", agent.Name),

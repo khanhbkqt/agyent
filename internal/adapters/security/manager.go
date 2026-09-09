@@ -221,15 +221,20 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	case "run_command":
 		cmd, _ := req.Args["CommandLine"].(string)
 		cwd, _ := req.Args["Cwd"].(string)
+		ws := req.WorkspaceDir
+		if ws == "" && hasTurn {
+			ws = turnCtx.WorkspaceDir
+		}
+		var extraPaths []string
+		if hasTurn {
+			extraPaths = turnCtx.AllowedPaths
+		}
 		if cwd != "" {
-			ws := req.WorkspaceDir
-			if ws == "" && hasTurn {
-				ws = turnCtx.WorkspaceDir
+			cwdWs := ws
+			if cwdWs == "" {
+				cwdWs = "."
 			}
-			if ws == "" {
-				ws = "."
-			}
-			cwdDec, cwdErr := bundle.pathjailEval.EvaluatePath(ws, cwd, false, false)
+			cwdDec, cwdErr := bundle.pathjailEval.EvaluatePath(cwdWs, cwd, false, false, extraPaths...)
 			if cwdErr != nil || cwdDec.Decision == domain.DecisionDeny {
 				decision = domain.SecurityDecision{
 					Decision: domain.DecisionDeny,
@@ -238,11 +243,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 				break
 			}
 		}
-		ws := req.WorkspaceDir
-		if ws == "" && hasTurn {
-			ws = turnCtx.WorkspaceDir
-		}
-		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, ws, cwd, bundle)
+		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, ws, cwd, bundle, extraPaths...)
 
 	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
 		targetPath, _ := req.Args["TargetFile"].(string)
@@ -320,7 +321,11 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		if ws == "" {
 			ws = "."
 		}
-		decision, err = bundle.pathjailEval.EvaluatePath(ws, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
+		var extraPaths []string
+		if hasTurn {
+			extraPaths = turnCtx.AllowedPaths
+		}
+		decision, err = bundle.pathjailEval.EvaluatePath(ws, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled, extraPaths...)
 
 	case "read_url_content":
 		urlStr, _ := req.Args["Url"].(string)
@@ -700,7 +705,7 @@ func inspectScriptContent(scriptPath string, data []byte, bundle *presetEvaluato
 	return domain.SecurityDecision{}, false
 }
 
-func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey string, role string, cmd string, ws string, cwd string, bundle *presetEvaluators) (domain.SecurityDecision, error) {
+func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey string, role string, cmd string, ws string, cwd string, bundle *presetEvaluators, extraAllowedPaths ...string) (domain.SecurityDecision, error) {
 	if cmd == "" {
 		return domain.SecurityDecision{Decision: domain.DecisionDeny, Reason: "Empty command"}, nil
 	}
@@ -778,8 +783,8 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 			}
 			targetScript = filepath.Clean(targetScript)
 
-			// Verify script path is within workspace
-			pathDec, pathErr := bundle.pathjailEval.EvaluatePath(ws, targetScript, false, false)
+			// Verify script path is within workspace or allowed paths
+			pathDec, pathErr := bundle.pathjailEval.EvaluatePath(ws, targetScript, false, false, extraAllowedPaths...)
 			if pathErr != nil || pathDec.Decision == domain.DecisionDeny {
 				return domain.SecurityDecision{
 					Decision: domain.DecisionDeny,
@@ -866,7 +871,11 @@ func (m *Manager) EvaluatePath(ctx context.Context, sessionKey string, workspace
 	if workspaceDir == "" {
 		workspaceDir = "."
 	}
-	return bundle.pathjailEval.EvaluatePath(workspaceDir, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
+	var extraPaths []string
+	if turnCtx, ok := m.ResolveTurnContext("", workspaceDir); ok {
+		extraPaths = turnCtx.AllowedPaths
+	}
+	return bundle.pathjailEval.EvaluatePath(workspaceDir, targetPath, isWrite, bundle.cfg.AgentConfigManagement.Enabled, extraPaths...)
 }
 
 // EvaluateURL validates outbound network URLs.

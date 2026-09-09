@@ -14,9 +14,10 @@ type StorageReader interface {
 	CheckAgentAccess(ctx context.Context, agentName, userID string) (bool, string, error)
 }
 
-// ConfigProvider encapsulates administrative privilege resolution.
+// ConfigProvider encapsulates administrative privilege and group authorization.
 type ConfigProvider interface {
 	IsSuperAdmin(principal domain.Principal) bool
+	IsGroupAllowed(groupID string, provider string) bool
 }
 
 // Engine implements the centralized ports.PolicyEngine.
@@ -54,6 +55,15 @@ func (e *Engine) Authorize(ctx context.Context, principal domain.Principal, acti
 	// 4. Deny System Admin Actions for Non-SuperAdmins
 	if isSystemAdminAction(action) {
 		return fmt.Errorf("%w: action %s requires system superadmin privileges", ports.ErrAccessDenied, action)
+	}
+
+	// 5. Whitelisted Group Access for Turn Execution and Conversation Inspection
+	if resource.SessionKey != "" && (action == domain.ActionTurnExecute || action == domain.ActionConvoInspect) {
+		if parsed, err := domain.ParseSessionKey(resource.SessionKey); err == nil && parsed.ChatID != "" {
+			if e.config != nil && e.config.IsGroupAllowed(parsed.ChatID, parsed.Channel) {
+				return nil
+			}
+		}
 	}
 
 	// 5. Resolve Effective Agent Role

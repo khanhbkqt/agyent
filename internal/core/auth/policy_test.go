@@ -32,11 +32,19 @@ func (m *mockStorageReader) CheckAgentAccess(ctx context.Context, agentName, use
 }
 
 type mockConfigProvider struct {
-	superAdmins map[string]bool
+	superAdmins   map[string]bool
+	allowedGroups map[string]bool
 }
 
 func (m *mockConfigProvider) IsSuperAdmin(principal domain.Principal) bool {
 	return m.superAdmins[principal.Key()]
+}
+
+func (m *mockConfigProvider) IsGroupAllowed(groupID string, provider string) bool {
+	if m.allowedGroups == nil {
+		return false
+	}
+	return m.allowedGroups[groupID] || m.allowedGroups[provider+":"+groupID]
 }
 
 func setupTestPolicyEngine() (*Engine, *mockStorageReader, *mockConfigProvider) {
@@ -441,4 +449,60 @@ func TestPolicyEngine_InvalidPrincipal(t *testing.T) {
 	p2 := domain.Principal{Kind: domain.PrincipalUser, Provider: "", SubjectID: "123"}
 	err = engine.Authorize(ctx, p2, domain.ActionTurnExecute, res)
 	assert.ErrorIs(t, err, ports.ErrInvalidPrincipal)
+}
+
+func TestPolicyEngine_WhitelistedGroupAccess(t *testing.T) {
+	engine, _, cfg := setupTestPolicyEngine()
+	ctx := context.Background()
+
+	// Configure whitelisted group
+	cfg.allowedGroups = map[string]bool{
+		"-100123456789": true,
+		"zalo:group-999": true,
+	}
+
+	// Normal user (not owner, not admin)
+	normalUser := domain.Principal{
+		Kind:      domain.PrincipalUser,
+		Provider:  "telegram",
+		SubjectID: "user-random-999",
+	}
+
+	// 1. Direct message (1-1) on a private agent ("default_agent") -> Denied!
+	dmRes := domain.Resource{
+		Kind:       domain.ResourceKindAgent,
+		AgentName:  "default_agent",
+		SessionKey: "telegram:user-random-999",
+		IsPublic:   false,
+	}
+	err := engine.Authorize(ctx, normalUser, domain.ActionTurnExecute, dmRes)
+	assert.ErrorIs(t, err, ports.ErrAccessDenied, "random user should be denied in DM on private agent")
+
+	// 2. Message in whitelisted Telegram group on a private agent -> Allowed for Turn Execution!
+	groupRes := domain.Resource{
+		Kind:       domain.ResourceKindAgent,
+		AgentName:  "default_agent",
+		SessionKey: "telegram:-100123456789:0",
+		IsPublic:   false,
+	}
+	err = engine.Authorize(ctx, normalUser, domain.ActionTurnExecute, groupRes)
+	assert.NoError(t, err, "member of whitelisted group should be allowed to chat with private agent")
+
+	// Convo inspect in whitelisted group is also allowed
+	err = engine.Authorize(ctx, normalUser, domain.ActionConvoInspect, groupRes)
+	assert.NoError(t, err, "member of whitelisted group should be allowed to inspect convo")
+
+	// Admin actions (e.g. ActionAgentDelete, ActionSecurityConfig) are STILL denied!
+	err = engine.Authorize(ctx, normalUser, domain.ActionAgentDelete, groupRes)
+	assert.ErrorIs(t, err, ports.ErrAccessDenied, "group member must not be allowed to delete agent")
+
+	// 3. Message in NON-whitelisted group on a private agent -> Denied!
+	unlistedGroupRes := domain.Resource{
+		Kind:       domain.ResourceKindAgent,
+		AgentName:  "default_agent",
+		SessionKey: "telegram:-100999999999:0",
+		IsPublic:   false,
+	}
+	err = engine.Authorize(ctx, normalUser, domain.ActionTurnExecute, unlistedGroupRes)
+	assert.ErrorIs(t, err, ports.ErrAccessDenied, "unlisted group should be denied")
 }

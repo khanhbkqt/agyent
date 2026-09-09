@@ -139,6 +139,7 @@ type TurnSecurityContext struct {
 	ProjectName    string         `json:"project_name,omitempty"`
 	WorkspaceDir   string         `json:"workspace_dir"`
 	Preset         SecurityPreset `json:"preset"`
+	AllowedPaths   []string       `json:"allowed_paths,omitempty"`
 	RuntimeNonce   string         `json:"runtime_nonce,omitempty"`
 	ProcessID      int            `json:"process_id,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`

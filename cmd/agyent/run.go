@@ -137,6 +137,8 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 					WorkspacePath:  ws,
 					SecurityPreset: domain.SecurityPreset(preset),
 					IsPublic:       prof.IsPublic,
+					OwnerID:        prof.OwnerID,
+					AllowedPaths:   prof.AllowedPaths,
 					CreatedAt:      time.Now(),
 					UpdatedAt:      time.Now(),
 				}
@@ -153,6 +155,12 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 					} else {
 						agentRecord.SecurityPreset = domain.PresetBalanced
 					}
+				}
+				if prof.OwnerID != "" {
+					agentRecord.OwnerID = prof.OwnerID
+				}
+				if len(prof.AllowedPaths) > 0 {
+					agentRecord.AllowedPaths = prof.AllowedPaths
 				}
 				agentRecord.IsPublic = prof.IsPublic
 				agentRecord.UpdatedAt = time.Now()

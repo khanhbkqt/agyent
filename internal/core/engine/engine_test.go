@@ -2006,3 +2006,65 @@ func TestEngine_ExecuteTurn_LongResponseDeliveredIntact(t *testing.T) {
 	assert.Equal(t, longResponse, sent[0].Text, "Outbound response text must be delivered 100% intact without any in-memory truncation")
 	assert.NotContains(t, sent[0].Text, "Output truncated:")
 }
+
+func TestEngine_ChannelRBAC_GroupAndPrivateChat(t *testing.T) {
+	eng, _, _, store, cfg, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// 1. Register private agent "traomofc"
+	err := store.SaveAgent(ctx, &domain.Agent{
+		Name:          "traomofc",
+		Description:   "Custom Private Persona",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: filepath.Join(cfg.Storage.AgentsDir, "traomofc"),
+		IsPublic:      false,
+		OwnerID:       "admin-123",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	})
+	require.NoError(t, err)
+
+	// Configure whitelisted group in cfg
+	cfg.Telegram.AllowedGroupIDs = []string{"-100123456789"}
+	cfg.Telegram.AdminUserIDs = []int64{123}
+	cfg.Agents = map[string]config.AgentProfileConfig{
+		"traomofc": {
+			Description: "Custom Private Persona",
+			IsPublic:    false,
+			OwnerID:     "admin-123",
+		},
+	}
+
+	// 2. Stranger (stranger-999) in 1-1 Private Chat -> Denied!
+	allowed, err := eng.AuthorizeInboundSession(ctx, "stranger-999", "traomofc", "private", "telegram:stranger-999")
+	require.NoError(t, err)
+	assert.False(t, allowed, "stranger in 1-1 private chat must be blocked from private agent")
+
+	// 3. Admin (admin-123) in 1-1 Private Chat -> Allowed!
+	allowed, err = eng.AuthorizeInboundSession(ctx, "admin-123", "traomofc", "private", "telegram:admin-123")
+	require.NoError(t, err)
+	assert.True(t, allowed, "owner/admin in 1-1 private chat must be allowed")
+
+	// 4. Stranger (stranger-999) in whitelisted group -> Allowed!
+	allowed, err = eng.AuthorizeInboundSession(ctx, "stranger-999", "traomofc", "supergroup", "telegram:-100123456789:0")
+	require.NoError(t, err)
+	assert.True(t, allowed, "any user in whitelisted group must be allowed to chat")
+
+	// 5. Stranger in non-whitelisted group -> Denied!
+	allowed, err = eng.AuthorizeInboundSession(ctx, "stranger-999", "traomofc", "supergroup", "telegram:-100999999999:0")
+	require.NoError(t, err)
+	assert.False(t, allowed, "unlisted group must be blocked")
+
+	// 6. Test auto-detection of single custom agent
+	// When bindAgent is empty, resolveDefaultAgent should pick "traomofc" because it's the only custom agent in config
+	allowed, err = eng.AuthorizeInboundSession(ctx, "stranger-999", "", "supergroup", "telegram:-100123456789:0")
+	require.NoError(t, err)
+	assert.True(t, allowed, "single custom agent should be auto-detected in whitelisted group")
+
+	allowed, err = eng.AuthorizeInboundSession(ctx, "stranger-999", "", "private", "telegram:stranger-999")
+	require.NoError(t, err)
+	assert.False(t, allowed, "auto-detected private agent should still block stranger in 1-1 private chat")
+}
+

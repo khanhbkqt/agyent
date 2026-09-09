@@ -233,3 +233,38 @@ func TestPathJail_RelativeAllowedPaths_NoDaemonCWDLeak(t *testing.T) {
 	evaluator := NewEvaluator(cfg, nil)
 	assert.Empty(t, evaluator.AllowedPaths(), "relative '.' should not bind daemon CWD to allowedPaths")
 }
+
+func TestPathJail_ExtraAllowedPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	extraDir := filepath.Join(tempDir, "shared_data")
+	outsideDir := filepath.Join(tempDir, "forbidden_outside")
+
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+	require.NoError(t, os.MkdirAll(extraDir, 0755))
+	require.NoError(t, os.MkdirAll(outsideDir, 0755))
+
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: true,
+		AllowedPaths:         []string{"."},
+	}
+	evaluator := NewEvaluator(cfg, nil)
+
+	// 1. Without extraAllowedPaths, target in extraDir is denied
+	extraFile := filepath.Join(extraDir, "dataset.csv")
+	dec, err := evaluator.EvaluatePath(workspaceDir, extraFile, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+
+	// 2. With extraAllowedPaths including extraDir, target in extraDir is allowed
+	dec, err = evaluator.EvaluatePath(workspaceDir, extraFile, false, false, extraDir)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 3. Target in outsideDir is still denied even with extraDir allowed
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	dec, err = evaluator.EvaluatePath(workspaceDir, outsideFile, false, false, extraDir)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+}
+

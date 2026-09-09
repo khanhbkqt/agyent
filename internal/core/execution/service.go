@@ -76,14 +76,16 @@ func (s *Service) ExecuteTurn(
 	}
 
 	resource := domain.Resource{
-		Kind:      domain.ResourceKindAgent,
-		ID:        req.AgentName,
-		AgentName: req.AgentName,
+		Kind:       domain.ResourceKindAgent,
+		ID:         req.AgentName,
+		AgentName:  req.AgentName,
+		SessionKey: sessionKey,
 	}
 	if resource.AgentName == "" {
 		resource.AgentName = "agyent"
 	}
 	preset := domain.PresetBalanced
+	var agentAllowedPaths []string
 	if s.storage != nil {
 		if agent, err := s.storage.GetAgent(ctx, resource.AgentName); err == nil && agent != nil {
 			resource.OwnerID = agent.OwnerID
@@ -91,6 +93,7 @@ func (s *Service) ExecuteTurn(
 			if agent.SecurityPreset != "" {
 				preset = agent.SecurityPreset
 			}
+			agentAllowedPaths = agent.AllowedPaths
 		}
 	}
 
@@ -267,6 +270,7 @@ func (s *Service) ExecuteTurn(
 			AgentName:      req.AgentName,
 			ProjectName:    req.ProjectName,
 			Preset:         preset,
+			AllowedPaths:   agentAllowedPaths,
 			CreatedAt:      time.Now(),
 		})
 		defer s.securityManager.UnregisterTurnByID(turnID)

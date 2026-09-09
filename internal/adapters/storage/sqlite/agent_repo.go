@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -20,26 +21,28 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		       COALESCE(security_preset, 'balanced') AS security_preset,
 		       COALESCE(owner_id, '') AS owner_id,
 		       COALESCE(is_public, 0) AS is_public,
+		       COALESCE(allowed_paths, '[]') AS allowed_paths,
 		       created_at, updated_at
 		FROM agents
 		WHERE name = ?
 	`
 	var (
-		agentName      string
-		desc           string
-		status         string
-		wsPath         string
-		defaultModel   string
-		defaultEffort  string
-		securityPreset string
-		ownerID        string
-		isPublic       int
-		createdAt      FlexTime
-		updatedAt      FlexTime
+		agentName       string
+		desc            string
+		status          string
+		wsPath          string
+		defaultModel    string
+		defaultEffort   string
+		securityPreset  string
+		ownerID         string
+		isPublic        int
+		allowedPathsRaw string
+		createdAt       FlexTime
+		updatedAt       FlexTime
 	)
 
 	err := s.reader().QueryRowContext(ctx, query, name).Scan(
-		&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt,
+		&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &allowedPathsRaw, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -52,6 +55,11 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		securityPreset = string(domain.PresetBalanced)
 	}
 
+	var allowedPaths []string
+	if allowedPathsRaw != "" {
+		_ = json.Unmarshal([]byte(allowedPathsRaw), &allowedPaths)
+	}
+
 	return &domain.Agent{
 		Name:           agentName,
 		Description:    desc,
@@ -62,6 +70,7 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, name string) (*domain.Agent,
 		SecurityPreset: domain.SecurityPreset(securityPreset),
 		OwnerID:        ownerID,
 		IsPublic:       isPublic == 1,
+		AllowedPaths:   allowedPaths,
 		CreatedAt:      createdAt.Time,
 		UpdatedAt:      updatedAt.Time,
 	}, nil
@@ -76,6 +85,7 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 		       COALESCE(security_preset, 'balanced') AS security_preset,
 		       COALESCE(owner_id, '') AS owner_id,
 		       COALESCE(is_public, 0) AS is_public,
+		       COALESCE(allowed_paths, '[]') AS allowed_paths,
 		       created_at, updated_at
 		FROM agents
 		ORDER BY created_at ASC
@@ -89,23 +99,28 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 	var agents = make([]domain.Agent, 0)
 	for rows.Next() {
 		var (
-			agentName      string
-			desc           string
-			status         string
-			wsPath         string
-			defaultModel   string
-			defaultEffort  string
-			securityPreset string
-			ownerID        string
-			isPublic       int
-			createdAt      FlexTime
-			updatedAt      FlexTime
+			agentName       string
+			desc            string
+			status          string
+			wsPath          string
+			defaultModel    string
+			defaultEffort   string
+			securityPreset  string
+			ownerID         string
+			isPublic        int
+			allowedPathsRaw string
+			createdAt       FlexTime
+			updatedAt       FlexTime
 		)
-		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &allowedPathsRaw, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan agent row: %w", err)
 		}
 		if securityPreset == "" {
 			securityPreset = string(domain.PresetBalanced)
+		}
+		var allowedPaths []string
+		if allowedPathsRaw != "" {
+			_ = json.Unmarshal([]byte(allowedPathsRaw), &allowedPaths)
 		}
 		agents = append(agents, domain.Agent{
 			Name:           agentName,
@@ -117,6 +132,7 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]domain.Agent, error) {
 			SecurityPreset: domain.SecurityPreset(securityPreset),
 			OwnerID:        ownerID,
 			IsPublic:       isPublic == 1,
+			AllowedPaths:   allowedPaths,
 			CreatedAt:      createdAt.Time,
 			UpdatedAt:      updatedAt.Time,
 		})
@@ -138,6 +154,7 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 		       COALESCE(a.security_preset, 'balanced') AS security_preset,
 		       COALESCE(a.owner_id, '') AS owner_id,
 		       COALESCE(a.is_public, 0) AS is_public,
+		       COALESCE(a.allowed_paths, '[]') AS allowed_paths,
 		       a.created_at, a.updated_at
 		FROM agents a
 		LEFT JOIN agent_permissions p ON a.name = p.agent_name
@@ -153,23 +170,28 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 	var agents = make([]domain.Agent, 0)
 	for rows.Next() {
 		var (
-			agentName      string
-			desc           string
-			status         string
-			wsPath         string
-			defaultModel   string
-			defaultEffort  string
-			securityPreset string
-			ownerID        string
-			isPublic       int
-			createdAt      FlexTime
-			updatedAt      FlexTime
+			agentName       string
+			desc            string
+			status          string
+			wsPath          string
+			defaultModel    string
+			defaultEffort   string
+			securityPreset  string
+			ownerID         string
+			isPublic        int
+			allowedPathsRaw string
+			createdAt       FlexTime
+			updatedAt       FlexTime
 		)
-		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&agentName, &desc, &status, &wsPath, &defaultModel, &defaultEffort, &securityPreset, &ownerID, &isPublic, &allowedPathsRaw, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan agent row for user: %w", err)
 		}
 		if securityPreset == "" {
 			securityPreset = string(domain.PresetBalanced)
+		}
+		var allowedPaths []string
+		if allowedPathsRaw != "" {
+			_ = json.Unmarshal([]byte(allowedPathsRaw), &allowedPaths)
 		}
 		agents = append(agents, domain.Agent{
 			Name:           agentName,
@@ -181,6 +203,7 @@ func (s *SQLiteStore) ListAgentsForUser(ctx context.Context, userID string) ([]d
 			SecurityPreset: domain.SecurityPreset(securityPreset),
 			OwnerID:        ownerID,
 			IsPublic:       isPublic == 1,
+			AllowedPaths:   allowedPaths,
 			CreatedAt:      createdAt.Time,
 			UpdatedAt:      updatedAt.Time,
 		})
@@ -219,11 +242,16 @@ func (s *SQLiteStore) CreateAgent(ctx context.Context, agent *domain.Agent) erro
 		secPreset = string(domain.PresetBalanced)
 	}
 
+	allowedPathsJSON, _ := json.Marshal(agent.AllowedPaths)
+	if len(agent.AllowedPaths) == 0 {
+		allowedPathsJSON = []byte("[]")
+	}
+
 	result, err := s.writer().ExecContext(ctx, `
 		INSERT INTO agents (
 			name, description, status, workspace_path, default_model, default_effort,
-			security_preset, owner_id, is_public, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			security_preset, owner_id, is_public, allowed_paths, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO NOTHING
 	`,
 		agent.Name,
@@ -235,6 +263,7 @@ func (s *SQLiteStore) CreateAgent(ctx context.Context, agent *domain.Agent) erro
 		secPreset,
 		agent.OwnerID,
 		isPublicInt,
+		string(allowedPathsJSON),
 		timeToMilli(createdAt),
 		timeToMilli(updatedAt),
 	)
@@ -258,8 +287,8 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 	}
 
 	query := `
-		INSERT INTO agents (name, description, status, workspace_path, default_model, default_effort, security_preset, owner_id, is_public, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agents (name, description, status, workspace_path, default_model, default_effort, security_preset, owner_id, is_public, allowed_paths, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			description = excluded.description,
 			status = excluded.status,
@@ -269,6 +298,7 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 			security_preset = excluded.security_preset,
 			owner_id = excluded.owner_id,
 			is_public = excluded.is_public,
+			allowed_paths = excluded.allowed_paths,
 			updated_at = excluded.updated_at
 	`
 	now := time.Now()
@@ -291,6 +321,11 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 		secPreset = string(domain.PresetBalanced)
 	}
 
+	allowedPathsJSON, _ := json.Marshal(agent.AllowedPaths)
+	if len(agent.AllowedPaths) == 0 {
+		allowedPathsJSON = []byte("[]")
+	}
+
 	_, err := s.writer().ExecContext(ctx, query,
 		agent.Name,
 		agent.Description,
@@ -301,6 +336,7 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, agent *domain.Agent) error 
 		secPreset,
 		agent.OwnerID,
 		isPublicInt,
+		string(allowedPathsJSON),
 		timeToMilli(createdAt),
 		timeToMilli(updatedAt),
 	)
