@@ -5,6 +5,25 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.54] - 2026-09-09
+
+### Added
+- **Channel RBAC & Open Whitelisted Group Chat Access (`auth`, `security`, `engine`, `channels`):**
+  - **Whitelisted Group Open Access:** Whitelisted group/channel chats permit open conversational access so all group participants can chat with the bot, while 1-on-1 private DMs remain strictly gated to whitelisted admins/users.
+  - **Privilege Separation:** Administrative commands (`/admin`, `/security`, `/model`, `/whitelist`, `/force_unlock`, `/preset`, etc.) remain strictly restricted to admin users regardless of chat context.
+  - **Implicit Persona Auto-Detection:** Automatically resolves and selects the single custom persona when `bind_agent` is omitted in channel configurations.
+- **Decoupled Security Preset & Agent Filesystem Scope (`security`, `pathjail`, `storage`):**
+  - **Layer 1 vs Layer 2 Decoupling:** Decoupled Layer 1 command execution guardrails (`preset`: `unrestricted`, `developer`, `balanced`, `strict`, `read_only`) from Layer 2 filesystem scope (`allowed_paths`).
+  - **SQLite Schema Migration `000015_agent_allowed_paths`:** Added `allowed_paths` column to `agents` table with full persistence, migration up/down, and automated sync from `config.yaml` on startup.
+  - **Developer PathJail Enforcement:** Enforced `PathJail` workspace sandboxing on `developer` preset agents, restricting disk writes exclusively to agent workspace directory and explicitly whitelisted paths while disallowing host-wide mutations.
+- **Per-Task Timeout & Extended Default Scheduled Execution (`scheduler`, `storage`, `mcp`):**
+  - **SQLite Schema Migration `000014_schedule_task_timeout`:** Added `timeout_seconds` column to `scheduled_tasks` table and `domain.ScheduleTask`.
+  - **Custom Per-Task Execution Timeouts:** Scheduler prioritizes per-task `timeout_seconds` override during execution.
+  - **Bumped Default Timeout:** Increased default `DefaultTaskTimeoutSeconds` from 300s to 1800s (30 minutes) to accommodate long-running crawl, research, and avatar rendering jobs without premature termination.
+  - **Scheduler Plugin IPC Support:** Updated scheduler MCP plugin and security IPC server to accept and persist `timeout_seconds`.
+
+---
+
 ## [1.0.53] - 2026-09-08
 
 ### Fixed
