@@ -1087,6 +1087,35 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Unauthorized: Only administrators can modify security gateway settings")
+
+	// 5. Admin grants session permission: /security grant python3
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-grant-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security grant python3",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Session permission granted for command")
+	assert.Contains(t, lastSent.Text, "python3")
+
+	// 6. Admin grants wildcard session permission: /security grant all
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-grant-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security grant all",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Wildcard permission granted for session")
 }
 
 func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {

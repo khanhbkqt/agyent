@@ -477,86 +477,98 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	hitlPort := m.hitlPort
 	m.mu.RUnlock()
 
-	// If decision requires HITL and an approval port is available -> Request interactive confirmation
-	if decision.Decision == domain.DecisionAsk && hitlPort != nil {
-		if timeoutSec <= 0 {
-			timeoutSec = 60
-		}
-		agentName := "agent"
-		if hasTurn && turnCtx.AgentName != "" {
-			agentName = turnCtx.AgentName
-		}
-		appReq := domain.ApprovalRequest{
-			RequestID:    fmt.Sprintf("hitl-%d", time.Now().UnixNano()),
-			SessionKey:   sessionKey,
-			AgentName:    agentName,
-			ToolName:     req.ToolName,
-			Reason:       decision.Reason,
-			IsConfigEdit: strings.Contains(decision.Reason, "configuration file"),
-			CreatedAt:    time.Now(),
-			ExpiresAt:    time.Now().Add(time.Duration(timeoutSec) * time.Second),
-		}
-
-		if cmd, ok := req.Args["CommandLine"].(string); ok {
-			appReq.CommandLine = cmd
-		}
-		if target, ok := req.Args["TargetFile"].(string); ok {
-			appReq.TargetFile = target
-		}
-		if repl, ok := req.Args["ReplacementContent"].(string); ok && repl != "" {
-			if targetContent, ok := req.Args["TargetContent"].(string); ok && targetContent != "" {
-				appReq.DiffPreview = fmt.Sprintf("--- Target Content ---\n%s\n+++ Replacement Content +++\n%s", targetContent, repl)
-			} else {
-				appReq.DiffPreview = repl
-			}
-		} else if code, ok := req.Args["CodeContent"].(string); ok && code != "" {
-			appReq.DiffPreview = code
-		}
-
-		m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName)
-		appDecision, appErr := hitlPort.RequestApproval(ctx, appReq)
-		if appErr != nil || !appDecision.Approved {
-			m.recordBlocked()
-
-			if appDecision.Action == "force_kill" {
-				m.mu.RLock()
-				eb := m.eventBus
-				m.mu.RUnlock()
-				if eb != nil {
-					_ = eb.SyncEmit(ctx, domain.NewEvent(domain.EventForceKillRequested, domain.ForceKillPayload{
-						SessionKey:     sessionKey,
-						ConversationID: req.ConversationID,
-						Reason:         "User clicked Force Kill Agent on security approval card",
-						Timestamp:      time.Now(),
-					}))
-				}
-			}
-
+	// If decision requires HITL:
+	if decision.Decision == domain.DecisionAsk {
+		// If session has an active wildcard grant -> auto-approve this askable action
+		if m.HasWildcardGrant(sessionKey) {
+			m.recordApproved()
 			return domain.SecurityDecision{
-				Decision:  domain.DecisionDeny,
-				Reason:    fmt.Sprintf("🛡️ [Security Gate]: Action rejected by user or approval timed out (%s)", appDecision.Action),
+				Decision:  domain.DecisionAllow,
+				Reason:    "Allowed by active wildcard session permission grant",
 				LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
 			}, nil
 		}
 
-		// Multi-tier Session Grant Handling:
-		if appDecision.Action == domain.ActionAllowAllSession {
-			m.GrantSessionPermission(sessionKey, "*")
-		} else if appDecision.Action == domain.ActionAllowSession && appReq.CommandLine != "" {
-			baseCmd := ExtractBaseCommand(appReq.CommandLine)
-			if baseCmd != "" {
-				m.GrantSessionPermission(sessionKey, baseCmd)
-			} else {
-				m.GrantSessionPermission(sessionKey, appReq.CommandLine)
+		if hitlPort != nil {
+			if timeoutSec <= 0 {
+				timeoutSec = 60
 			}
-		}
+			agentName := "agent"
+			if hasTurn && turnCtx.AgentName != "" {
+				agentName = turnCtx.AgentName
+			}
+			appReq := domain.ApprovalRequest{
+				RequestID:    fmt.Sprintf("hitl-%d", time.Now().UnixNano()),
+				SessionKey:   sessionKey,
+				AgentName:    agentName,
+				ToolName:     req.ToolName,
+				Reason:       decision.Reason,
+				IsConfigEdit: strings.Contains(decision.Reason, "configuration file"),
+				CreatedAt:    time.Now(),
+				ExpiresAt:    time.Now().Add(time.Duration(timeoutSec) * time.Second),
+			}
 
-		m.recordApproved()
-		return domain.SecurityDecision{
-			Decision:  domain.DecisionAllow,
-			Reason:    "Approved by administrator",
-			LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
-		}, nil
+			if cmd, ok := req.Args["CommandLine"].(string); ok {
+				appReq.CommandLine = cmd
+			}
+			if target, ok := req.Args["TargetFile"].(string); ok {
+				appReq.TargetFile = target
+			}
+			if repl, ok := req.Args["ReplacementContent"].(string); ok && repl != "" {
+				if targetContent, ok := req.Args["TargetContent"].(string); ok && targetContent != "" {
+					appReq.DiffPreview = fmt.Sprintf("--- Target Content ---\n%s\n+++ Replacement Content +++\n%s", targetContent, repl)
+				} else {
+					appReq.DiffPreview = repl
+				}
+			} else if code, ok := req.Args["CodeContent"].(string); ok && code != "" {
+				appReq.DiffPreview = code
+			}
+
+			m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName)
+			appDecision, appErr := hitlPort.RequestApproval(ctx, appReq)
+			if appErr != nil || !appDecision.Approved {
+				m.recordBlocked()
+
+				if appDecision.Action == "force_kill" {
+					m.mu.RLock()
+					eb := m.eventBus
+					m.mu.RUnlock()
+					if eb != nil {
+						_ = eb.SyncEmit(ctx, domain.NewEvent(domain.EventForceKillRequested, domain.ForceKillPayload{
+							SessionKey:     sessionKey,
+							ConversationID: req.ConversationID,
+							Reason:         "User clicked Force Kill Agent on security approval card",
+							Timestamp:      time.Now(),
+						}))
+					}
+				}
+
+				return domain.SecurityDecision{
+					Decision:  domain.DecisionDeny,
+					Reason:    fmt.Sprintf("🛡️ [Security Gate]: Action rejected by user or approval timed out (%s)", appDecision.Action),
+					LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
+				}, nil
+			}
+
+			// Multi-tier Session Grant Handling:
+			if appDecision.Action == domain.ActionAllowAllSession || appDecision.Action == "all" || appDecision.Action == "all_session" {
+				m.GrantSessionPermission(sessionKey, "*")
+			} else if (appDecision.Action == domain.ActionAllowSession || appDecision.Action == "session") && appReq.CommandLine != "" {
+				baseCmd := ExtractBaseCommand(appReq.CommandLine)
+				if baseCmd != "" {
+					m.GrantSessionPermission(sessionKey, baseCmd)
+				} else {
+					m.GrantSessionPermission(sessionKey, appReq.CommandLine)
+				}
+			}
+
+			m.recordApproved()
+			return domain.SecurityDecision{
+				Decision:  domain.DecisionAllow,
+				Reason:    "Approved by administrator",
+				LatencyMs: float64(time.Since(start).Microseconds()) / 1000.0,
+			}, nil
+		}
 	}
 	if decision.Decision == domain.DecisionAsk {
 		m.recordBlocked()
@@ -820,11 +832,25 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 	grants, hasGrants := m.sessionGrants[sessionKey]
 	m.mu.RUnlock()
 	if hasGrants && len(parsedCmds) > 0 {
+		hasWildcard := false
+		for _, g := range grants {
+			if g.pattern == "*" {
+				hasWildcard = true
+				break
+			}
+		}
+		if hasWildcard {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionAllow,
+				Reason:   "Allowed by active wildcard session permission grant",
+			}, nil
+		}
+
 		allGranted := true
 		for _, pcmd := range parsedCmds {
 			granted := false
 			for _, g := range grants {
-				if g.pattern != "" && g.pattern != "*" && (strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern)) {
+				if g.pattern != "" && (g.pattern == "*" || strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern)) {
 					granted = true
 					break
 				}
@@ -890,13 +916,43 @@ func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, outpu
 	return bundle.sanitizerEval.RedactSecrets(output), nil
 }
 
+// HasWildcardGrant checks if the active session has an active wildcard (*) grant.
+func (m *Manager) HasWildcardGrant(sessionKey string) bool {
+	if sessionKey == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	grants, ok := m.sessionGrants[sessionKey]
+	if !ok {
+		return false
+	}
+	for _, g := range grants {
+		if g.pattern == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // GrantSessionPermission adds a permission grant to the session cache for the active session.
 func (m *Manager) GrantSessionPermission(sessionKey string, pattern string) {
-	if pattern == "" || pattern == "*" {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
 		return
+	}
+	if strings.EqualFold(pattern, "all") || strings.EqualFold(pattern, "all_session") {
+		pattern = "*"
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	for _, g := range m.sessionGrants[sessionKey] {
+		if g.pattern == pattern {
+			return
+		}
+	}
 
 	m.sessionGrants[sessionKey] = append(m.sessionGrants[sessionKey], sessionGrant{
 		pattern:   pattern,
@@ -991,6 +1047,16 @@ func (m *Manager) GetDashboardSummary(sessionKey string) domain.SecurityDashboar
 		allowedPaths = bundle.cfg.Filesystem.AllowedPaths
 		redMode = domain.RedactionMode(bundle.cfg.DLP.RedactionMode)
 		configDelegated = bundle.cfg.AgentConfigManagement.Enabled
+	}
+
+	if grants, ok := m.sessionGrants[sessionKey]; ok {
+		for _, g := range grants {
+			if g.pattern == "*" {
+				allowedCmds = append(allowedCmds, "* (wildcard session grant)")
+			} else {
+				allowedCmds = append(allowedCmds, fmt.Sprintf("%s (session)", g.pattern))
+			}
+		}
 	}
 
 	return domain.SecurityDashboard{

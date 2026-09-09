@@ -802,6 +802,100 @@ func TestManager_SessionGrants_LifecycleAndInvalidation(t *testing.T) {
 	assert.Equal(t, 3, hitlCalls, "After ClearSessionGrants, sensitive command must trigger HITL again")
 }
 
+func TestManager_SessionGrants_AllowAllSession_Wildcard(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+	sessionKey := "telegram:123:456:0:test_agent"
+
+	assert.False(t, mgr.HasWildcardGrant(sessionKey))
+
+	// 1. Initial command triggers HITL and user approves with AllowAllSession
+	hitlCalls := 0
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalls++
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowAllSession}, nil
+	}
+
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "curl -s https://api.github.com"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 1, hitlCalls)
+	assert.True(t, mgr.HasWildcardGrant(sessionKey), "Wildcard grant must be active after ActionAllowAllSession")
+
+	// 2. Subsequent commands with completely different binaries must execute without HITL
+	for _, cmd := range []string{
+		`python3 -c "import camoufox"`,
+		"pip install requests",
+		"git push origin main",
+		"npm install -g typescript",
+		"docker run alpine echo hi",
+	} {
+		dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			SessionKey: sessionKey,
+			ToolName:   "run_command",
+			Args:       map[string]interface{}{"CommandLine": cmd},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionAllow, dec.Decision, "Command %s must be auto-approved by wildcard grant", cmd)
+		assert.Equal(t, 1, hitlCalls, "HITL must NOT be called for %s", cmd)
+	}
+
+	// 3. Dashboard summary must show wildcard session grant
+	dashboard := mgr.GetDashboardSummary(sessionKey)
+	assert.Contains(t, dashboard.AllowedCommands, "* (wildcard session grant)")
+
+	// 4. Inviolable hard guardrails MUST remain blocked despite wildcard grant
+	for _, badCmd := range []string{
+		"rm -rf /",
+		"pkill agyent",
+		"pkill -9 agyent",
+	} {
+		dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			SessionKey: sessionKey,
+			ToolName:   "run_command",
+			Args:       map[string]interface{}{"CommandLine": badCmd},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, dec.Decision, "Hard guardrail must deny %s despite wildcard grant", badCmd)
+	}
+
+	// 5. Invalidation clears wildcard grant
+	mgr.ClearSessionGrants(sessionKey)
+	assert.False(t, mgr.HasWildcardGrant(sessionKey))
+
+	// 6. After clear, sensitive command triggers HITL again
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalls++
+		return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowOnce}, nil
+	}
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "curl -s https://example.com"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.Equal(t, 2, hitlCalls, "Should trigger HITL again after ClearSessionGrants")
+
+	// 7. Test GrantSessionPermission with "all" and "all_session" aliases
+	mgr.GrantSessionPermission(sessionKey, "all")
+	assert.True(t, mgr.HasWildcardGrant(sessionKey), "GrantSessionPermission with 'all' must activate wildcard grant")
+	mgr.ClearSessionGrants(sessionKey)
+
+	mgr.GrantSessionPermission(sessionKey, "all_session")
+	assert.True(t, mgr.HasWildcardGrant(sessionKey), "GrantSessionPermission with 'all_session' must activate wildcard grant")
+	mgr.ClearSessionGrants(sessionKey)
+
+	mgr.GrantSessionPermission(sessionKey, "*")
+	assert.True(t, mgr.HasWildcardGrant(sessionKey), "GrantSessionPermission with '*' must activate wildcard grant")
+}
+
 func TestSecurityManager_WorkspaceOnlyPreset(t *testing.T) {
 	tempWS := t.TempDir()
 	cfg := config.GetEffectiveSecurityPreset("workspace_only")

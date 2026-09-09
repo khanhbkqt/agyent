@@ -97,6 +97,49 @@ func TestZaloHITL_ApprovalFlow_AllowSession(t *testing.T) {
 	}
 }
 
+func TestZaloHITL_ApprovalFlow_AllowAllSession(t *testing.T) {
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			AdminUserIDs: []string{"admin_999"},
+			GroupID:      "group_test",
+		},
+	}
+	coordinator := zalo.NewHITLCoordinator(nil, cfg)
+
+	for _, actionInput := range []string{"all", "all_session", "allow_all_session", "allow_all"} {
+		reqID := "req_test_all_" + actionInput
+		req := domain.ApprovalRequest{
+			RequestID:   reqID,
+			SessionKey:  "zalo:group_test",
+			ToolName:    "run_command",
+			CommandLine: "pip install requests",
+			RiskLevel:   "Medium",
+			ExpiresAt:   time.Now().Add(5 * time.Second),
+		}
+
+		done := make(chan domain.ApprovalDecision, 1)
+		go func() {
+			dec, err := coordinator.RequestApproval(context.Background(), req)
+			require.NoError(t, err)
+			done <- dec
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		err := coordinator.HandleCommandApproval(context.Background(), reqID, "admin_999", actionInput)
+		require.NoError(t, err)
+
+		select {
+		case dec := <-done:
+			assert.Equal(t, reqID, dec.RequestID)
+			assert.True(t, dec.Approved)
+			assert.Equal(t, domain.ActionAllowAllSession, dec.Action)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for approval decision on action %s", actionInput)
+		}
+	}
+}
+
 func TestZaloHITL_NonAdminDenied(t *testing.T) {
 	cfg := &config.Config{
 		Zalo: config.ZaloConfig{

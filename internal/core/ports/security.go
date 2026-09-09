@@ -38,6 +38,9 @@ type SecurityManagerPort interface {
 	// GrantSessionPermission adds a permission grant to the session cache.
 	GrantSessionPermission(sessionKey string, pattern string)
 
+	// HasWildcardGrant checks if the session has an active wildcard (*) permission grant.
+	HasWildcardGrant(sessionKey string) bool
+
 	// ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
 	ClearSessionGrants(sessionKey string)
 

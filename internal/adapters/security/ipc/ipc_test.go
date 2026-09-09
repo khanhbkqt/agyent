@@ -54,6 +54,7 @@ func (m *mockSecurityManager) SanitizeToolOutput(ctx context.Context, toolName s
 }
 
 func (m *mockSecurityManager) GrantSessionPermission(sessionKey string, pattern string) {}
+func (m *mockSecurityManager) HasWildcardGrant(sessionKey string) bool                  { return false }
 func (m *mockSecurityManager) ClearSessionGrants(sessionKey string)                     {}
 func (m *mockSecurityManager) ClearAllSessionGrants()                                   {}
 func (m *mockSecurityManager) SetPreset(preset domain.SecurityPreset)                   {}

@@ -2320,11 +2320,14 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 
 		case "grant":
 			if len(args) < 2 {
-				return "⚠️ Usage: `/security grant <command>`", nil
+				return "⚠️ Usage: `/security grant <command|all|*>`", nil
 			}
 			pattern := args[1]
 			e.securityManager.GrantSessionPermission(sessionKey, pattern)
-			return fmt.Sprintf("🛡️ **Temporary permission granted for session:** `%s` (valid for 15 minutes)", pattern), nil
+			if pattern == "*" || strings.EqualFold(pattern, "all") || strings.EqualFold(pattern, "all_session") {
+				return "🛡️ **Wildcard permission granted for session:** all non-destructive commands and actions permitted for the active session", nil
+			}
+			return fmt.Sprintf("🛡️ **Session permission granted for command:** `%s`", pattern), nil
 
 		case "redact":
 			if len(args) < 2 {

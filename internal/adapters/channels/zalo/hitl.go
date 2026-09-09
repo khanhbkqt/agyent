@@ -137,14 +137,17 @@ func (h *HITLCoordinator) HandleCommandApproval(ctx context.Context, reqID, user
 	approved := false
 
 	switch normalizedAction {
+	case "allow_all_session", "all_session", "all", "allow_all":
+		normalizedAction = domain.ActionAllowAllSession
+		approved = true
 	case "allow_session", "session", "always":
-		normalizedAction = "allow_session"
+		normalizedAction = domain.ActionAllowSession
 		approved = true
 	case "allow_once", "allow", "once", "approve", "true":
-		normalizedAction = "allow_once"
+		normalizedAction = domain.ActionAllowOnce
 		approved = true
 	case "force_kill", "kill":
-		normalizedAction = "force_kill"
+		normalizedAction = domain.ActionForceKill
 		approved = false
 	default:
 		normalizedAction = "deny"
@@ -236,7 +239,8 @@ func (h *HITLCoordinator) formatApprovalCard(req domain.ApprovalRequest) string 
 	f.Divider()
 	f.Bold("👉 HƯỚNG DẪN QUẢN TRỊ VIÊN:").NewLine()
 	f.Text(fmt.Sprintf("• Cho phép một lần: `/approve %s`\n", req.RequestID))
-	f.Text(fmt.Sprintf("• Cho phép cả phiên: `/approve %s session`\n", req.RequestID))
+	f.Text(fmt.Sprintf("• Cho phép lệnh này cả phiên: `/approve %s session`\n", req.RequestID))
+	f.Text(fmt.Sprintf("• Cho phép tất cả cả phiên: `/approve %s all`\n", req.RequestID))
 	f.Text(fmt.Sprintf("• Từ chối hành động: `/deny %s`\n", req.RequestID))
 	f.NewLine()
 	f.Italic("⏱️ Yêu cầu sẽ tự động hết hạn và hủy nếu không phản hồi trong 60 giây.")
