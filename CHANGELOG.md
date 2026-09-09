@@ -5,6 +5,22 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.55] - 2026-09-09
+
+### Added
+- **Cross-Agent Schedule Management & Explicit Recipient Routing (`scheduler`, `ipc`):**
+  - **Explicit Recipient Parameters:** Added `chat_id`, `channel`, and `target_session_key` to `schedule_task` MCP tool, enabling agents to schedule reports, reminders, and alerts directly to specific recipients or chats.
+  - **Cross-Agent Scheduling Scoping:** Decoupled IPC action scoping from strict caller session key for scheduler actions, allowing authorized agents to schedule workflows on behalf of other agent personas (`agent_name`).
+  - **Policy-Driven Schedule Cancellation:** Supported creator-based cancellation (`created_by`) and integrated `PolicyEngine` evaluation for `ActionScheduleCancel` on target schedule resources.
+  - **Heartbeat Destination Routing:** Added support for `chat_id`, `channel`, and `thread_id` parameters in `configure_heartbeat`.
+
+### Fixed
+- **Session Mutex Deadlock Elimination on `/new` & Recovery Turn Registration (`engine`):**
+  - **Lock Release & In-Flight Cancellation:** Automatically cancels in-flight turn execution and immediately releases the session FIFO lock upon `/new` and `/reset` slash commands, eliminating deadlocks when starting a fresh session while a previous turn is busy.
+  - **Active Turn Context Registration in Recovery Worker:** Registered active turn context during startup auto-recovery turns, enabling graceful cancellation via `/force_unlock` or HITL force kill.
+
+---
+
 ## [1.0.54] - 2026-09-09
 
 ### Added
