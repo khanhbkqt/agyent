@@ -1116,6 +1116,37 @@ func TestEngine_SecurityPresetMonotonicUpgradeAndKeyboard(t *testing.T) {
 	sent = channel.GetSentMessages()
 	lastSent = sent[len(sent)-1]
 	assert.Contains(t, lastSent.Text, "Wildcard permission granted for session")
+
+	// 7. Admin lists active session grants: /security grants
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-grants-1",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security grants",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Active Session Grants")
+	assert.Contains(t, lastSent.Text, "python3")
+	assert.Contains(t, lastSent.Text, "*")
+
+	// 8. Admin checks dashboard again: /security shows active session grants
+	err = eng.HandleDebouncedMessage(ctx, domain.CanonicalMessage{
+		ID:        "msg-sec-dash-2",
+		Timestamp: time.Now(),
+		Channel:   "telegram",
+		Sender:    adminUser,
+		Chat:      chat,
+		Text:      "/security",
+	})
+	require.NoError(t, err)
+	sent = channel.GetSentMessages()
+	lastSent = sent[len(sent)-1]
+	assert.Contains(t, lastSent.Text, "Session Grants")
+	assert.Contains(t, lastSent.Text, "`*`")
 }
 
 func TestEngine_NewConversationBootstrapAndGreeting(t *testing.T) {

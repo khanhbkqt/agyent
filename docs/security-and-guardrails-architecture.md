@@ -235,6 +235,9 @@ Session grants are bound strictly to the lifetime of the active session rather t
 2. **Hard Guardrail Invariance:**
    - Inviolable system protections (e.g. anti-self-escalation, gateway database `agyent.db` protection, `pkill agyent`, forbidden root paths) are evaluated *prior* to checking session grants.
    - Even when wildcard `*` (`Allow All (Session)`) is active, hard guardrail violations remain strictly blocked (`DecisionDeny`).
+3. **Session Grant Inspection & Canonical Types:**
+   - Approvals are governed by type-safe canonical domain models (`domain.ApprovalAction` and `domain.ParseApprovalAction`), normalizing channel inputs across Telegram and Zalo.
+   - Administrators can inspect active session grants in real time using the `/security grants` slash command or through the `/security` dashboard.
 
 ### 6.3. Delegated Principals & Quality Assertions for Scheduled/Background Tasks
 1. **Delegated Principal:**

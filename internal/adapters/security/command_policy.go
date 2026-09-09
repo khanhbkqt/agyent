@@ -14,6 +14,7 @@ type ParsedCommand struct {
 	Executable string   `json:"executable"`
 	Args       []string `json:"args"`
 	Raw        string   `json:"raw"`
+	ParentExec string   `json:"parent_exec,omitempty"`
 }
 
 // ParseCommandPipeline breaks a compound shell command string into its constituent discrete command invocations.
@@ -65,12 +66,22 @@ func ParseCommandPipeline(rawCmd string) []ParsedCommand {
 		nestedScript := extractNestedInterpreterCommand(baseExec, args)
 		if nestedScript != "" {
 			nestedCmds := ParseCommandPipeline(nestedScript)
+			for i := range nestedCmds {
+				if nestedCmds[i].ParentExec == "" {
+					nestedCmds[i].ParentExec = strings.ToLower(baseExec)
+				}
+			}
 			commands = append(commands, nestedCmds...)
 		}
 
 		// Check for command substitutions $(...) and `...`
 		for _, sub := range extractCommandSubstitutions(seg) {
 			subCmds := ParseCommandPipeline(sub)
+			for i := range subCmds {
+				if subCmds[i].ParentExec == "" {
+					subCmds[i].ParentExec = strings.ToLower(baseExec)
+				}
+			}
 			commands = append(commands, subCmds...)
 		}
 	}

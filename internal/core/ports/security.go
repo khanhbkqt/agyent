@@ -41,6 +41,9 @@ type SecurityManagerPort interface {
 	// HasWildcardGrant checks if the session has an active wildcard (*) permission grant.
 	HasWildcardGrant(sessionKey string) bool
 
+	// GetSessionGrants retrieves all active permission grants for a given session.
+	GetSessionGrants(sessionKey string) []domain.SessionGrant
+
 	// ClearSessionGrants removes all active session grants for the given sessionKey upon session invalidation/reset.
 	ClearSessionGrants(sessionKey string)
 

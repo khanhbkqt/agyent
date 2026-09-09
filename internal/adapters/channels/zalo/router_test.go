@@ -215,7 +215,7 @@ func TestZaloRouter_HITLSlashCommandIntercept(t *testing.T) {
 	case dec := <-decisionChan:
 		assert.Equal(t, "req_cmd_1", dec.RequestID)
 		assert.True(t, dec.Approved)
-		assert.Equal(t, "allow_session", dec.Action)
+		assert.Equal(t, domain.ActionAllowSession, dec.Action)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for approval via router command")
 	}

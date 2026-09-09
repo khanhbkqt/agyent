@@ -353,7 +353,8 @@ func (e *Engine) handleHelpCommand() string {
 **🛡️ Security & Guardrails:**
 • ` + "`/security`" + ` (or ` + "`/sec`" + `) — View Security Gateway Dashboard and switch presets.
 • ` + "`/security preset <unrestricted|developer|balanced|strict|read_only>`" + ` — Switch active security profile.
-• ` + "`/security grant <pattern>`" + ` — Grant temporary permission for 15 minutes.
+• ` + "`/security grant <command|all|*>`" + ` — Grant permission for the active session.
+• ` + "`/security grants`" + ` — List active session permission grants.
 • ` + "`/security redact <strict|permissive|audit_only>`" + ` — Switch DLP secret redaction mode.
 • ` + "`/whitelist add \"<command>\"`" + ` — Add permanent custom whitelist rule.`
 }
@@ -2318,11 +2319,28 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 			}
 			return fmt.Sprintf("🛡️ **Security preset successfully switched to:** `%s` for agent `%s`", preset, activeAgentName), nil
 
+		case "grants":
+			grants := e.securityManager.GetSessionGrants(sessionKey)
+			if len(grants) == 0 {
+				return "🛡️ **Active Session Grants:** No active grants for this session.", nil
+			}
+			var sb strings.Builder
+			sb.WriteString("🛡️ **Active Session Grants:**\n")
+			for _, g := range grants {
+				sb.WriteString(fmt.Sprintf("• Pattern: `%s` (Scope: `%s`, GrantedAt: %s)\n", g.Pattern, g.Scope, g.GrantedAt.Format(time.RFC3339)))
+			}
+			return sb.String(), nil
+
 		case "grant":
 			if len(args) < 2 {
 				return "⚠️ Usage: `/security grant <command|all|*>`", nil
 			}
 			pattern := args[1]
+			action, isAction := domain.ParseApprovalAction(pattern)
+			if isAction && action == domain.ActionAllowAllSession {
+				e.securityManager.GrantSessionPermission(sessionKey, "*")
+				return "🛡️ **Wildcard permission granted for session:** all non-destructive commands and actions permitted for the active session", nil
+			}
 			e.securityManager.GrantSessionPermission(sessionKey, pattern)
 			if pattern == "*" || strings.EqualFold(pattern, "all") || strings.EqualFold(pattern, "all_session") {
 				return "🛡️ **Wildcard permission granted for session:** all non-destructive commands and actions permitted for the active session", nil
@@ -2354,6 +2372,14 @@ func (e *Engine) handleSecurityCommand(sender domain.SenderUser, sessionKey stri
 	sb.WriteString(fmt.Sprintf("🛑 **Blocked Today**     : `%d` events\n", summary.BlockedToday))
 	sb.WriteString(fmt.Sprintf("✅ **Approved Today**    : `%d` events\n", summary.ApprovedToday))
 	sb.WriteString(fmt.Sprintf("⚡ **Total Evaluations** : `%d` checks\n", summary.TotalEvaluations))
+	grants := e.securityManager.GetSessionGrants(sessionKey)
+	if len(grants) > 0 {
+		var grantList []string
+		for _, g := range grants {
+			grantList = append(grantList, fmt.Sprintf("`%s`", g.Pattern))
+		}
+		sb.WriteString(fmt.Sprintf("🔑 **Session Grants**    : %s\n", strings.Join(grantList, ", ")))
+	}
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	sb.WriteString("💡 _Use buttons below to switch profiles or toggle redaction._")
 

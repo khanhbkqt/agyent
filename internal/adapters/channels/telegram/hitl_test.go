@@ -43,7 +43,7 @@ func TestHITLCoordinator_ApprovalFlow(t *testing.T) {
 	decision, err := coordinator.RequestApproval(ctx, req)
 	require.NoError(t, err)
 	assert.True(t, decision.Approved)
-	assert.Equal(t, "allow_once", decision.Action)
+	assert.Equal(t, domain.ActionAllowOnce, decision.Action)
 	assert.Equal(t, int64(123456789), decision.UserID)
 }
 
@@ -77,7 +77,7 @@ func TestHITLCoordinator_NonAdminDenied(t *testing.T) {
 	decision, err := coordinator.RequestApproval(ctx, req)
 	require.NoError(t, err)
 	assert.False(t, decision.Approved)
-	assert.Equal(t, "timeout", decision.Action)
+	assert.Equal(t, domain.ActionTimeout, decision.Action)
 }
 
 func TestHITLCoordinator_LargePayloadTruncation(t *testing.T) {
@@ -185,7 +185,7 @@ func TestHITLCoordinator_MultiBotResolution(t *testing.T) {
 	dec, err := coordinator.RequestApproval(ctx, req)
 	assert.NoError(t, err)
 	assert.False(t, dec.Approved)
-	assert.Equal(t, "timeout", dec.Action)
+	assert.Equal(t, domain.ActionTimeout, dec.Action)
 }
 
 func TestHITLCoordinator_AllowAllSession_AndKeyboard(t *testing.T) {
@@ -226,6 +226,6 @@ func TestHITLCoordinator_AllowAllSession_AndKeyboard(t *testing.T) {
 	decision, err := coordinator.RequestApproval(ctx, req)
 	require.NoError(t, err)
 	assert.True(t, decision.Approved)
-	assert.Equal(t, "allow_all_session", decision.Action)
+	assert.Equal(t, domain.ActionAllowAllSession, decision.Action)
 }
 

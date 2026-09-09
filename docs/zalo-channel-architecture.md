@@ -77,18 +77,30 @@ The Zalo Channel Adapter implements `ports.ChannelPort` and `ports.HITLApprovalP
 
 ### 2.4 Human-In-The-Loop (HITL) Security Integration
 - Formats structured interactive security cards with:
+  - Quick Short Code (`Mã: #<short_code>`, e.g. `#4821`)
+  - Full Request ID (`RequestID`)
   - Agent Persona (`AgentName`)
   - Target Tool (`ToolName`)
   - Bash Command (`CommandLine` in codeblock)
   - Target File Path (`TargetFile`)
   - Diff Preview (`DiffPreview` in diff block)
   - Security Risk Level (`RiskLevel`) and Reason (`Reason`)
-- Admin Approval Commands:
-  - `/approve <req_id>` - Approve for single execution (`allow_once`)
-  - `/approve <req_id> session` - Whitelist tool/action for current session (`allow_session`)
-  - `/deny <req_id>` - Deny execution (`deny`)
-  - `/kill <req_id>` - Force terminate subprocess tree (`force_kill`)
-- Strict RBAC validation against both `zalo.admin_user_ids` and `security.admin_user_ids`.
+- **3-Way Flexible Admin Approval Flow (Optimized for Zalo without Inline Keyboards):**
+  1. **Quote / Reply to Card:** Reply directly to the bot's approval card message with intuitive numbers or keywords:
+     - `1`, `ok`, `approve`, `duyet` → `allow_once`
+     - `2`, `session`, `phien` → `allow_session`
+     - `3`, `all`, `all_session`, `tat ca` → `allow_all_session`
+     - `4`, `deny`, `tu choi` → `deny`
+  2. **Quick Slash Commands in Chat (Auto-bound without ID):** When there is a pending approval in the chat:
+     - `/approve` → single execution (`allow_once`)
+     - `/approve session` → command whitelisted for session (`allow_session`)
+     - `/approve all` → wildcard session grant (`allow_all_session`)
+     - `/deny` → reject action (`deny`)
+  3. **Short-Code Commands:**
+     - `/approve <short_code> [all|session]` (e.g. `/approve 4821 all`)
+     - `/deny <short_code>`
+     - `#<short_code> [action]` (e.g. `#4821 all`, `#4821 1`)
+- Strict fail-closed RBAC validation against `zalo.admin_user_ids` and `security.admin_user_ids`. Non-admin approval attempts are intercepted, rejected, and never leak into the conversational model context.
 
 ### 2.5 Dual Polling & Webhook Modes
 - **Polling Mode:** Long-polling (`getUpdates`) with adaptive backoff. Idle server-side timeouts (HTTP 408 Request Timeout or JSON error code 408) are treated as expected empty poll cycles returning `[]ZaloUpdate{}` without error, maintaining continuous real-time responsiveness without sleep backoff delays.

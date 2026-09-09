@@ -170,7 +170,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 		}
 		dec := domain.ApprovalDecision{
 			RequestID: req.RequestID,
-			Action:    "timeout",
+			Action:    domain.ActionTimeout,
 			Approved:  false,
 			Timestamp: time.Now(),
 		}
@@ -185,7 +185,7 @@ func (h *HITLCoordinator) RequestApproval(ctx context.Context, req domain.Approv
 		}
 		dec := domain.ApprovalDecision{
 			RequestID: req.RequestID,
-			Action:    "cancelled",
+			Action:    domain.ActionCancelled,
 			Approved:  false,
 			Timestamp: time.Now(),
 		}
@@ -271,11 +271,15 @@ func (h *HITLCoordinator) HandleCallbackWithBot(ctx context.Context, callbackID 
 		return nil
 	}
 
-	approved := act == domain.ActionAllowOnce || act == domain.ActionAllowSession || act == domain.ActionAllowAllSession || act == "allow_once" || act == "allow_session" || act == "allow_all_session"
+	canonicalAct, ok := domain.ParseApprovalAction(act)
+	if !ok {
+		canonicalAct = domain.ActionDeny
+	}
+	approved := canonicalAct == domain.ActionAllowOnce || canonicalAct == domain.ActionAllowSession || canonicalAct == domain.ActionAllowAllSession
 	decision := domain.ApprovalDecision{
 		RequestID: reqID,
 		UserID:    userID,
-		Action:    act,
+		Action:    canonicalAct,
 		Approved:  approved,
 		Timestamp: time.Now(),
 	}
@@ -285,7 +289,7 @@ func (h *HITLCoordinator) HandleCallbackWithBot(ctx context.Context, callbackID 
 		if !approved {
 			toast = "❌ Action denied."
 		}
-		if act == "force_kill" {
+		if canonicalAct == domain.ActionForceKill {
 			toast = "🛑 Agent termination requested."
 		}
 		_, _ = targetBot.AnswerCallbackQuery(callbackID, &gotgbot.AnswerCallbackQueryOpts{
@@ -308,7 +312,7 @@ func (h *HITLCoordinator) CancelPendingRequest(requestID string) {
 		if entry.resolved.CompareAndSwap(false, true) {
 			dec := domain.ApprovalDecision{
 				RequestID: requestID,
-				Action:    "cancelled",
+				Action:    domain.ActionCancelled,
 				Approved:  false,
 				Timestamp: time.Now(),
 			}
@@ -330,7 +334,7 @@ func (h *HITLCoordinator) CancelPendingRequestsForSession(sessionKey string) {
 				select {
 				case entry.respChan <- domain.ApprovalDecision{
 					RequestID: entry.req.RequestID,
-					Action:    "cancelled",
+					Action:    domain.ActionCancelled,
 					Approved:  false,
 					Timestamp: time.Now(),
 				}:
@@ -338,7 +342,7 @@ func (h *HITLCoordinator) CancelPendingRequestsForSession(sessionKey string) {
 				}
 				h.updateCardOnDecision(entry, domain.ApprovalDecision{
 					RequestID: entry.req.RequestID,
-					Action:    "cancelled",
+					Action:    domain.ActionCancelled,
 					Approved:  false,
 					Timestamp: time.Now(),
 				})
@@ -352,6 +356,9 @@ func (h *HITLCoordinator) formatCardText(req domain.ApprovalRequest) string {
 	var sb strings.Builder
 	sb.WriteString("🛡️ **[Agyent Security Gateway] Approval Request**\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	if req.ShortCode != "" {
+		sb.WriteString(fmt.Sprintf("🔑 **Code**       : `#%s`\n", req.ShortCode))
+	}
 	if req.AgentName != "" {
 		sb.WriteString(fmt.Sprintf("🤖 **Agent**      : `%s`\n", req.AgentName))
 	}
@@ -437,17 +444,17 @@ func (h *HITLCoordinator) updateCardOnDecision(entry *pendingHITL, dec domain.Ap
 
 	var statusText string
 	switch dec.Action {
-	case "allow_once":
+	case domain.ActionAllowOnce:
 		statusText = "✅ **APPROVED (ONE-TIME)**"
-	case "allow_all_session":
+	case domain.ActionAllowAllSession:
 		statusText = "🔓 **APPROVED ALL ACTIONS FOR SESSION**"
-	case "allow_session":
+	case domain.ActionAllowSession:
 		statusText = "🛡️ **APPROVED COMMAND FOR SESSION**"
-	case "deny":
+	case domain.ActionDeny:
 		statusText = "❌ **DENIED BY ADMINISTRATOR**"
-	case "force_kill":
+	case domain.ActionForceKill:
 		statusText = "🛑 **AGENT FORCIBLY TERMINATED**"
-	case "timeout":
+	case domain.ActionTimeout:
 		statusText = "⏱️ **APPROVAL TIMED OUT (AUTO-DENIED)**"
 	default:
 		statusText = "🚫 **REQUEST CANCELLED**"

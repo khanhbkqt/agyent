@@ -156,6 +156,7 @@ type ToolEvaluationResponse struct {
 // ApprovalRequest represents an interactive Human-In-The-Loop (HITL) approval card.
 type ApprovalRequest struct {
 	RequestID    string                `json:"request_id"`
+	ShortCode    string                `json:"short_code,omitempty"`
 	SessionKey   string                `json:"session_key"`
 	ToolName     string                `json:"tool_name"`
 	CommandLine  string                `json:"command_line,omitempty"`
@@ -172,24 +173,60 @@ type ApprovalRequest struct {
 	ResponseChan chan ApprovalDecision `json:"-"`
 }
 
+// ApprovalAction represents canonical user action types for interactive approvals.
+type ApprovalAction string
+
 // Approval action constants.
 const (
-	ActionAllowOnce       = "allow_once"
-	ActionAllowSession    = "allow_session"
-	ActionAllowAllSession = "allow_all_session"
-	ActionDeny            = "deny"
-	ActionForceKill       = "force_kill"
-	ActionTimeout         = "timeout"
+	ActionAllowOnce       ApprovalAction = "allow_once"
+	ActionAllowSession    ApprovalAction = "allow_session"
+	ActionAllowAllSession ApprovalAction = "allow_all_session"
+	ActionDeny            ApprovalAction = "deny"
+	ActionForceKill       ApprovalAction = "force_kill"
+	ActionTimeout         ApprovalAction = "timeout"
+	ActionCancelled       ApprovalAction = "cancelled"
 )
+
+// ParseApprovalAction converts a raw string (including quick aliases, numbers, and Vietnamese keywords)
+// into a canonical ApprovalAction.
+func ParseApprovalAction(raw string) (ApprovalAction, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "allow_all_session", "all_session", "all", "allow_all", "3", "tat_ca", "tat ca", "tatca", "tất cả", "tất_cả", "tấtcả":
+		return ActionAllowAllSession, true
+	case "allow_session", "session", "always", "2", "phien", "ca_phien", "ca phien", "phiên", "cả phiên", "cả_phiên", "cảphiên":
+		return ActionAllowSession, true
+	case "allow_once", "allow", "once", "approve", "ok", "yes", "y", "1", "duyet", "dong_y", "dong y", "dongy", "duyệt", "đồng ý", "đồng_ý", "đồngý", "true":
+		return ActionAllowOnce, true
+	case "deny", "reject", "no", "n", "4", "tu_choi", "tu choi", "tuchoi", "từ chối", "từ_chối", "từchối", "ko", "khong", "không", "false":
+		return ActionDeny, true
+	case "force_kill", "kill", "terminate", "stop", "5", "dung", "dừng":
+		return ActionForceKill, true
+	case "timeout":
+		return ActionTimeout, true
+	case "cancelled", "cancel", "huy", "hủy":
+		return ActionCancelled, true
+	default:
+		return ApprovalAction(normalized), false
+	}
+}
+
+// SessionGrant models an in-memory session permission grant.
+type SessionGrant struct {
+	Pattern   string    `json:"pattern"`
+	Scope     string    `json:"scope"` // "wildcard" | "command"
+	GrantedBy int64     `json:"granted_by,omitempty"`
+	GrantedAt time.Time `json:"granted_at"`
+}
 
 // ApprovalDecision represents the user's action on an interactive HITL approval card.
 type ApprovalDecision struct {
-	RequestID string    `json:"request_id"`
-	UserID    int64     `json:"user_id"`
-	Action    string    `json:"action"` // "allow_once", "allow_session", "allow_all_session", "deny", "force_kill"
-	Approved  bool      `json:"approved"`
-	Pattern   string    `json:"pattern,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	RequestID string         `json:"request_id"`
+	UserID    int64          `json:"user_id"`
+	Action    ApprovalAction `json:"action"` // "allow_once", "allow_session", "allow_all_session", "deny", "force_kill"
+	Approved  bool           `json:"approved"`
+	Pattern   string         `json:"pattern,omitempty"`
+	Timestamp time.Time      `json:"timestamp"`
 }
 
 // SecurityDashboard provides live metrics for the /security slash command.

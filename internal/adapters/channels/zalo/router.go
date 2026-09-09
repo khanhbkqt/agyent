@@ -212,23 +212,17 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		}
 	}
 
-	text := strings.TrimSpace(rawText)
-	if strings.HasPrefix(text, "/approve") || strings.HasPrefix(text, "/deny") || strings.HasPrefix(text, "/kill") {
-		parts := strings.Fields(text)
-		if len(parts) >= 2 && r.hitl != nil {
-			action := "allow_once"
-			switch {
-			case strings.HasPrefix(parts[0], "/deny"):
-				action = "deny"
-			case strings.HasPrefix(parts[0], "/kill"):
-				action = "force_kill"
-			case len(parts) >= 3 && strings.EqualFold(parts[2], "session"):
-				action = "allow_session"
-			}
-			reqID := parts[1]
-			if err := r.hitl.HandleCommandApproval(ctx, reqID, msg.From.ID, action); err != nil {
-				slog.WarnContext(ctx, "failed to process Zalo HITL action", "req_id", reqID, "action", action, "error", err)
-			}
+	// Intercept HITL Approvals (Quote replies, /approve, /deny, /kill, short codes)
+	if r.hitl != nil {
+		replyToMsgID := ""
+		if msg.ReplyToMsg != nil && strings.TrimSpace(msg.ReplyToMsg.MessageID) != "" {
+			replyToMsgID = strings.TrimSpace(msg.ReplyToMsg.MessageID)
+		}
+		handled, err := r.hitl.HandleFlexibleApproval(ctx, msg.Chat.ID, replyToMsgID, rawText, msg.From.ID)
+		if err != nil {
+			slog.WarnContext(ctx, "error processing Zalo HITL action", "sender", msg.From.ID, "chat_id", msg.Chat.ID, "error", err)
+		}
+		if handled {
 			return
 		}
 	}

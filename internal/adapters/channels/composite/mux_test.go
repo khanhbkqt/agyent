@@ -217,7 +217,7 @@ func TestCompositeChannelMux_HITLRequiresSessionChannel(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.False(t, decision.Approved)
-	assert.Equal(t, "denied_no_channel", decision.Action)
+	assert.Equal(t, domain.ApprovalAction("denied_no_channel"), decision.Action)
 
 	tg.mu.Lock()
 	assert.Equal(t, 0, tg.hitlCalls)
