@@ -5,6 +5,20 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.57] - 2026-09-10
+
+### Added
+- **Comprehensive Configuration Linting, Format Validation & Drift Detection (`doctor`):**
+  - **Strict YAML Decoding & Typo Suggestions:** Enforced `KnownFields(true)` strict decoding for `config.yaml`, providing Levenshtein-based "Did you mean?" suggestions for misspelled configuration keys.
+  - **Struct-Scoped Deprecation Warnings:** Mapped legacy configuration keys (e.g. `anthropic_token`, `openai_token`, `system_prompt`) with struct-specific paths and upgrade guidance.
+  - **Guardrail RegEx Validation:** Automatically compiles and verifies custom command guardrail regular expression patterns in blacklist and whitelist configurations.
+  - **Filesystem Path & Hook Conflict Checks:** Validates path boundaries, collision checks, and detects workspace path collisions against forbidden directories and AGY hook files (`hooks.json`).
+  - **Enum & Persona Validation:** Validates global and per-agent enums (`mode`, `queue_mode`, `append_mode`, `effort`, `preset`), ensuring unknown values are caught before runtime.
+  - **Security Posture & Token Redundancy Audit:** Flags risky configurations (such as `dangerously_skip_permissions: true`, disabled security manager, or unrestricted presets in multi-tenant contexts) and detects redundant bot tokens between single-bot and multi-bot maps.
+  - **SQLite Agent Profile Drift Detection:** Compares configuration file personas against the SQLite database using a safe read-only connection to report schema or model drift.
+
+---
+
 ## [1.0.56] - 2026-09-09
 
 ### Added
