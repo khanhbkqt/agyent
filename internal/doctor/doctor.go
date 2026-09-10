@@ -103,7 +103,7 @@ func (d *DoctorRunner) Run(ctx context.Context) (*DiagnosticReport, error) {
 	report.Results = append(report.Results, d.CheckZombies(ctx)...)
 
 	// 2. Configuration checks
-	cfgResults, loadedCfg := d.CheckConfiguration()
+	cfgResults, loadedCfg := d.CheckConfiguration(ctx)
 	report.Results = append(report.Results, cfgResults...)
 	d.cfg = loadedCfg
 
