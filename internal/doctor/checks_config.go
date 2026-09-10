@@ -318,22 +318,28 @@ func checkConfigSemantics(cfg *config.Config) []CheckResult {
 	}
 
 	// 2. Filesystem Paths & Forbidden Path Collisions
-	forbiddenPaths := []string{
-		"~/.ssh",
-		"~/.aws",
-		"~/.kube",
-		".agents/hooks.json",
-		"~/.gemini/config/hooks.json",
-	}
-	if strings.TrimSpace(cfg.Storage.DBPath) != "" {
-		forbiddenPaths = append(forbiddenPaths, cfg.Storage.DBPath)
-	} else {
-		forbiddenPaths = append(forbiddenPaths, "~/.agyent/agyent.db")
-	}
-	for _, fp := range cfg.Security.Filesystem.ForbiddenPaths {
-		if fp != "" {
+	seenFP := make(map[string]bool)
+	var forbiddenPaths []string
+	addFP := func(fp string) {
+		fp = strings.TrimSpace(fp)
+		if fp == "" {
+			return
+		}
+		if !seenFP[fp] {
+			seenFP[fp] = true
 			forbiddenPaths = append(forbiddenPaths, fp)
 		}
+	}
+	for _, fp := range []string{"~/.ssh", "~/.aws", "~/.kube", ".agents/hooks.json", "~/.gemini/config/hooks.json"} {
+		addFP(fp)
+	}
+	if strings.TrimSpace(cfg.Storage.DBPath) != "" {
+		addFP(cfg.Storage.DBPath)
+	} else {
+		addFP("~/.agyent/agyent.db")
+	}
+	for _, fp := range cfg.Security.Filesystem.ForbiddenPaths {
+		addFP(fp)
 	}
 
 	type pathSource struct {
@@ -395,7 +401,13 @@ func checkConfigSemantics(cfg *config.Config) []CheckResult {
 			continue
 		}
 
-		if p != "." && !filepath.IsAbs(p) && !strings.HasPrefix(p, "~") {
+		if p == "." {
+			// "." specifies the relative runtime workspace directory itself.
+			// It is evaluated at runtime per-agent and does not statically subsume filesystem forbidden paths.
+			continue
+		}
+
+		if !filepath.IsAbs(p) && !strings.HasPrefix(p, "~") {
 			results = append(results, CheckResult{
 				Name:        "Relative Allowed Path",
 				Category:    CategoryConfig,
@@ -712,8 +724,12 @@ func checkChannelConfigurations(cfg *config.Config) []CheckResult {
 		})
 	} else if len(tgBots) > 0 {
 		var botNames []string
-		for _, b := range tgBots {
-			botNames = append(botNames, b.Name)
+		for i, b := range tgBots {
+			name := strings.TrimSpace(b.Name)
+			if name == "" {
+				name = fmt.Sprintf("bot-%d", i+1)
+			}
+			botNames = append(botNames, name)
 		}
 		results = append(results, CheckResult{
 			Name:     "Telegram Bot Configuration",
