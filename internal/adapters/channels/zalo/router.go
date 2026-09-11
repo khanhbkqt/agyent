@@ -242,6 +242,11 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			slog.WarnContext(ctx, "inbound Zalo message unauthorized (blocked by ACL)", "sender_id", msg.From.ID, "bind_agent", bindAgent, "chat_id", msg.Chat.ID, "chat_type", chatType, "error", err)
 			return
 		}
+	} else {
+		if r.cfg == nil || !r.cfg.IsAdminForProvider(msg.From.ID, "zalo") {
+			slog.WarnContext(ctx, "inbound Zalo message dropped: authorizer is not configured (fail-closed)", "sender_id", msg.From.ID, "chat_id", msg.Chat.ID)
+			return
+		}
 	}
 
 	date := time.Now()

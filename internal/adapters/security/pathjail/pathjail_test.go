@@ -268,3 +268,31 @@ func TestPathJail_ExtraAllowedPaths(t *testing.T) {
 	assert.Equal(t, domain.DecisionDeny, dec.Decision)
 }
 
+func TestPathJail_ControlPlaneReadProtection_PermissivePreset(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+
+	// Permissive preset: EnforceWorkspaceJail is false
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: false,
+	}
+	evaluator := NewEvaluator(cfg, nil)
+
+	// 1. Reading daemon database files (including WAL and SHM) must be strictly DENIED
+	for _, dbFile := range []string{"agyent.db", "agyent.db-wal", "agyent.db-shm"} {
+		target := filepath.Join(tempDir, ".agyent", dbFile)
+		dec, err := evaluator.EvaluatePath(workspaceDir, target, false, false)
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, dec.Decision, "Reading %s must be denied", dbFile)
+		assert.Contains(t, dec.Reason, "Control Plane Protection")
+	}
+
+	// 2. Reading daemon configuration file must be strictly DENIED when not manageable
+	cfgFile := filepath.Join(tempDir, ".agyent", "config.yaml")
+	dec, err := evaluator.EvaluatePath(workspaceDir, cfgFile, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision, "Reading daemon config.yaml must be denied")
+	assert.Contains(t, dec.Reason, "Control Plane Protection")
+}
+

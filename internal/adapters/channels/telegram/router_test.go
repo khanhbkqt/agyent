@@ -13,6 +13,14 @@ import (
 	"agyent/internal/core/domain"
 )
 
+type testInboundAuthorizer struct {
+	allowed bool
+}
+
+func (a *testInboundAuthorizer) AuthorizeInbound(context.Context, string, string, string) (bool, error) {
+	return a.allowed, nil
+}
+
 // TC-TG-01: 1-1 Private User Ingestion Delegates RBAC to Core Engine
 func TestRouter_PrivateUserIngestionDelegatesToEngine(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -39,10 +47,16 @@ func TestRouter_PrivateUserIngestionDelegatesToEngine(t *testing.T) {
 		},
 	}
 
+	// 1. Fail-closed: when authorizer is nil, non-admin user is dropped
 	err := router.HandleUpdate(context.Background(), nil, update)
 	require.NoError(t, err)
+	assert.Equal(t, 0, len(inbound), "nil authorizer must drop non-admin user (fail-closed)")
 
-	// Should deliver to inbound for Core Engine RBAC evaluation
+	// 2. When authorizer is injected and allows user, message is ingested
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
+	err = router.HandleUpdate(context.Background(), nil, update)
+	require.NoError(t, err)
+
 	assert.Equal(t, 1, len(inbound))
 	msg := <-inbound
 	assert.Equal(t, "999888", msg.Sender.ID)
@@ -149,6 +163,7 @@ func TestRouter_GroupMessageWithMentionOrReply(t *testing.T) {
 	t.Run("with @mention", func(t *testing.T) {
 		inbound := make(chan domain.CanonicalMessage, 10)
 		router := NewRouter(cfg, mockBot, inbound, nil)
+		router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 		update := &gotgbot.Update{
 			UpdateId: 4,
@@ -184,6 +199,7 @@ func TestRouter_GroupMessageWithMentionOrReply(t *testing.T) {
 	t.Run("with reply to bot", func(t *testing.T) {
 		inbound := make(chan domain.CanonicalMessage, 10)
 		router := NewRouter(cfg, mockBot, inbound, nil)
+		router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 		update := &gotgbot.Update{
 			UpdateId: 5,
@@ -244,6 +260,7 @@ func TestRouter_SupergroupForumTopicThread(t *testing.T) {
 
 	inbound := make(chan domain.CanonicalMessage, 10)
 	router := NewRouter(cfg, mockBot, inbound, nil)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	update := &gotgbot.Update{
 		UpdateId: 6,
@@ -322,6 +339,7 @@ func TestRouter_SlashCommandExtraction(t *testing.T) {
 		t.Run(tt.rawText, func(t *testing.T) {
 			inbound := make(chan domain.CanonicalMessage, 10)
 			router := NewRouter(cfg, mockBot, inbound, nil)
+			router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 			update := &gotgbot.Update{
 				UpdateId: 7,
@@ -422,12 +440,25 @@ func TestRouter_CallbackQuery(t *testing.T) {
 			expectSent:   true,
 			expectedText: "/new",
 		},
+		{
+			name:       "Non-admin User Attempting Security Preset Callback is Denied",
+			userID:     999999,
+			data:       "sec:preset:permissive",
+			expectSent: false,
+		},
+		{
+			name:       "Non-admin User Attempting Heartbeat Callback is Denied",
+			userID:     999999,
+			data:       "hb:off",
+			expectSent: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inbound := make(chan domain.CanonicalMessage, 10)
 			router := NewRouter(cfg, nil, inbound, nil)
+			router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 			update := &gotgbot.Update{
 				UpdateId: 99,
@@ -471,6 +502,7 @@ func TestRouter_DedicatedAgentBinding(t *testing.T) {
 	cfg := config.DefaultConfig()
 	inbound := make(chan domain.CanonicalMessage, 10)
 	router := NewRouter(cfg, nil, inbound, nil)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	router.SetBotBindings(map[int64]string{
 		777: "dev_architect",
