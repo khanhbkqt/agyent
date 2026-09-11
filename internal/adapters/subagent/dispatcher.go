@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
-	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/config"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
@@ -18,20 +18,22 @@ import (
 
 // SubagentDispatcher coordinates the background subagent worker pool, task queue, and lifecycle.
 type SubagentDispatcher struct {
-	storage      ports.SubagentRepository
-	eventBus     ports.EventBusPort
-	config       config.SubagentConfig
-	binaryPath   string
-	registry     *taskRegistry
-	executor     *taskExecutor
-	taskQueue    chan domain.SubagentTask
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	started      bool
-	mu           sync.RWMutex
-	policyEngine ports.PolicyEngine
-	storagePort  ports.StoragePort
+	storage          ports.SubagentRepository
+	eventBus         ports.EventBusPort
+	config           config.SubagentConfig
+	binaryPath       string
+	registry         *taskRegistry
+	executor         *taskExecutor
+	taskQueue        chan domain.SubagentTask
+	ctx              context.Context
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	started          bool
+	mu               sync.RWMutex
+	policyEngine     ports.PolicyEngine
+	storagePort      ports.StoragePort
+	executionService ports.ExecutionServicePort
+	unsubEventBus    ports.UnsubscribeFunc
 }
 
 // NewDispatcher constructs a new SubagentDispatcher instance.
@@ -93,6 +95,16 @@ func (d *SubagentDispatcher) SetStoragePort(s ports.StoragePort) {
 	}
 }
 
+// SetExecutionService injects the execution service chokepoint into the dispatcher.
+func (d *SubagentDispatcher) SetExecutionService(s ports.ExecutionServicePort) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.executionService = s
+	if d.executor != nil {
+		d.executor.executionService = s
+	}
+}
+
 // Start launches the background worker pool consumers.
 func (d *SubagentDispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()
@@ -121,6 +133,38 @@ func (d *SubagentDispatcher) Start(ctx context.Context) error {
 
 	d.wg.Add(1)
 	go d.pollerLoop()
+
+	if d.eventBus != nil {
+		d.unsubEventBus = d.eventBus.SubscribeSync(domain.EventStreamTool, func(c context.Context, evt domain.Event) error {
+			payload, ok := evt.Payload.(domain.StreamToolPayload)
+			if !ok || !strings.HasPrefix(payload.SessionKey, "subagent:") {
+				return nil
+			}
+			taskID := strings.TrimPrefix(payload.SessionKey, "subagent:")
+			if tCtx, ok := d.registry.Get(taskID); ok {
+				name := payload.ToolName
+				if name == "ask_question" || payload.State == "WAITING_FOR_INPUT" {
+					q := ""
+					if payload.Parameters != nil {
+						if question, ok := payload.Parameters["question"].(string); ok {
+							q = question
+						}
+					}
+					tCtx.updateProgress(payload.StepIndex, "ask_question", "Waiting for input from user/main agent...")
+					tCtx.setWaitingInput(q, payload.ConversationID)
+				} else if payload.State == "ACTIVE" {
+					tCtx.updateProgress(payload.StepIndex, name, fmt.Sprintf("Executing tool %s...", name))
+					if d.storage != nil {
+						_ = d.storage.UpdateSubagentTaskProgress(d.ctx, taskID, payload.StepIndex, name, fmt.Sprintf("Executing tool %s...", name))
+					}
+					if d.eventBus != nil {
+						d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentProgress, domain.SubagentEventPayload{Task: tCtx.snapshot()}))
+					}
+				}
+			}
+			return nil
+		})
+	}
 
 	slog.Info("subagent dispatcher started",
 		"workers", d.config.MaxConcurrentWorkers,
@@ -191,6 +235,10 @@ func (d *SubagentDispatcher) Stop(ctx context.Context) error {
 		return nil
 	}
 	d.started = false
+	if d.unsubEventBus != nil {
+		d.unsubEventBus()
+		d.unsubEventBus = nil
+	}
 	d.cancel()
 	d.mu.Unlock()
 
@@ -425,6 +473,10 @@ func (d *SubagentDispatcher) CancelTaskScoped(ctx context.Context, sessionKey, t
 		tCtx.setCancelled()
 	}
 
+	if d.executionService != nil {
+		_ = d.executionService.InterruptTurn(ctx, fmt.Sprintf("subagent:%s", taskID))
+	}
+
 	// 3. Atomically transition in SQLite from CANCELLING to CANCELLED
 	if err := d.storage.TransitionTaskToCancelled(ctx, taskID); err != nil {
 		return err
@@ -476,23 +528,7 @@ func (d *SubagentDispatcher) runTask(task domain.SubagentTask) {
 	// Update status to RUNNING
 	_ = d.storage.UpdateSubagentTaskProgress(d.ctx, task.ID, 0, "", "Starting subagent worker...")
 
-	onEvent := func(evt agy.StreamEvent) {
-		if evt.Event == "step_update" && evt.StepUpdate != nil {
-			step := evt.StepUpdate
-			name := step.ToolName
-			if name == "" && step.ToolInfo != nil {
-				name = step.ToolInfo.Name
-			}
-			if step.StepType == "tool" && step.State == "ACTIVE" {
-				_ = d.storage.UpdateSubagentTaskProgress(d.ctx, task.ID, step.StepIndex, name, fmt.Sprintf("Executing tool %s...", name))
-				if d.eventBus != nil {
-					d.eventBus.AsyncEmit(d.ctx, domain.NewEvent(domain.EventSubagentProgress, domain.SubagentEventPayload{Task: tCtx.snapshot()}))
-				}
-			}
-		}
-	}
-
-	res, err := d.executor.executeTurn(d.ctx, tCtx, task.Prompt, task.SubConversationID, onEvent)
+	res, err := d.executor.executeTurn(d.ctx, tCtx, task.Prompt, task.SubConversationID)
 	d.handleTurnResult(tCtx, res, err)
 }
 

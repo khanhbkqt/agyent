@@ -1,19 +1,14 @@
 package subagent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/ports"
 )
@@ -31,13 +26,14 @@ type TurnResult struct {
 	ErrorMessage    string
 }
 
-// taskExecutor coordinates spawning and NDJSON stream scanning for a subagent OS subprocess.
+// taskExecutor coordinates executing subagent turns through the authorized execution service chokepoint.
 type taskExecutor struct {
-	binaryPath      string
-	defaultTimeout  time.Duration
-	securityManager ports.SecurityManagerPort
-	policy          ports.PolicyEngine
-	storage         ports.StoragePort
+	binaryPath       string
+	defaultTimeout   time.Duration
+	securityManager  ports.SecurityManagerPort
+	policy           ports.PolicyEngine
+	storage          ports.StoragePort
+	executionService ports.ExecutionServicePort
 }
 
 func newTaskExecutor(binaryPath string, defaultTimeout time.Duration) *taskExecutor {
@@ -55,7 +51,6 @@ func (e *taskExecutor) executeTurn(
 	tCtx *taskRuntimeContext,
 	prompt string,
 	convID string,
-	onEvent func(evt agy.StreamEvent),
 ) (*TurnResult, error) {
 	task := tCtx.snapshot()
 
@@ -76,47 +71,19 @@ func (e *taskExecutor) executeTurn(
 	}
 	defer cleanupWorkspace()
 
-	tenantID := task.TenantID
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	hostID := "local-host"
-	configNamespace := "default"
-	agyProjectID := "agy-proj-sub-" + task.AgentName
-	if tenantID != "" && tenantID != "default" {
-		agyProjectID = fmt.Sprintf("agy-proj-sub-%s-%s", tenantID, task.AgentName)
-	}
-	if e.storage != nil {
-		if mapping, err := e.storage.GetAGYProjectMapping(parentCtx, tenantID, task.AgentName, hostID, configNamespace); err == nil && mapping != nil {
-			if mapping.Status == domain.AGYProjectStatusRevoked || mapping.Status == domain.AGYProjectStatusQuarantined {
-				err := fmt.Errorf("subagent execution denied: AGY project mapping is %s", mapping.Status)
-				return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
-			}
-			if mapping.AGYProjectID != "" {
-				agyProjectID = mapping.AGYProjectID
-			}
-		}
-	}
-
-	args := []string{
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--project", agyProjectID,
-		"--sandbox",
-		"--mode", "accept-edits",
-	}
-	args = append(args, "--add-dir", workspaceDir)
-
-	// Policy authorization check for system:subagent principal
-	principal := domain.Principal{
-		Kind:      domain.PrincipalSystem,
-		Provider:  "internal",
-		SubjectID: "system:subagent",
-	}
+	// 1. Fail-closed policy verification
 	if e.policy == nil {
 		err := errors.New("subagent execution denied: policy engine is not initialized")
 		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
 	}
+
+	principal := domain.Principal{
+		Kind:      domain.PrincipalSystem,
+		Provider:  "internal",
+		SubjectID: "system:subagent",
+		TenantID:  task.TenantID,
+	}
+
 	res := domain.Resource{
 		Kind:        domain.ResourceKindAgent,
 		ID:          task.AgentName,
@@ -126,6 +93,7 @@ func (e *taskExecutor) executeTurn(
 		OwnerID:     agent.OwnerID,
 		IsPublic:    agent.IsPublic,
 	}
+
 	if err := e.policy.Authorize(parentCtx, principal, domain.ActionTaskDispatch, res); err != nil {
 		errMsg := fmt.Sprintf("unauthorized: policy denied subagent execution: %v", err)
 		return &TurnResult{
@@ -135,15 +103,21 @@ func (e *taskExecutor) executeTurn(
 			DurationSeconds: 0,
 		}, errors.New(errMsg)
 	}
-	if e.securityManager == nil {
-		err := errors.New("subagent execution denied: security manager is not initialized")
-		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
+
+	if e.securityManager != nil {
+		if err := e.securityManager.EnsureWorkspaceHooks(workspaceDir); err != nil {
+			err = fmt.Errorf("subagent security hook provisioning failed: %w", err)
+			return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
+		}
 	}
-	if err := e.securityManager.EnsureWorkspaceHooks(workspaceDir); err != nil {
-		err = fmt.Errorf("subagent security hook provisioning failed: %w", err)
+
+	// 2. Chokepoint verification (ARCH-02)
+	if e.executionService == nil {
+		err := errors.New("subagent execution denied: execution service is not initialized")
 		return &TurnResult{ConversationID: convID, Status: domain.TaskStatusFailed, ErrorMessage: err.Error()}, err
 	}
 
+	// 3. Resolve Model and Effort
 	modelInput := task.Model
 	if modelInput == "" {
 		modelInput = "flash"
@@ -161,314 +135,104 @@ func (e *taskExecutor) executeTurn(
 			resolvedEffort = ""
 		}
 	}
-	if resolvedModel != "" {
-		args = append(args, "--model", resolvedModel)
-	}
-	if resolvedEffort != "" {
-		args = append(args, "--effort", resolvedEffort)
-	}
 
-	if convID != "" {
-		args = append(args, "--conversation", convID)
-	}
+	subagentSessionKey := fmt.Sprintf("subagent:%s", task.ID)
 
-	if e.defaultTimeout > 0 {
-		args = append(args, "--print-timeout", fmt.Sprintf("%ds", int(e.defaultTimeout.Seconds())))
-	}
-
-	inboundMsg := map[string]any{
-		"event": "user",
-		"message": map[string]any{
-			"content": prompt,
-		},
-	}
-	inboundJSON, err := json.Marshal(inboundMsg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal inbound stream message: %w", err)
-	}
-
-	turnID := fmt.Sprintf("turn-sub-%s-%d", task.ID, time.Now().UnixNano())
-	e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
-		TurnID:         turnID,
-		ConversationID: convID,
-		SessionKey:     task.ParentSessionKey,
-		Principal:      principal,
-		Action:         domain.ActionTaskDispatch,
-		Resource:       res,
+	req := domain.ExecutionRequest{
+		Prompt:         prompt,
 		WorkspaceDir:   workspaceDir,
+		ConversationID: convID,
 		AgentName:      task.AgentName,
 		ProjectName:    task.ProjectName,
-		Preset:         agent.SecurityPreset,
-		CreatedAt:      time.Now(),
-	})
-	defer e.securityManager.UnregisterTurnByID(turnID)
-
-	cmd := exec.CommandContext(execCtx, e.binaryPath, args...)
-	cmd.Dir = workspaceDir
-
-	safeKeys := map[string]bool{
-		"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true, "TMP": true,
-		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "USER": true, "LOGNAME": true,
-		"SHELL": true, "TERM": true, "NO_COLOR": true, "SYSTEMROOT": true, "COMSPEC": true,
-		"PATHEXT": true, "WINDIR": true, "APPDATA": true, "LOCALAPPDATA": true,
-		"GO_WANT_MOCK_AGY_HELPER": true, "MOCK_SCENARIO": true,
+		Model:          resolvedModel,
+		Effort:         resolvedEffort,
+		Timeout:        e.defaultTimeout,
+		Mode:           "accept-edits",
+		SessionKey:     subagentSessionKey,
+		UserID:         task.TenantID,
 	}
 
-	var env []string
-	for _, eStr := range os.Environ() {
-		parts := strings.SplitN(eStr, "=", 2)
-		if len(parts) > 0 && safeKeys[strings.ToUpper(parts[0])] {
-			env = append(env, eStr)
-		}
-	}
-	env = append(env,
-		"NO_COLOR=1",
-		"TERM=dumb",
-		"AGYENT_TURN_ID="+turnID,
-		"AGYENT_SESSION_KEY="+task.ParentSessionKey,
-		"AGYENT_AGENT_NAME="+task.AgentName,
-		"AGYENT_PROJECT_NAME="+task.ProjectName,
-		"AGYENT_PROJECT_ID="+agyProjectID,
-		"AGYENT_AGENT_WORKSPACE="+workspaceDir,
-		"AGYENT_USER_ID="+task.TenantID,
-	)
-	cmd.Env = env
-	cmd.Stdin = strings.NewReader(string(inboundJSON) + "\n")
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to open stdout pipe: %w", err)
-	}
-
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-
-	agy.ConfigureCmd(cmd)
-	jobGuard, err := agy.CreateProcessJobGuard()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize subagent process job guard: %w", err)
-	}
-	if jobGuard != nil {
-		tCtx.mu.Lock()
-		tCtx.jobGuard = jobGuard
-		tCtx.mu.Unlock()
-		defer jobGuard.Close()
-	}
-	cmd.Cancel = func() error { return agy.KillProcessTree(cmd) }
-	cmd.WaitDelay = 3 * time.Second
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start subagent process: %w", err)
-	}
-
-	tCtx.mu.Lock()
-	tCtx.cmd = cmd
-	tCtx.mu.Unlock()
-
-	if jobGuard != nil && cmd.Process != nil {
-		if attachErr := jobGuard.AttachProcess(cmd.Process); attachErr != nil {
-			_ = agy.KillProcessTree(cmd)
-			return nil, fmt.Errorf("failed to attach subagent process to JobGuard: %w", attachErr)
-		}
-	}
-
-	monitorDone := make(chan struct{})
-	defer close(monitorDone)
-	go func() {
-		select {
-		case <-execCtx.Done():
-			_ = agy.KillProcessTree(cmd)
-			_ = stdoutPipe.Close()
-		case <-monitorDone:
-		}
-	}()
-
-	scanner := bufio.NewScanner(stdoutPipe)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	var lastResponseBuilder strings.Builder
-	var turnConvID = convID
-	var turnUsage domain.TokenUsage
-	var toolsExecuted []string
-	var isWaitingInput bool
-	var pendingQuestion string
-
-	for scanner.Scan() {
-		if execCtx.Err() != nil {
-			break
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		cleanLine := agy.StripANSI(line)
-		if !strings.HasPrefix(cleanLine, "{") {
-			continue
-		}
-
-		var rawEvt agy.StreamEvent
-		if err := json.Unmarshal([]byte(cleanLine), &rawEvt); err != nil {
-			continue
-		}
-
-		if rawEvt.ConversationID != "" {
-			turnConvID = rawEvt.ConversationID
-			tCtx.mu.Lock()
-			tCtx.conversationID = turnConvID
-			tCtx.task.SubConversationID = turnConvID
-			tCtx.mu.Unlock()
-		}
-
-		if onEvent != nil {
-			onEvent(rawEvt)
-		}
-
-		switch rawEvt.Event {
-		case "step_update":
-			if rawEvt.StepUpdate != nil {
-				step := rawEvt.StepUpdate
-				name := step.ToolName
-				if name == "" && step.ToolInfo != nil {
-					name = step.ToolInfo.Name
-				}
-
-				if name == "ask_question" || step.State == "WAITING_FOR_INPUT" {
-					isWaitingInput = true
-					if step.ToolInfo != nil && step.ToolInfo.Parameters != nil {
-						if q, ok := step.ToolInfo.Parameters["question"].(string); ok && q != "" {
-							pendingQuestion = q
-						}
-					}
-					tCtx.updateProgress(step.StepIndex, "ask_question", "Waiting for input from user/main agent...")
-				} else if step.StepType == "tool" {
-					if step.State == "ACTIVE" {
-						tCtx.updateProgress(step.StepIndex, name, fmt.Sprintf("Executing tool %s...", name))
-					} else if step.State == "DONE" {
-						toolsExecuted = append(toolsExecuted, name)
-					}
-				} else if step.StepType == "agent_response" && step.TextDelta != "" {
-					lastResponseBuilder.WriteString(step.TextDelta)
-				}
-			}
-		case "result":
-			if rawEvt.Result != nil {
-				turnUsage = rawEvt.Result.Usage
-				if turnUsage.TotalTokens == 0 {
-					turnUsage.TotalTokens = turnUsage.InputTokens + turnUsage.OutputTokens + turnUsage.ThinkingTokens
-				}
-				if rawEvt.Result.Response != "" {
-					lastResponseBuilder.Reset()
-					lastResponseBuilder.WriteString(rawEvt.Result.Response)
-				}
-				if rawEvt.Result.Status == "DENIED" || len(rawEvt.Result.DeniedActions) > 0 {
-					errMsg := rawEvt.Result.Error
-					if errMsg == "" {
-						errMsg = "native permission denial: AGY rejected tool execution (denied_actions)"
-					}
-					return &TurnResult{
-						ConversationID:  turnConvID,
-						Status:          domain.TaskStatusFailed,
-						ErrorMessage:    errMsg,
-						DurationSeconds: time.Since(tCtx.startedAt).Seconds(),
-					}, fmt.Errorf("native permission denial: %s", errMsg)
-				}
-			}
-		case "error":
-			if rawEvt.Error != "" {
-				return &TurnResult{
-					ConversationID:  turnConvID,
-					Status:          domain.TaskStatusFailed,
-					ErrorMessage:    rawEvt.Error,
-					DurationSeconds: time.Since(tCtx.startedAt).Seconds(),
-				}, fmt.Errorf("stream execution error: %s", rawEvt.Error)
-			}
-		}
-	}
-
-	_ = stdoutPipe.Close()
-	scanErr := scanner.Err()
-
-	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- cmd.Wait()
-	}()
-
-	var waitErr error
-	select {
-	case waitErr = <-waitDone:
-	case <-time.After(1 * time.Second):
-		_ = agy.KillProcessTree(cmd)
-		select {
-		case waitErr = <-waitDone:
-		case <-time.After(500 * time.Millisecond):
-			waitErr = fmt.Errorf("subagent subprocess wait timed out")
-		}
-	case <-execCtx.Done():
-		_ = agy.KillProcessTree(cmd)
-		select {
-		case waitErr = <-waitDone:
-		case <-time.After(500 * time.Millisecond):
-			waitErr = execCtx.Err()
-		}
-	}
-
-	response := strings.TrimSpace(lastResponseBuilder.String())
+	// 4. Route through unified execution chokepoint (ARCH-02)
+	execRes, execErr := e.executionService.ExecuteTurn(execCtx, principal, req, subagentSessionKey, true)
 	durationSec := time.Since(tCtx.startedAt).Seconds()
 
 	if execCtx.Err() != nil {
 		return &TurnResult{
-			ConversationID:  turnConvID,
+			ConversationID:  convID,
 			Status:          domain.TaskStatusFailed,
 			ErrorMessage:    "task execution timed out or was cancelled",
 			DurationSeconds: durationSec,
 		}, execCtx.Err()
 	}
 
-	if scanErr != nil {
+	if execErr != nil {
 		return &TurnResult{
-			ConversationID:  turnConvID,
+			ConversationID:  convID,
 			Status:          domain.TaskStatusFailed,
-			ErrorMessage:    fmt.Sprintf("scanner error: %v", scanErr),
+			ErrorMessage:    execErr.Error(),
 			DurationSeconds: durationSec,
-		}, scanErr
+		}, execErr
 	}
 
-	if isWaitingInput {
-		if pendingQuestion == "" {
-			pendingQuestion = response
+	if execRes == nil {
+		return &TurnResult{
+			ConversationID:  convID,
+			Status:          domain.TaskStatusFailed,
+			ErrorMessage:    "empty execution result",
+			DurationSeconds: durationSec,
+		}, errors.New("empty execution result")
+	}
+
+	turnConvID := execRes.ConversationID
+	if turnConvID == "" {
+		turnConvID = convID
+	} else {
+		tCtx.mu.Lock()
+		tCtx.conversationID = turnConvID
+		tCtx.task.SubConversationID = turnConvID
+		tCtx.mu.Unlock()
+	}
+
+	tCtx.mu.RLock()
+	isWaiting := tCtx.task.Status == domain.TaskStatusWaitingInput
+	pendingQ := tCtx.pendingQuestion
+	tCtx.mu.RUnlock()
+
+	if isWaiting {
+		if pendingQ == "" {
+			pendingQ = execRes.ResponseText
 		}
 		return &TurnResult{
 			ConversationID:  turnConvID,
 			Status:          domain.TaskStatusWaitingInput,
-			Question:        pendingQuestion,
-			Response:        response,
-			Usage:           turnUsage,
+			Question:        pendingQ,
+			Response:        execRes.ResponseText,
+			Usage:           execRes.Usage,
 			DurationSeconds: durationSec,
-			ToolsExecuted:   toolsExecuted,
+			Artifacts:       execRes.Artifacts,
 		}, nil
 	}
 
-	if waitErr != nil && response == "" {
-		errMsg := strings.TrimSpace(stderrBuf.String())
+	if !execRes.Success {
+		errMsg := execRes.Error
 		if errMsg == "" {
-			errMsg = waitErr.Error()
+			errMsg = "subagent execution failed"
 		}
 		return &TurnResult{
 			ConversationID:  turnConvID,
 			Status:          domain.TaskStatusFailed,
 			ErrorMessage:    errMsg,
 			DurationSeconds: durationSec,
-		}, waitErr
+		}, errors.New(errMsg)
 	}
 
 	return &TurnResult{
 		ConversationID:  turnConvID,
 		Status:          domain.TaskStatusCompleted,
-		Response:        response,
-		Usage:           turnUsage,
+		Response:        execRes.ResponseText,
+		Usage:           execRes.Usage,
 		DurationSeconds: durationSec,
-		ToolsExecuted:   toolsExecuted,
+		Artifacts:       execRes.Artifacts,
 	}, nil
 }
 

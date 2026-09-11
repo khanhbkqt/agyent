@@ -2,21 +2,17 @@ package subagent
 
 import (
 	"context"
-	"os/exec"
 	"sync"
 	"time"
 
-	"agyent/internal/adapters/harness/agy"
 	"agyent/internal/core/domain"
 )
 
-// taskRuntimeContext represents an in-flight background task running inside an OS subprocess.
+// taskRuntimeContext represents an in-flight background task.
 type taskRuntimeContext struct {
 	mu              sync.RWMutex
 	task            domain.SubagentTask
 	cancel          context.CancelFunc
-	cmd             *exec.Cmd
-	jobGuard        *agy.ProcessJobGuard
 	startedAt       time.Time
 	conversationID  string
 	pendingQuestion string
