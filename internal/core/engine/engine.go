@@ -1080,10 +1080,13 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if e.executionService == nil && e.securityManager != nil {
+		isAdmin := e.isSenderSuperAdmin(msg.Sender)
 		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
 			TurnID:         turnID,
 			ConversationID: activeConvID,
 			SessionKey:     sessionKey,
+			Principal:      principal,
+			IsAdmin:        isAdmin,
 			WorkspaceDir:   workspaceDir,
 			Preset:         agent.SecurityPreset,
 			AgentName:      agent.Name,

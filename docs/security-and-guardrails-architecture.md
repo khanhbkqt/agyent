@@ -280,7 +280,10 @@ Each agent is provisioned with a `security_preset` stored in SQLite (`agents.sec
 - **Preset Hierarchy:**
   $$\text{unrestricted (0)} \rightarrow \text{developer (1)} \rightarrow \text{workspace\_only (2)} \rightarrow \text{balanced (3)} \rightarrow \text{strict (4)} \rightarrow \text{read\_only (5)}$$
 - **SuperAdmin Dynamic Control:** Authenticated SuperAdmins on Telegram have full administrative control to switch any agent's preset freely to any level (`/security preset <mode>` or via the interactive dashboard buttons).
-- **Anti-Self-Escalation:** AI agents and sub-agents remain strictly barred from modifying security configurations or self-escalating privileges through tool execution or subshells.
+- **Unrestricted Mode Execution Boundary:** Unrestricted preset execution provides full autonomy (zero HITL prompts) for authenticated administrators (SuperAdmins, channel admins, or agent owners). Non-admin or unauthenticated callers invoking an unrestricted agent are automatically downgraded to `balanced` posture to prevent unauthorized autonomous privilege escalation. Administrative identity verification enforces `PrincipalKind == PrincipalSystem` for string literal matches (`"admin"` / `"superadmin"`), requiring explicit `IsAdmin` flags, RBAC roles, or configured `admin_user_ids` for human user principals.
+- **Control-Plane File Guardrail:** Under all presets (including `unrestricted` mode for authenticated admins), modifying critical control-plane and daemon configuration files (`.agents/hooks.json`, `agyent.db*`, `config.yaml`, and the `~/.agyent` directory) via `write_to_file` or `replace_file_content` is unconditionally blocked (`DecisionDeny`), even if code content appears harmless.
+- **TurnID Resolution & Race-Free Binding:** `ToolEvaluationRequest` explicitly binds incoming hook intercepts to `TurnID`, looking up `ResolveTurnByID(TurnID)` directly before falling back to session-wide or workspace mappings, preventing race conditions during concurrent turn execution across the same workspace.
+- **Anti-Self-Escalation & Directory Protection:** AI agents and sub-agents remain strictly barred from modifying security configurations, terminating daemon processes (`pkill agyent`), or executing commands that delete or alter the daemon configuration directory (`rm -rf ~/.agyent`).
 
 ---
 
@@ -476,5 +479,39 @@ type HITLApprovalPort interface {
 
     // CancelPendingRequestsForSession terminates all pending approval requests for a given session.
     CancelPendingRequestsForSession(sessionKey string)
+}
+
+// ToolEvaluationRequest represents an incoming tool execution intercept.
+type ToolEvaluationRequest struct {
+    TurnID         string                 `json:"turn_id,omitempty"`
+    SessionKey     string                 `json:"session_key,omitempty"`
+    Role           string                 `json:"role,omitempty"`
+    ToolName       string                 `json:"tool_name"`
+    Args           map[string]interface{} `json:"args"`
+    ConversationID string                 `json:"conversation_id,omitempty"`
+    StepIdx        int                    `json:"step_idx,omitempty"`
+    WorkspaceDir   string                 `json:"workspace_dir,omitempty"`
+    IsSubagent     bool                   `json:"is_subagent,omitempty"`
+    CascadeDepth   int                    `json:"cascade_depth,omitempty"`
+}
+
+// TurnSecurityContext captures the security identity, authorization principal, and preset bound to an active turn.
+type TurnSecurityContext struct {
+    TurnID         string         `json:"turn_id"`
+    Principal      Principal      `json:"principal"`
+    IsAdmin        bool           `json:"is_admin,omitempty"`
+    Role           AgentRole      `json:"role,omitempty"`
+    Action         Action         `json:"action"`
+    Resource       Resource       `json:"resource"`
+    ConversationID string         `json:"conversation_id"`
+    SessionKey     string         `json:"session_key"`
+    AgentName      string         `json:"agent_name"`
+    ProjectName    string         `json:"project_name,omitempty"`
+    WorkspaceDir   string         `json:"workspace_dir"`
+    Preset         SecurityPreset `json:"preset"`
+    AllowedPaths   []string       `json:"allowed_paths,omitempty"`
+    RuntimeNonce   string         `json:"runtime_nonce,omitempty"`
+    ProcessID      int            `json:"process_id,omitempty"`
+    CreatedAt      time.Time      `json:"created_at"`
 }
 ```

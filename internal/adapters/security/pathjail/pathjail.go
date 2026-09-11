@@ -263,6 +263,12 @@ func (e *Evaluator) AllowedPaths() []string {
 	return append([]string(nil), e.allowedPaths...)
 }
 
+// ResolveSymlinksAndCanonicalize resolves symlink chains and returns a canonicalized path.
+func ResolveSymlinksAndCanonicalize(p string) string {
+	return resolveSymlinksAndCanonicalize(p)
+}
+
+
 func isControlPlaneWriteForbidden(canonTarget string) (bool, string) {
 	norm := strings.ToLower(filepath.ToSlash(filepath.Clean(canonTarget)))
 

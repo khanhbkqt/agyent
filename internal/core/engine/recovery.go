@@ -448,10 +448,13 @@ func (e *Engine) recoverSingleTurn(ctx context.Context, turn domain.InFlightTurn
 		if agent != nil && agent.SecurityPreset != "" {
 			preset = agent.SecurityPreset
 		}
+		isAdmin := e.isSenderSuperAdmin(canonicalMsg.Sender)
 		e.securityManager.RegisterActiveTurn(domain.TurnSecurityContext{
 			TurnID:         turn.TurnID,
 			ConversationID: turn.ConversationID,
 			SessionKey:     turn.SessionKey,
+			Principal:      principal,
+			IsAdmin:        isAdmin,
 			WorkspaceDir:   workspaceDir,
 			Preset:         preset,
 			AgentName:      agentName,

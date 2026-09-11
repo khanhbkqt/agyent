@@ -886,6 +886,7 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 		sessionKey := turnCtx.SessionKey
 
 		evalReq := domain.ToolEvaluationRequest{
+			TurnID:         req.TurnID,
 			ToolName:       req.ToolCall.Name,
 			Args:           req.ToolCall.Args,
 			ConversationID: turnCtx.ConversationID,

@@ -435,6 +435,8 @@ func TestSecurityManager_PerTurnIsolation(t *testing.T) {
 		WorkspaceDir:   "/ws/admin",
 		Preset:         domain.PresetUnrestricted,
 		AgentName:      "admin_bot",
+		Principal:      domain.Principal{Kind: domain.PrincipalUser, SubjectID: "admin"},
+		IsAdmin:        true,
 	})
 	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
 		ConversationID: "conv-strict",
@@ -510,8 +512,10 @@ func TestSecurityManager_HeavyConcurrentStressTest(t *testing.T) {
 
 	for _, p := range presets {
 		subj := p.agentName
+		isAdmin := false
 		if p.preset == domain.PresetUnrestricted {
 			subj = "admin"
+			isAdmin = true
 		}
 		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
 			ConversationID: p.convID,
@@ -520,6 +524,7 @@ func TestSecurityManager_HeavyConcurrentStressTest(t *testing.T) {
 			Preset:         p.preset,
 			AgentName:      p.agentName,
 			Principal:      domain.Principal{SubjectID: subj, Kind: domain.PrincipalUser},
+			IsAdmin:        isAdmin,
 		})
 	}
 
@@ -643,6 +648,8 @@ func TestSecurityManager_RealIPCServerClientE2E(t *testing.T) {
 		WorkspaceDir:   "/tmp/ws_admin",
 		Preset:         domain.PresetUnrestricted,
 		AgentName:      "admin_bot",
+		Principal:      domain.Principal{Kind: domain.PrincipalUser, SubjectID: "admin"},
+		IsAdmin:        true,
 	})
 	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
 		TurnID:         "turn-ipc-strict",
@@ -1164,4 +1171,657 @@ func TestSecurityManager_SessionGrantCannotBypassControlPlaneProtection(t *testi
 		assert.True(t, dec.Decision == domain.DecisionDeny)
 	}
 }
+
+func TestSecurityManager_UnrestrictedPreset_RealWorldUserID_NoHITL(t *testing.T) {
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	cfg.AdminUserIDs = []int64{712345678}
+	hitlCalled := false
+	mockHITL := &mockHITLApprovalPort{
+		requestApprovalFn: func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+			hitlCalled = true
+			return domain.ApprovalDecision{Approved: true, Action: "allow_once"}, nil
+		},
+	}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+
+	convID := "conv-tg-admin"
+	wsDir := t.TempDir()
+
+	// 1. Authenticated administrator on Telegram (numeric SubjectID, IsAdmin: true)
+	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		ConversationID: convID,
+		SessionKey:     "telegram:712345678",
+		WorkspaceDir:   wsDir,
+		Preset:         domain.PresetUnrestricted,
+		AgentName:      "admin_agent",
+		Principal: domain.Principal{
+			Kind:      domain.PrincipalUser,
+			Provider:  "telegram",
+			SubjectID: "712345678",
+		},
+		IsAdmin: true,
+	})
+
+	dec, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: convID,
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `python3 -c "print('hello')"`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+	assert.False(t, hitlCalled, "HITL approval must NOT be requested for unrestricted preset run by admin")
+	assert.Contains(t, dec.Reason, "Unrestricted")
+
+	// 2. User listed in AdminUserIDs (even if IsAdmin flag was not pre-set)
+	convID2 := "conv-tg-admin-cfg"
+	hitlCalled = false
+	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		ConversationID: convID2,
+		SessionKey:     "telegram:712345678",
+		WorkspaceDir:   wsDir,
+		Preset:         domain.PresetUnrestricted,
+		AgentName:      "admin_agent",
+		Principal: domain.Principal{
+			Kind:      domain.PrincipalUser,
+			Provider:  "telegram",
+			SubjectID: "712345678",
+		},
+		IsAdmin: false,
+	})
+	dec2, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: convID2,
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `python3 -c "print('hello')"`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec2.Decision)
+	assert.False(t, hitlCalled, "HITL approval must NOT be requested when user is in AdminUserIDs")
+	assert.Contains(t, dec2.Reason, "Unrestricted")
+
+	// 3. Agent Owner role
+	convID3 := "conv-owner"
+	hitlCalled = false
+	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		ConversationID: convID3,
+		SessionKey:     "telegram:999999",
+		WorkspaceDir:   wsDir,
+		Preset:         domain.PresetUnrestricted,
+		AgentName:      "admin_agent",
+		Principal: domain.Principal{
+			Kind:      domain.PrincipalUser,
+			Provider:  "telegram",
+			SubjectID: "999999",
+		},
+		Role: domain.AgentRoleOwner,
+	})
+	dec3, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: convID3,
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `python3 -c "print('hello')"`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec3.Decision)
+	assert.False(t, hitlCalled, "HITL approval must NOT be requested for agent owner")
+	assert.Contains(t, dec3.Reason, "Unrestricted")
+
+	// 4. Non-admin caller on unrestricted agent: MUST be downgraded to balanced and trigger HITL on python -c
+	convID4 := "conv-stranger"
+	hitlCalled = false
+	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		ConversationID: convID4,
+		SessionKey:     "telegram:111222333",
+		WorkspaceDir:   wsDir,
+		Preset:         domain.PresetUnrestricted,
+		AgentName:      "admin_agent",
+		Principal: domain.Principal{
+			Kind:      domain.PrincipalUser,
+			Provider:  "telegram",
+			SubjectID: "111222333",
+		},
+		Role:    domain.AgentRolePublic,
+		IsAdmin: false,
+	})
+	dec4, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: convID4,
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `python3 -c "print('hello')"`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec4.Decision) // Because mockHITL approved it
+	assert.True(t, hitlCalled, "HITL approval MUST be requested for non-admin on unrestricted agent (downgraded to balanced)")
+	assert.Equal(t, "Approved by administrator", dec4.Reason)
+
+	// 5. SEC-01: Untracked / unauthenticated request (no turn context registered) -> Fail-closed downgrade to balanced
+	hitlCalled = false
+	dec5, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: "conv-untracked-ghost",
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `python3 -c "print('hello')"`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	// Because it's downgraded to balanced, it triggers HITL approval
+	assert.True(t, hitlCalled, "Untracked caller must fail-closed and trigger HITL, not receive unrestricted autonomy")
+	assert.Equal(t, "Approved by administrator", dec5.Reason)
+
+	// 6. SEC-02: Hard guardrails inviolable even under unrestricted preset for authenticated admin
+	dec6, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "run_command",
+		ConversationID: convID, // Authenticated admin turn from Case 1
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"CommandLine": `pkill -9 agyent`,
+			"Cwd":         wsDir,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec6.Decision, "Anti-self-escalation must block tampering even in unrestricted preset")
+	assert.Contains(t, dec6.Reason, "Privilege Escalation Blocked")
+
+	// 7. SEC-02: Staged code tampering blocked under unrestricted preset for authenticated admin
+	dec7, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:       "write_to_file",
+		ConversationID: convID,
+		WorkspaceDir:   wsDir,
+		Args: map[string]interface{}{
+			"TargetFile":  "hack.py",
+			"CodeContent": "import sqlite3\nconn = sqlite3.connect('/home/user/.agyent/agyent.db')",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec7.Decision, "Staged tampering must be blocked even in unrestricted preset")
+	assert.Contains(t, dec7.Reason, "Staged Privilege Escalation Blocked")
+}
+
+func TestSecurityManager_PrivilegeBoundaryVulnerabilities(t *testing.T) {
+	hitlCalled := false
+	mockHITL := &mockHITLApprovalPort{
+		requestApprovalFn: func(ctx context.Context, req domain.ApprovalRequest) (domain.ApprovalDecision, error) {
+			hitlCalled = true
+			return domain.ApprovalDecision{Approved: true, Action: "allow_once"}, nil
+		},
+	}
+	cfg := config.GetEffectiveSecurityPreset("balanced")
+	cfg.AdminUserIDs = []int64{712345678}
+	mgr := NewManager(cfg, mockHITL, nil)
+	ctx := context.Background()
+	wsDir := t.TempDir()
+
+	adminTurnID := "turn-admin-p0"
+	convID := "conv-admin-p0"
+	mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+		TurnID:         adminTurnID,
+		ConversationID: convID,
+		SessionKey:     "telegram:712345678",
+		WorkspaceDir:   wsDir,
+		Preset:         domain.PresetUnrestricted,
+		AgentName:      "admin_agent",
+		Principal: domain.Principal{
+			Kind:      domain.PrincipalUser,
+			Provider:  "telegram",
+			SubjectID: "712345678",
+		},
+		IsAdmin: true,
+	})
+
+	// =========================================================================
+	// Vulnerability 1 (P0): Control-Plane File Guardrail in Unrestricted Mode
+	// write_to_file and replace_file_content must be DENIED when targeting:
+	// .agents/hooks.json, agyent.db, config.yaml, or daemon paths (.agyent)
+	// even when CodeContent is completely harmless.
+	// =========================================================================
+	t.Run("P0_ControlPlaneFileGuardrail_UnrestrictedMode", func(t *testing.T) {
+		controlPlaneTargets := []string{
+			".agents/hooks.json",
+			filepath.Join(wsDir, ".agents", "hooks.json"),
+			"hooks.json",
+			"agyent.db",
+			"agyent.db-wal",
+			"agyent.db-shm",
+			filepath.Join(wsDir, "agyent.db"),
+			"config.yaml",
+			"config.yml",
+			"config.json",
+			"~/.agyent/config.yaml",
+			filepath.Join(os.Getenv("HOME"), ".agyent", "config.yaml"),
+			"~/.agyent/plugins/bad.py",
+			".agyent/keys.json",
+		}
+
+		for _, target := range controlPlaneTargets {
+			// Test write_to_file
+			decWrite, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "write_to_file",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"TargetFile":  target,
+					"CodeContent": "console.log('harmless user content')",
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, decWrite.Decision, "Targeting %s via write_to_file must be DENIED even in unrestricted mode", target)
+			assert.Contains(t, decWrite.Reason, "Control-Plane Guardrail")
+
+			// Test replace_file_content
+			decReplace, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "replace_file_content",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"TargetFile":         target,
+					"ReplacementContent": "hello world",
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, decReplace.Decision, "Targeting %s via replace_file_content must be DENIED even in unrestricted mode", target)
+			assert.Contains(t, decReplace.Reason, "Control-Plane Guardrail")
+		}
+
+		// Harmless project file must be ALLOWED under unrestricted mode for admin
+		decSafe, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         adminTurnID,
+			ToolName:       "write_to_file",
+			ConversationID: convID,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"TargetFile":  "src/app.py",
+				"CodeContent": "print('hello')",
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionAllow, decSafe.Decision, "Harmless workspace file must be allowed under unrestricted mode")
+
+		// Edge Case 1: Symlink escape attempt to bypass control-plane guardrail
+		hooksDir := filepath.Join(wsDir, ".agents")
+		require.NoError(t, os.MkdirAll(hooksDir, 0755))
+		realHooksFile := filepath.Join(hooksDir, "hooks.json")
+		require.NoError(t, os.WriteFile(realHooksFile, []byte("{}"), 0644))
+
+		symlinkPath := filepath.Join(wsDir, "innocent_symlink.json")
+		_ = os.Remove(symlinkPath)
+		require.NoError(t, os.Symlink(realHooksFile, symlinkPath))
+
+		decSymlink, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         adminTurnID,
+			ToolName:       "write_to_file",
+			ConversationID: convID,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"TargetFile":  symlinkPath,
+				"CodeContent": `{"tampered": true}`,
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionDeny, decSymlink.Decision, "Writing to symlink pointing to hooks.json must be DENIED")
+		assert.Contains(t, decSymlink.Reason, "Control-Plane Guardrail")
+
+		// Edge Case 2: Windows Alternate Data Streams (ADS) suffix evasion attempt
+		for _, adsTarget := range []string{"config.yaml::$DATA", ".agents/hooks.json:$DATA", "agyent.db:stream"} {
+			decADS, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "write_to_file",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"TargetFile":  adsTarget,
+					"CodeContent": "malicious stream",
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, decADS.Decision, "Targeting %s via ADS must be DENIED", adsTarget)
+			assert.Contains(t, decADS.Reason, "Control-Plane Guardrail")
+		}
+
+		// Edge Case 3: Legitimate agent workspace and cognitive memory residing under ~/.agyent must be ALLOWED
+		homeDir, _ := os.UserHomeDir()
+		if homeDir == "" {
+			homeDir = "/home/user"
+		}
+		allowedAgyentPaths := []string{
+			"~/.agyent/workspace-coder/src/app.py",
+			filepath.Join(homeDir, ".agyent", "workspace", "src", "index.ts"),
+			"~/.agyent/agents/dev_agent/memory/2026-09-11.md",
+			filepath.Join(homeDir, ".agyent", "agents", "architect", "workspace", "main.go"),
+		}
+		for _, allowedPath := range allowedAgyentPaths {
+			decWs, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "write_to_file",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"TargetFile":  allowedPath,
+					"CodeContent": "print('legitimate workspace content')",
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionAllow, decWs.Decision, "Writing to agent workspace or memory path '%s' under .agyent must be ALLOWED", allowedPath)
+		}
+	})
+
+	// =========================================================================
+	// Vulnerability 2 (P1): TurnID Binding to Prevent Race Condition
+	// SecurityManager must resolve TurnSecurityContext using req.TurnID first.
+	// =========================================================================
+	t.Run("P1_TurnID_Resolution_And_Binding", func(t *testing.T) {
+		sharedConv := "conv-shared-session"
+		sharedWs := t.TempDir()
+
+		turnUnrestricted := "turn-unrestricted-123"
+		turnBalanced := "turn-balanced-456"
+
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         turnUnrestricted,
+			ConversationID: sharedConv,
+			SessionKey:     "session-shared",
+			WorkspaceDir:   sharedWs,
+			Preset:         domain.PresetUnrestricted,
+			AgentName:      "admin_agent",
+			IsAdmin:        true,
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  "telegram",
+				SubjectID: "712345678",
+			},
+		})
+
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         turnBalanced,
+			ConversationID: sharedConv,
+			SessionKey:     "session-shared",
+			WorkspaceDir:   sharedWs,
+			Preset:         domain.PresetBalanced,
+			AgentName:      "worker_agent",
+			IsAdmin:        false,
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  "telegram",
+				SubjectID: "999888777",
+			},
+		})
+
+		// Evaluating with TurnID: turn-balanced must evaluate under Balanced mode (requiring HITL for python -c)
+		hitlCalled = false
+		decBal, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         turnBalanced,
+			ToolName:       "run_command",
+			ConversationID: sharedConv,
+			WorkspaceDir:   sharedWs,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('test')"`,
+				"Cwd":         sharedWs,
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, hitlCalled, "TurnID turn-balanced must evaluate under balanced preset and trigger HITL")
+		assert.Equal(t, domain.DecisionAllow, decBal.Decision)
+
+		// Evaluating with TurnID: turn-unrestricted must evaluate under Unrestricted mode (no HITL)
+		hitlCalled = false
+		decUnres, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         turnUnrestricted,
+			ToolName:       "run_command",
+			ConversationID: sharedConv,
+			WorkspaceDir:   sharedWs,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('test')"`,
+				"Cwd":         sharedWs,
+			},
+		})
+		require.NoError(t, err)
+		assert.False(t, hitlCalled, "TurnID turn-unrestricted must evaluate under unrestricted preset with no HITL")
+		assert.Equal(t, domain.DecisionAllow, decUnres.Decision)
+
+		// Non-existent TurnID falls back to ConversationID / WorkspaceDir
+		hitlCalled = false
+		decFallback, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         "turn-nonexistent",
+			ToolName:       "run_command",
+			ConversationID: sharedConv,
+			WorkspaceDir:   sharedWs,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('test')"`,
+				"Cwd":         sharedWs,
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, domain.DecisionAllow, decFallback.Decision)
+
+		// Edge Case: Untracked request with SessionKey without registered turn must downgrade to balanced
+		hitlCalled = false
+		decUntrackedSession, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			SessionKey:   "untracked-session-999",
+			ToolName:     "run_command",
+			WorkspaceDir: sharedWs,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('untracked-session')"`,
+				"Cwd":         sharedWs,
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, hitlCalled, "Untracked request with SessionKey must be downgraded to balanced and trigger HITL")
+		assert.Equal(t, domain.DecisionAllow, decUntrackedSession.Decision)
+	})
+
+	// =========================================================================
+	// Vulnerability 3 (P2): Principal Kind Check in isTurnAdmin
+	// String matching on "admin" or "superadmin" is only valid if Kind == PrincipalSystem.
+	// Arbitrary PrincipalUser named "admin" or "superadmin" must NOT be treated as admin.
+	// =========================================================================
+	t.Run("P2_PrincipalKind_AdminCheck", func(t *testing.T) {
+		// Case 1: PrincipalUser named "admin", IsAdmin: false -> Must NOT be admin (downgraded to balanced, triggers HITL)
+		userAdminTurn := "turn-user-named-admin"
+		userAdminConv := "conv-user-named-admin"
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         userAdminTurn,
+			ConversationID: userAdminConv,
+			SessionKey:     "session-user-admin",
+			WorkspaceDir:   wsDir,
+			Preset:         domain.PresetUnrestricted,
+			AgentName:      "admin_agent",
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  "slack",
+				SubjectID: "admin",
+			},
+			IsAdmin: false,
+		})
+
+		hitlCalled = false
+		dec1, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         userAdminTurn,
+			ToolName:       "run_command",
+			ConversationID: userAdminConv,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('user-admin')"`,
+				"Cwd":         wsDir,
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, hitlCalled, "PrincipalUser named 'admin' with IsAdmin=false must NOT be granted unrestricted autonomy")
+		assert.Equal(t, "Approved by administrator", dec1.Reason)
+
+		// Case 2: PrincipalUser named "superadmin", IsAdmin: false -> Must NOT be admin
+		userSuperadminTurn := "turn-user-named-superadmin"
+		userSuperadminConv := "conv-user-named-superadmin"
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         userSuperadminTurn,
+			ConversationID: userSuperadminConv,
+			SessionKey:     "session-user-superadmin",
+			WorkspaceDir:   wsDir,
+			Preset:         domain.PresetUnrestricted,
+			AgentName:      "admin_agent",
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalUser,
+				Provider:  "telegram",
+				SubjectID: "superadmin",
+			},
+			IsAdmin: false,
+		})
+
+		hitlCalled = false
+		dec2, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         userSuperadminTurn,
+			ToolName:       "run_command",
+			ConversationID: userSuperadminConv,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('user-superadmin')"`,
+				"Cwd":         wsDir,
+			},
+		})
+		require.NoError(t, err)
+		assert.True(t, hitlCalled, "PrincipalUser named 'superadmin' with IsAdmin=false must NOT be granted unrestricted autonomy")
+		assert.Equal(t, "Approved by administrator", dec2.Reason)
+
+		// Case 3: PrincipalSystem named "superadmin" -> Must BE treated as admin (no HITL)
+		sysSuperadminTurn := "turn-sys-superadmin"
+		sysSuperadminConv := "conv-sys-superadmin"
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         sysSuperadminTurn,
+			ConversationID: sysSuperadminConv,
+			SessionKey:     "session-sys-superadmin",
+			WorkspaceDir:   wsDir,
+			Preset:         domain.PresetUnrestricted,
+			AgentName:      "system_daemon",
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalSystem,
+				Provider:  "system",
+				SubjectID: "superadmin",
+			},
+		})
+
+		hitlCalled = false
+		dec3, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         sysSuperadminTurn,
+			ToolName:       "run_command",
+			ConversationID: sysSuperadminConv,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('system-superadmin')"`,
+				"Cwd":         wsDir,
+			},
+		})
+		require.NoError(t, err)
+		assert.False(t, hitlCalled, "PrincipalSystem with SubjectID 'superadmin' must be granted unrestricted autonomy without HITL")
+		assert.Equal(t, domain.DecisionAllow, dec3.Decision)
+		assert.Contains(t, dec3.Reason, "Unrestricted")
+
+		// Case 4: PrincipalSystem named "admin" -> Must BE treated as admin (no HITL)
+		sysAdminTurn := "turn-sys-admin"
+		sysAdminConv := "conv-sys-admin"
+		mgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         sysAdminTurn,
+			ConversationID: sysAdminConv,
+			SessionKey:     "session-sys-admin",
+			WorkspaceDir:   wsDir,
+			Preset:         domain.PresetUnrestricted,
+			AgentName:      "system_daemon",
+			Principal: domain.Principal{
+				Kind:      domain.PrincipalSystem,
+				Provider:  "system",
+				SubjectID: "admin",
+			},
+		})
+
+		hitlCalled = false
+		dec4, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+			TurnID:         sysAdminTurn,
+			ToolName:       "run_command",
+			ConversationID: sysAdminConv,
+			WorkspaceDir:   wsDir,
+			Args: map[string]interface{}{
+				"CommandLine": `python3 -c "print('system-admin')"`,
+				"Cwd":         wsDir,
+			},
+		})
+		require.NoError(t, err)
+		assert.False(t, hitlCalled, "PrincipalSystem with SubjectID 'admin' must be granted unrestricted autonomy without HITL")
+		assert.Equal(t, domain.DecisionAllow, dec4.Decision)
+	})
+
+	// =========================================================================
+	// Vulnerability 4 (P2): Folder Deletion Protection for ~/.agyent
+	// Commands attempting to delete or alter ~/.agyent as a whole must be DENIED.
+	// =========================================================================
+	t.Run("P2_FolderDeletionProtection_AgyentHome", func(t *testing.T) {
+		deletionCommands := []string{
+			"rm -rf ~/.agyent",
+			"rm -rf ~/.agyent/",
+			"rm -rf /home/user/.agyent",
+			"rm -r .agyent",
+			"rmdir ~/.agyent",
+			"rmdir .agyent",
+			"del /s /q .agyent",
+			"del /s /q \".agyent\"",
+			"mv ~/.agyent /tmp/backup_agyent",
+			"Remove-Item -Recurse ~/.agyent",
+			"Remove-Item -Force -Recurse ~/.agyent",
+			"Move-Item ~/.agyent /tmp/backup_agyent",
+		}
+
+		for _, cmd := range deletionCommands {
+			decCmd, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "run_command",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"CommandLine": cmd,
+					"Cwd":         wsDir,
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionDeny, decCmd.Decision, "Command '%s' attempting to delete/alter .agyent must be DENIED across all presets", cmd)
+			assert.Contains(t, decCmd.Reason, "Privilege Escalation Blocked")
+		}
+
+		// Harmless operations on files with .agyent extension must NOT be false-positively blocked
+		harmlessCommands := []string{
+			"rm test.agyent",
+			"rm -f project.agyent",
+			"del data.agyent",
+			"mv notes.agyent /tmp/notes.bak",
+		}
+		for _, cmd := range harmlessCommands {
+			decSafeCmd, err := mgr.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+				TurnID:         adminTurnID,
+				ToolName:       "run_command",
+				ConversationID: convID,
+				WorkspaceDir:   wsDir,
+				Args: map[string]interface{}{
+					"CommandLine": cmd,
+					"Cwd":         wsDir,
+				},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, domain.DecisionAllow, decSafeCmd.Decision, "Command '%s' on file with .agyent extension must not be falsely blocked", cmd)
+		}
+	})
+}
+
 

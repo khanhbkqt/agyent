@@ -116,6 +116,7 @@ type SecurityDecision struct {
 
 // ToolEvaluationRequest represents an incoming tool execution intercept.
 type ToolEvaluationRequest struct {
+	TurnID         string                 `json:"turn_id,omitempty"`
 	SessionKey     string                 `json:"session_key,omitempty"`
 	Role           string                 `json:"role,omitempty"`
 	ToolName       string                 `json:"tool_name"`
@@ -131,6 +132,8 @@ type ToolEvaluationRequest struct {
 type TurnSecurityContext struct {
 	TurnID         string         `json:"turn_id"`
 	Principal      Principal      `json:"principal"`
+	IsAdmin        bool           `json:"is_admin,omitempty"`
+	Role           AgentRole      `json:"role,omitempty"`
 	Action         Action         `json:"action"`
 	Resource       Resource       `json:"resource"`
 	ConversationID string         `json:"conversation_id"`

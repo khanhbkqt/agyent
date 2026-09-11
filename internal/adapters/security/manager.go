@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,10 +28,54 @@ import (
 var sensitiveCommandRegex = regexp.MustCompile(`(?i)\b(rm|del|erase|rmdir|rd|git\s+(push|reset|clean)|chmod|chown|sudo|icacls|takeown|curl|wget|nc|ncat|scp|ssh|docker\s+(run|exec|stop|rm)|npm\s+(publish|install\s+-g)|pip\s+install|cargo\s+install|go\s+install|python[0-9.]*\s+-[a-zA-Z]*c|node\s+-[a-zA-Z]*e|powershell|pwsh|cmd\.exe|taskkill|kill)\b`)
 
 // Self-escalation and gateway tampering command patterns (forbidden across all managed presets)
-var selfEscalationRegex = regexp.MustCompile(`(?i)(agyent(\.exe)?\s+(agent|agents|a|security|sec|guardrail|init|config)\b|\.agyent[/\\](agyent\.db([.-].*)?|config\.ya?ml|config\.json)|\bagyent\.db([.-].*)?\b|\.agents[/\\]hooks\.json|\.gemini[/\\]config|\b(pkill|killall|taskkill)\s+.*agyent\b)`)
+var selfEscalationRegex = regexp.MustCompile(`(?i)(agyent(\.exe)?\s+(agent|agents|a|security|sec|guardrail|init|config)\b|\b(rm|del|erase|rmdir|rd|mv|remove-item|move-item)\s+(?:.*[\s/\\~"'])?\.agyent\b|\.agyent[/\\](agyent\.db([.-].*)?|config\.ya?ml|config\.json)|\bagyent\.db([.-].*)?\b|\.agents[/\\]hooks\.json|\.gemini[/\\]config|\b(pkill|killall|taskkill)\s+.*agyent\b)`)
 
 func isSelfEscalationCommand(cmd string) bool {
 	return selfEscalationRegex.MatchString(cmd)
+}
+
+func isControlPlaneTarget(target string) bool {
+	if target == "" {
+		return false
+	}
+	norm := strings.ToLower(filepath.ToSlash(filepath.Clean(strings.TrimSpace(target))))
+	base := filepath.Base(norm)
+
+	// Strip Windows Alternate Data Stream (ADS) suffix if present (e.g. "config.yaml::$DATA" -> "config.yaml")
+	if colonIdx := strings.Index(base, ":"); colonIdx != -1 {
+		base = base[:colonIdx]
+	}
+
+	// 1. Hook configuration files (.agents/hooks.json, .gemini/config/hooks.json, hooks.json)
+	if strings.HasSuffix(norm, "/.agents/hooks.json") || norm == ".agents/hooks.json" || strings.Contains(norm, ".agents/hooks.json") ||
+		strings.HasSuffix(norm, "/.gemini/config/hooks.json") || norm == ".gemini/config/hooks.json" || base == "hooks.json" {
+		return true
+	}
+
+	// 2. Gateway database files (agyent.db, agyent.db-wal, agyent.db-shm, etc.)
+	if base == "agyent.db" || strings.HasPrefix(base, "agyent.db-") || strings.HasPrefix(base, "agyent.db.") || strings.Contains(norm, "agyent.db") {
+		return true
+	}
+
+	// 3. Daemon configuration paths (.agyent directory and daemon files/plugins within)
+	// Differentiate control plane from agent cognitive memory and agent workspaces residing under ~/.agyent
+	isAgentDataOrWorkspace := (strings.Contains(norm, "/.agyent/workspace") || strings.HasPrefix(norm, ".agyent/workspace") ||
+		((strings.Contains(norm, "/.agyent/agents/") || strings.HasPrefix(norm, ".agyent/agents/")) && (strings.Contains(norm, "/memory/") || strings.Contains(norm, "/workspace/")))) &&
+		!strings.Contains(norm, "/plugins/") && !strings.Contains(norm, "/hooks/")
+
+	if !isAgentDataOrWorkspace {
+		if strings.Contains(norm, "/.agyent") || strings.HasPrefix(norm, ".agyent") || strings.Contains(norm, "~/.agyent") {
+			return true
+		}
+	}
+
+	// 4. Gateway daemon configuration files (config.yaml, config.yml, or root/daemon config.json)
+	if base == "config.yaml" || base == "config.yml" || norm == "config.json" ||
+		strings.HasSuffix(norm, "/.agyent/config.json") || strings.HasSuffix(norm, "/config.yaml") || strings.HasSuffix(norm, "/config.yml") {
+		return true
+	}
+
+	return false
 }
 
 // ExtractBaseCommand extracts the primary binary/executable name from a command line string.
@@ -178,14 +223,45 @@ func (m *Manager) getEvaluatorBundle(preset domain.SecurityPreset) *presetEvalua
 	return buildEvaluatorBundle(m.defaultCfg)
 }
 
+func (m *Manager) isTurnAdmin(turnCtx domain.TurnSecurityContext) bool {
+	if turnCtx.IsAdmin {
+		return true
+	}
+	if turnCtx.Role == domain.AgentRoleOwner || turnCtx.Role == domain.AgentRoleAdmin {
+		return true
+	}
+	if turnCtx.Principal.Kind == domain.PrincipalSystem {
+		if strings.EqualFold(turnCtx.Principal.SubjectID, "superadmin") || strings.EqualFold(turnCtx.Principal.SubjectID, "admin") {
+			return true
+		}
+	}
+	if id, err := strconv.ParseInt(turnCtx.Principal.SubjectID, 10, 64); err == nil {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		for _, adminID := range m.defaultCfg.AdminUserIDs {
+			if adminID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EvaluateToolCall intercepts any tool call synchronously before substrate execution.
 func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error) {
 	start := time.Now()
 
 	m.totalEvaluations.Add(1)
 
-	// Resolve the active turn's security context (preset and session)
-	turnCtx, hasTurn := m.ResolveTurnContext(req.ConversationID, req.WorkspaceDir)
+	// Resolve the active turn's security context (prefer TurnID to prevent race conditions across turns)
+	var turnCtx domain.TurnSecurityContext
+	var hasTurn bool
+	if req.TurnID != "" {
+		turnCtx, hasTurn = m.ResolveTurnByID(req.TurnID)
+	}
+	if !hasTurn {
+		turnCtx, hasTurn = m.ResolveTurnContext(req.ConversationID, req.WorkspaceDir)
+	}
 
 	m.mu.RLock()
 	preset := m.defaultPreset
@@ -199,13 +275,85 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 	if sessionKey == "" && hasTurn {
 		sessionKey = turnCtx.SessionKey
 	}
+	role := req.Role
+	if role == "" && hasTurn {
+		role = string(turnCtx.Role)
+	}
 
-	// 0. If Preset is Unrestricted -> Allow 100% of tool calls only for authenticated SuperAdmin/System
+	// 0. If Preset is Unrestricted -> Allow 100% of tool calls only for authenticated SuperAdmin/System/Admin
 	if preset == domain.PresetUnrestricted {
-		if hasTurn && turnCtx.Principal.SubjectID != "" && turnCtx.Principal.Kind != domain.PrincipalSystem && turnCtx.Principal.SubjectID != "superadmin" && turnCtx.Principal.SubjectID != "admin" {
-			// Non-admin worker agents cannot run in unrestricted mode; downgrade to balanced preset
+		isUntrackedRequest := (req.TurnID != "" || req.ConversationID != "" || req.WorkspaceDir != "" || req.SessionKey != "") && !hasTurn
+		if (hasTurn && !m.isTurnAdmin(turnCtx)) || isUntrackedRequest {
+			// Non-admin or untracked callers cannot run in unrestricted mode; downgrade to balanced preset
 			preset = domain.PresetBalanced
 		} else {
+			// Inviolable Hard Guardrail: Anti-self-escalation is strictly enforced across all presets
+			if req.ToolName == "run_command" {
+				if cmd, ok := req.Args["CommandLine"].(string); ok && isSelfEscalationCommand(cmd) {
+					return domain.SecurityDecision{
+						Decision: domain.DecisionDeny,
+						Reason:   fmt.Sprintf("🛡️ [Security Gate - Privilege Escalation Blocked]: Execution of administrative command '%s' to alter agyent configuration or security presets is strictly forbidden from an AI agent session", cmd),
+					}, nil
+				}
+			} else if req.ToolName == "write_to_file" || req.ToolName == "replace_file_content" {
+				targetFile, _ := req.Args["TargetFile"].(string)
+				if targetFile == "" {
+					targetFile, _ = req.Args["target_file"].(string)
+				}
+				if targetFile == "" {
+					targetFile, _ = req.Args["targetFile"].(string)
+				}
+				if targetFile == "" {
+					targetFile, _ = req.Args["FilePath"].(string)
+				}
+				if targetFile == "" {
+					targetFile, _ = req.Args["file_path"].(string)
+				}
+				if targetFile == "" {
+					targetFile, _ = req.Args["Path"].(string)
+				}
+				if targetFile == "" {
+					targetFile, _ = req.Args["path"].(string)
+				}
+
+				ws := req.WorkspaceDir
+				if ws == "" && hasTurn {
+					ws = turnCtx.WorkspaceDir
+				}
+				expandedTarget, _ := config.ExpandPath(targetFile)
+				if expandedTarget == "" {
+					expandedTarget = targetFile
+				}
+				var absTarget string
+				if filepath.IsAbs(expandedTarget) {
+					absTarget = filepath.Clean(expandedTarget)
+				} else if ws != "" {
+					absTarget = filepath.Clean(filepath.Join(ws, expandedTarget))
+				}
+				var canonTarget string
+				if absTarget != "" {
+					canonTarget = pathjail.ResolveSymlinksAndCanonicalize(absTarget)
+				}
+
+				if isControlPlaneTarget(targetFile) || (canonTarget != "" && isControlPlaneTarget(canonTarget)) {
+					return domain.SecurityDecision{
+						Decision: domain.DecisionDeny,
+						Reason:   fmt.Sprintf("🛡️ [Security Gate - Control-Plane Guardrail]: Modification of protected control-plane or configuration file '%s' is strictly forbidden across all presets", targetFile),
+					}, nil
+				}
+
+				content, _ := req.Args["CodeContent"].(string)
+				if content == "" {
+					content, _ = req.Args["ReplacementContent"].(string)
+				}
+				if isSelfEscalationCommand(content) {
+					return domain.SecurityDecision{
+						Decision: domain.DecisionDeny,
+						Reason:   "🛡️ [Security Gate - Staged Privilege Escalation Blocked]: Attempted to write code containing forbidden references to agyent gateway database, configuration, or administrative commands",
+					}, nil
+				}
+			}
+
 			m.recordApproved()
 			return domain.SecurityDecision{
 				Decision:  domain.DecisionAllow,
@@ -246,7 +394,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 				break
 			}
 		}
-		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmd, ws, cwd, bundle, extraPaths...)
+		decision, err = m.evaluateCommandWithBundle(ctx, sessionKey, role, cmd, ws, cwd, bundle, extraPaths...)
 
 	case "view_file", "write_to_file", "replace_file_content", "list_dir", "grep_search", "find_by_name":
 		targetPath, _ := req.Args["TargetFile"].(string)
@@ -449,7 +597,7 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		}
 
 	case "invoke_subagent", "define_subagent":
-		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, req.Role, 0)
+		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, role, 0)
 
 	default:
 		// Check if it's an MCP tool (starts with mcp__ or call_mcp_tool)

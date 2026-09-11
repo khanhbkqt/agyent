@@ -124,7 +124,9 @@ func (s *Service) ExecuteTurn(
 	}
 
 	// 3. Enforce Safety Overrides on Privileged Flags and Viewer Role
+	var resolvedRole domain.AgentRole
 	if role, err := s.policy.ResolveAgentRole(ctx, principal, resource.AgentName); err == nil {
+		resolvedRole = role
 		if role == domain.AgentRoleViewer {
 			req.Mode = "plan"
 		}
@@ -136,6 +138,7 @@ func (s *Service) ExecuteTurn(
 			isSuperAdmin = true
 		}
 	}
+	isAdmin := isSuperAdmin || resolvedRole == domain.AgentRoleOwner || resolvedRole == domain.AgentRoleAdmin
 	if req.DangerouslySkipPermissions && !isSuperAdmin {
 		s.logger.WarnContext(ctx, "Stripping dangerously_skip_permissions flag for non-admin principal",
 			"principal", principal.SubjectID,
@@ -264,6 +267,8 @@ func (s *Service) ExecuteTurn(
 			ConversationID: req.ConversationID,
 			SessionKey:     sessionKey,
 			Principal:      principal,
+			IsAdmin:        isAdmin,
+			Role:           resolvedRole,
 			Action:         action,
 			Resource:       resource,
 			WorkspaceDir:   req.WorkspaceDir,

@@ -5,6 +5,22 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.58] - 2026-09-11
+
+### Fixed
+- **Privilege Boundary & Security Guardrail Hardening (`security`, `domain`, `ipc`, `pathjail`):**
+  - **P0 Control-Plane File Guardrail in Unrestricted Mode:** Enforced hard guardrail in `SecurityManager.EvaluateToolCall` blocking any `write_to_file` or `replace_file_content` targeting `.agents/hooks.json`, `agyent.db*`, `config.yaml`, or daemon configuration paths (`.agyent`) even under `unrestricted` preset with harmless content. Evaluates canonical symlink targets to defeat symlink bypasses, strips Windows Alternate Data Streams (ADS), and differentiates agent workspaces/cognitive memory under `~/.agyent` from true control-plane assets.
+  - **P1 TurnID Binding & Race Condition Prevention:** Added `TurnID` to `domain.ToolEvaluationRequest`, populated it in hook IPC server, and prioritized `ResolveTurnByID(req.TurnID)` over conversation/workspace fallbacks to prevent race conditions during concurrent turns. Closed untracked session bypasses.
+  - **P2 Principal Kind Enforcement in Administrator Checks:** Restricted string literal matches (`"admin"` and `"superadmin"`) in `SecurityManager.isTurnAdmin` strictly to `PrincipalSystem` kinds, blocking spoofing by arbitrary `PrincipalUser` subjects without verified `IsAdmin`, role, or `admin_user_ids`.
+  - **P2 Folder Deletion Protection for `~/.agyent`:** Updated `selfEscalationRegex` to unconditionally block shell deletion/alteration commands (`rm -rf`, `rmdir`, `del`, `mv`, `Remove-Item`, `Move-Item`) targeting the daemon configuration directory (`~/.agyent`), while eliminating regex false positives on files with `.agyent` extensions.
+- **Unrestricted Security Preset Administrative Evaluation (`security`, `execution`, `engine`):**
+  - Resolved an issue where agents configured with `security_preset: "unrestricted"` were incorrectly downgraded to `balanced` for real users because `SecurityManager` checked string literals (`SubjectID != "admin"` and `SubjectID != "superadmin"`), which failed to match platform user IDs (e.g. numeric Telegram user IDs).
+  - Propagated verified administrative status (`IsAdmin`) and agent ownership (`Role`) through `TurnSecurityContext` from `execution.Service`, `Engine`, and engine recovery routines.
+  - Added multi-factor administrator evaluation in `SecurityManager.isTurnAdmin` checking `TurnSecurityContext.IsAdmin`, agent owner/admin roles, system principals, and configured `admin_user_ids`.
+  - Eliminated unwanted HITL approval prompts when running Python commands (`python -c`, `python3 -c`, `pip install`, etc.) in unrestricted preset for authenticated administrators, while preserving fail-closed downgrade protection for unprivileged callers.
+
+---
+
 ## [1.0.57] - 2026-09-10
 
 ### Added
