@@ -164,12 +164,12 @@ func TestAutoCompactWatchdog(t *testing.T) {
 	defer cleanup()
 
 	cfg.AGY.AutoCompact = true
-	cfg.AGY.CompactThresholdRatio = 0.70
+	cfg.AGY.CompactThresholdRatio = 0.90
 
 	ctx := context.Background()
 	require.NoError(t, eng.Start(ctx))
 
-	// Setup mock runner to return usage exceeding compact threshold (threshold is 70% of 1M = 734k tokens)
+	// Setup mock runner to return usage exceeding compact threshold (threshold is 90% of 2M = 1,887,436 tokens)
 	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
 		// If request is synthesis prompt, return summary
 		if strings.Contains(req.Prompt, "Executive Continuity Digest") || strings.Contains(req.Prompt, "Continuity Digest") {
@@ -186,9 +186,9 @@ func TestAutoCompactWatchdog(t *testing.T) {
 			ResponseText:   "Finished heavy task with high tokens",
 			DurationSec:    0.2,
 			Usage: domain.TokenUsage{
-				InputTokens:  780000, // Exceeds 734,003 threshold
+				InputTokens:  1950000, // Exceeds 1,887,436 threshold
 				OutputTokens: 1500,
-				TotalTokens:  781500,
+				TotalTokens:  1951500,
 			},
 		}, nil
 	}

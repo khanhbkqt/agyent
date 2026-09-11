@@ -100,7 +100,7 @@ func ParseModelsOutput(output string) []domain.ModelCapability {
 			Aliases:               aliases,
 			SupportedEfforts:      grp.efforts,
 			DefaultEffort:         defaultEffort,
-			CompactThresholdRatio: 0.70,
+			CompactThresholdRatio: 0.90,
 		}
 		capObj.MaxContextTokens = capObj.EffectiveMaxContext()
 		capObj.MaxOutputTokens = capObj.EffectiveMaxOutput()

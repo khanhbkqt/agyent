@@ -213,32 +213,32 @@ func TestModelCapability_ContextAndThresholds(t *testing.T) {
 	// Test Default Capabilities
 	capGemini, _, ok := domain.LookupModelCapability("flash", nil)
 	assert.True(t, ok)
-	assert.Equal(t, 1048576, capGemini.EffectiveMaxContext())
+	assert.Equal(t, 2097152, capGemini.EffectiveMaxContext())
 	assert.Equal(t, 65536, capGemini.EffectiveMaxOutput())
-	assert.Equal(t, 734003, capGemini.EffectiveCompactThreshold())
+	assert.Equal(t, 1887436, capGemini.EffectiveCompactThreshold())
 
 	capClaude, _, ok := domain.LookupModelCapability("claude", nil)
 	assert.True(t, ok)
 	assert.Equal(t, 200000, capClaude.EffectiveMaxContext())
 	assert.Equal(t, 8192, capClaude.EffectiveMaxOutput())
-	assert.Equal(t, 140000, capClaude.EffectiveCompactThreshold())
+	assert.Equal(t, 180000, capClaude.EffectiveCompactThreshold())
 
 	capGPT, _, ok := domain.LookupModelCapability("gpt-oss", nil)
 	assert.True(t, ok)
 	assert.Equal(t, 128000, capGPT.EffectiveMaxContext())
 	assert.Equal(t, 16384, capGPT.EffectiveMaxOutput())
-	assert.Equal(t, 89600, capGPT.EffectiveCompactThreshold())
+	assert.Equal(t, 115200, capGPT.EffectiveCompactThreshold())
 
 	// Test Fallback for dynamic/custom capability with zero values
 	emptyCap := domain.ModelCapability{ID: "custom-claude-variant"}
 	assert.Equal(t, 200000, emptyCap.EffectiveMaxContext())
 	assert.Equal(t, 8192, emptyCap.EffectiveMaxOutput())
-	assert.Equal(t, 140000, emptyCap.EffectiveCompactThreshold())
+	assert.Equal(t, 180000, emptyCap.EffectiveCompactThreshold())
 
 	genericCap := domain.ModelCapability{ID: "unknown-custom-model"}
-	assert.Equal(t, 1048576, genericCap.EffectiveMaxContext())
+	assert.Equal(t, 2097152, genericCap.EffectiveMaxContext())
 	assert.Equal(t, 65536, genericCap.EffectiveMaxOutput())
-	assert.Equal(t, 734003, genericCap.EffectiveCompactThreshold())
+	assert.Equal(t, 1887436, genericCap.EffectiveCompactThreshold())
 }
 
 func TestIsEffortError(t *testing.T) {

@@ -521,7 +521,7 @@ func (e *Engine) handleTokensCommand(ctx context.Context, session *domain.Sessio
 		utilizationPct := float64(latestLog.Usage.InputTokens) / float64(maxContext) * 100.0
 		thresholdPct := capability.CompactThresholdRatio * 100.0
 		if thresholdPct <= 0 {
-			thresholdPct = 70.0
+			thresholdPct = 90.0
 		}
 
 		sb.WriteString("📐 **Active Turn Context Window:**\n")

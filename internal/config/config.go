@@ -297,7 +297,7 @@ func DefaultConfig() *Config {
 			StreamingEnabled:                 true,
 			StreamingThrottleIntervalSeconds: 1.5,
 			AutoCompact:                      true,
-			CompactThresholdRatio:            0.70,
+			CompactThresholdRatio:            0.90,
 			QueueMode:                        "fifo",
 			AppendStrategy:                   "coalesce",
 			GraceTimeoutSeconds:              3.0,

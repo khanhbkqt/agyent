@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.58] - 2026-09-11
 
+### Changed
+- **Gemini Model Context Window & Auto-Compact Threshold Upgrade (`domain`, `config`, `engine`, `harness`):**
+  - Upgraded `MaxContextTokens` for all Gemini frontier models (`gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.1-pro`, `gemini-3.6-flash`, `gemini-3.5-flash`) from `1,048,576` (1M) to `2,097,152` (2M tokens), aligned with empirical evidence demonstrating seamless >3.13M token handling and prefix KV-cache reuse.
+  - Increased default `CompactThresholdRatio` across domain capabilities, configuration defaults, and parser from `0.70` (70%) to `0.90` (90%).
+  - Shifted Gemini auto-compaction trigger threshold from `734,003` to `1,887,436` input tokens, preventing premature conversation compression while keeping sessions fast and context-rich.
+
 ### Fixed
 - **Privilege Boundary & Security Guardrail Hardening (`security`, `domain`, `ipc`, `pathjail`):**
   - **P0 Control-Plane File Guardrail in Unrestricted Mode:** Enforced hard guardrail in `SecurityManager.EvaluateToolCall` blocking any `write_to_file` or `replace_file_content` targeting `.agents/hooks.json`, `agyent.db*`, `config.yaml`, or daemon configuration paths (`.agyent`) even under `unrestricted` preset with harmless content. Evaluates canonical symlink targets to defeat symlink bypasses, strips Windows Alternate Data Streams (ADS), and differentiates agent workspaces/cognitive memory under `~/.agyent` from true control-plane assets.

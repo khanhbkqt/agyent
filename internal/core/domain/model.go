@@ -12,12 +12,12 @@ type ModelCapability struct {
 	Aliases               []string `json:"aliases"`                 // User-friendly shorthand aliases (e.g. ["flash", "fast", "3.7-flash"])
 	SupportedEfforts      []string `json:"supported_efforts"`       // Supported effort levels (e.g. ["low", "medium", "high"], or empty if --effort is rejected)
 	DefaultEffort         string   `json:"default_effort"`          // Default effort level when none is specified
-	MaxContextTokens      int      `json:"max_context_tokens"`      // Maximum context window size (e.g. 1048576, 200000, 128000)
+	MaxContextTokens      int      `json:"max_context_tokens"`      // Maximum context window size (e.g. 2097152, 200000, 128000)
 	MaxOutputTokens       int      `json:"max_output_tokens"`       // Maximum output generation limit (e.g. 65536, 8192, 16384)
-	CompactThresholdRatio float64  `json:"compact_threshold_ratio"` // Ratio of MaxContextTokens triggering auto-compaction (default: 0.70)
+	CompactThresholdRatio float64  `json:"compact_threshold_ratio"` // Ratio of MaxContextTokens triggering auto-compaction (default: 0.90)
 }
 
-// EffectiveMaxContext returns MaxContextTokens or fallback default 1,048,576.
+// EffectiveMaxContext returns MaxContextTokens or fallback default 2,097,152.
 func (m ModelCapability) EffectiveMaxContext() int {
 	if m.MaxContextTokens > 0 {
 		return m.MaxContextTokens
@@ -29,7 +29,7 @@ func (m ModelCapability) EffectiveMaxContext() int {
 	if strings.Contains(idLower, "gpt") || strings.Contains(idLower, "oss") {
 		return 128000
 	}
-	return 1048576
+	return 2097152
 }
 
 // EffectiveMaxOutput returns MaxOutputTokens or fallback default 65,536 (or 8192 for Claude, 16384 for GPT).
@@ -51,7 +51,7 @@ func (m ModelCapability) EffectiveMaxOutput() int {
 func (m ModelCapability) EffectiveCompactThreshold() int {
 	ratio := m.CompactThresholdRatio
 	if ratio <= 0 || ratio > 1.0 {
-		ratio = 0.70
+		ratio = 0.90
 	}
 	return int(float64(m.EffectiveMaxContext()) * ratio)
 }
@@ -64,9 +64,9 @@ var DefaultModelCapabilities = []ModelCapability{
 		Aliases:               []string{"flash", "fast", "3.8", "3.8-flash", "gemini-3.8", "gemini-flash"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
-		MaxContextTokens:      1048576,
+		MaxContextTokens:      2097152,
 		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "gemini-3.7-flash",
@@ -74,9 +74,9 @@ var DefaultModelCapabilities = []ModelCapability{
 		Aliases:               []string{"3.7", "3.7-flash", "gemini-3.7"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
-		MaxContextTokens:      1048576,
+		MaxContextTokens:      2097152,
 		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "gemini-3.1-pro",
@@ -84,9 +84,9 @@ var DefaultModelCapabilities = []ModelCapability{
 		Aliases:               []string{"pro", "smart", "3.1-pro", "gemini-pro"},
 		SupportedEfforts:      []string{"low", "high"}, // Note: gemini-3.1-pro has NO "medium" effort in agy
 		DefaultEffort:         "high",
-		MaxContextTokens:      1048576,
+		MaxContextTokens:      2097152,
 		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "gemini-3.6-flash",
@@ -94,9 +94,9 @@ var DefaultModelCapabilities = []ModelCapability{
 		Aliases:               []string{"3.6-flash", "gemini-3.6"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
-		MaxContextTokens:      1048576,
+		MaxContextTokens:      2097152,
 		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "gemini-3.5-flash",
@@ -104,9 +104,9 @@ var DefaultModelCapabilities = []ModelCapability{
 		Aliases:               []string{"3.5-flash", "gemini-3.5"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
-		MaxContextTokens:      1048576,
+		MaxContextTokens:      2097152,
 		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "claude-sonnet-4-6",
@@ -116,7 +116,7 @@ var DefaultModelCapabilities = []ModelCapability{
 		DefaultEffort:         "",
 		MaxContextTokens:      200000,
 		MaxOutputTokens:       8192,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "claude-opus-4-6-thinking",
@@ -126,7 +126,7 @@ var DefaultModelCapabilities = []ModelCapability{
 		DefaultEffort:         "",
 		MaxContextTokens:      200000,
 		MaxOutputTokens:       8192,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "gpt-oss-120b-medium",
@@ -136,7 +136,7 @@ var DefaultModelCapabilities = []ModelCapability{
 		DefaultEffort:         "",
 		MaxContextTokens:      128000,
 		MaxOutputTokens:       16384,
-		CompactThresholdRatio: 0.70,
+		CompactThresholdRatio: 0.90,
 	},
 }
 

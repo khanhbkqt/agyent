@@ -34,7 +34,7 @@ gpt-oss-120b-medium	GPT-OSS 120B (Medium)
 	assert.Contains(t, flash38.Aliases, "flash")
 	assert.Contains(t, flash38.Aliases, "3.8")
 	assert.Contains(t, flash38.Aliases, "3.8-flash")
-	assert.Equal(t, 1048576, flash38.MaxContextTokens)
+	assert.Equal(t, 2097152, flash38.MaxContextTokens)
 
 	// 2. Check Gemini 3.7 Flash
 	flash := parsed[1]
@@ -44,7 +44,7 @@ gpt-oss-120b-medium	GPT-OSS 120B (Medium)
 	assert.Equal(t, "high", flash.DefaultEffort)
 	assert.Contains(t, flash.Aliases, "3.7")
 	assert.Contains(t, flash.Aliases, "3.7-flash")
-	assert.Equal(t, 1048576, flash.MaxContextTokens)
+	assert.Equal(t, 2097152, flash.MaxContextTokens)
 
 	// 3. Check Gemini 3.1 Pro
 	pro := parsed[2]
