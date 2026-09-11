@@ -2,14 +2,19 @@ package zalo
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
+
+	"agyent/internal/core/ports"
 )
 
 // Throttler enforces per-chat delivery rate limits and flushes chunks smoothly.
 type Throttler struct {
 	client     *Client
 	minDelay   time.Duration
+	sanitizer  ports.OutboundSanitizer
+	mu         sync.RWMutex
 	lastSentMu sync.Mutex
 	lastSent   map[string]time.Time
 	terminalMu sync.Mutex
@@ -27,6 +32,49 @@ func NewThrottler(client *Client, minDelay time.Duration) *Throttler {
 		lastSent: make(map[string]time.Time),
 		terminal: make(map[string]time.Time),
 	}
+}
+
+// SetOutboundSanitizer sets the central outbound DLP sanitizer for Zalo Throttler.
+func (t *Throttler) SetOutboundSanitizer(sanitizer ports.OutboundSanitizer) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sanitizer = sanitizer
+}
+
+// redact applies secret masking and DLP filtering with lookback buffer.
+func (t *Throttler) redact(text string, lookback ...string) string {
+	if t == nil || text == "" {
+		return text
+	}
+	t.mu.RLock()
+	s := t.sanitizer
+	t.mu.RUnlock()
+	if s == nil {
+		return text
+	}
+
+	lb := ""
+	if len(lookback) > 0 {
+		lb = lookback[0]
+	}
+
+	if lb == "" {
+		return s.RedactSecrets(text)
+	}
+
+	combined := lb + text
+	redactedCombined := s.RedactSecrets(combined)
+
+	redactedLB := s.RedactSecrets(lb)
+	if strings.HasPrefix(redactedCombined, redactedLB) {
+		return redactedCombined[len(redactedLB):]
+	}
+
+	idx := 0
+	for idx < len(lb) && idx < len(redactedCombined) && lb[idx] == redactedCombined[idx] {
+		idx++
+	}
+	return redactedCombined[idx:]
 }
 
 const terminalEventRetention = 30 * time.Minute
@@ -61,13 +109,22 @@ func (t *Throttler) SendThrottled(ctx context.Context, req SendMessageRequest, c
 		return nil
 	}
 
-	chunks := ChunkZaloMessage(req.Text)
+	fullText := t.redact(req.Text)
+	chunks := ChunkZaloMessage(fullText)
 	if len(chunks) == 0 {
 		return nil
 	}
 
+	lookback := ""
 	for i, chunk := range chunks {
 		t.waitForSlot(ctx, req.ChatID)
+
+		chunk = t.redact(chunk, lookback)
+		if len(chunk) > 64 {
+			lookback = chunk[len(chunk)-64:]
+		} else {
+			lookback = chunk
+		}
 
 		chunkReq := req
 		chunkReq.Text = chunk

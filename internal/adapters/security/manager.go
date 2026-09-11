@@ -1075,6 +1075,12 @@ func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, outpu
 	return bundle.sanitizerEval.RedactSecrets(output), nil
 }
 
+// RedactSecrets masks detected API keys and secrets within text for outbound channels.
+func (m *Manager) RedactSecrets(text string) string {
+	bundle := m.getEvaluatorBundle(m.defaultPreset)
+	return bundle.sanitizerEval.RedactSecrets(text)
+}
+
 // HasWildcardGrant checks if the active session has an active wildcard (*) grant.
 func (m *Manager) HasWildcardGrant(sessionKey string) bool {
 	if sessionKey == "" {

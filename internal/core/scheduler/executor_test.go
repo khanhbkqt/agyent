@@ -286,6 +286,9 @@ func (m *mockSecurityManager) EvaluateURL(ctx context.Context, urlStr string) (d
 func (m *mockSecurityManager) SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error) {
 	return output, nil
 }
+func (m *mockSecurityManager) RedactSecrets(text string) string {
+	return text
+}
 func (m *mockSecurityManager) GrantSessionPermission(sessionKey string, pattern string) {}
 func (m *mockSecurityManager) HasWildcardGrant(sessionKey string) bool                  { return false }
 func (m *mockSecurityManager) GetSessionGrants(sessionKey string) []domain.SessionGrant { return nil }
