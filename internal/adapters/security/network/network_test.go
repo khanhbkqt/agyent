@@ -55,4 +55,22 @@ func TestNetworkEvaluator_SSRFProtection(t *testing.T) {
 	decision, err = evaluator.EvaluateURL("https://api.github.com/repos/google/antigravity")
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAllow, decision.Decision)
+
+	// Test 8: file:// scheme bypass attempt
+	decision, err = evaluator.EvaluateURL("file:///etc/passwd")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "only http and https are permitted")
+
+	// Test 9: gopher:// protocol smuggling attempt
+	decision, err = evaluator.EvaluateURL("gopher://127.0.0.1:6379/_flushall")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "only http and https are permitted")
+
+	// Test 10: Empty scheme or relative URL
+	decision, err = evaluator.EvaluateURL("//example.com/test")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "only http and https are permitted")
 }

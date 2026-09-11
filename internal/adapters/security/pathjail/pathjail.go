@@ -106,17 +106,34 @@ func (e *Evaluator) EvaluatePath(workspaceDir string, targetPath string, isWrite
 	// 3. Resolve Symlinks and canonicalize target path
 	canonTarget := resolveSymlinksAndCanonicalize(absTarget)
 
-	// 4. Control-plane path protection: writing to security hooks or daemon database/config is strictly forbidden
-	if isWrite {
-		if isForbidden, desc := isControlPlaneWriteForbidden(canonTarget); isForbidden {
-			// If target is in manageable files and delegated config is enabled (e.g. config.yaml in developer preset) -> Ask via HITL
-			if allowDelegatedConfig && e.isManageable(canonTarget) && !isHookConfigFile(canonTarget) && !isDaemonDatabaseFile(canonTarget) {
+	// 4. Control-plane path protection: accessing security hooks or daemon database/config
+	if isDaemonDatabaseFile(canonTarget) {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Access to gateway database ('%s') is strictly forbidden", targetPath),
+		}, nil
+	}
+	if isDaemonConfigFile(canonTarget) {
+		if allowDelegatedConfig && e.isManageable(canonTarget) {
+			if isWrite {
 				return domain.SecurityDecision{
 					Decision: domain.DecisionAsk,
 					Reason:   fmt.Sprintf("🛡️ [Security Gate]: Modification to protected configuration file '%s' requires user confirmation.", targetPath),
 				}, nil
 			}
+			return domain.SecurityDecision{
+				Decision: domain.DecisionAsk,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate]: Access to protected configuration file '%s' requires user confirmation.", targetPath),
+			}, nil
+		}
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Access to gateway daemon configuration file ('%s') is strictly forbidden", targetPath),
+		}, nil
+	}
 
+	if isWrite {
+		if isForbidden, desc := isControlPlaneWriteForbidden(canonTarget); isForbidden {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
 				Reason:   fmt.Sprintf("🛡️ [Path Jail - Control Plane Protection]: Modification of %s ('%s') is strictly forbidden", desc, targetPath),
