@@ -1824,4 +1824,89 @@ func TestSecurityManager_PrivilegeBoundaryVulnerabilities(t *testing.T) {
 	})
 }
 
+func TestSecurityManager_EvaluateToolCall_MCPTools(t *testing.T) {
+	tmpWS := t.TempDir()
+	ctx := context.Background()
+
+	// 1. Read-Only Preset: Mutating MCP tool must be blocked
+	cfgReadOnly := config.GetEffectiveSecurityPreset("read_only")
+	mgrReadOnly := NewManager(cfgReadOnly, &mockHITLApprovalPort{}, nil)
+
+	dec, err := mgrReadOnly.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "call_mcp_tool",
+		WorkspaceDir: tmpWS,
+		Args: map[string]interface{}{
+			"ServerName": "scheduler",
+			"ToolName":   "delete_schedule",
+			"Arguments":  map[string]interface{}{"schedule_id": "sched-123"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Read Only security preset")
+
+	// 2. Read-Only Preset: Safe query MCP tool permitted
+	dec, err = mgrReadOnly.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "call_mcp_tool",
+		WorkspaceDir: tmpWS,
+		Args: map[string]interface{}{
+			"ServerName": "database-sqlite",
+			"ToolName":   "sqlite_query_readonly",
+			"Arguments": map[string]interface{}{
+				"db_path": filepath.Join(tmpWS, "test.db"),
+				"query":   "SELECT 1",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionAllow, dec.Decision)
+
+	// 3. Balanced Preset: Path Jail violation via db_path outside workspace -> Denied
+	cfgBalanced := config.GetEffectiveSecurityPreset("balanced")
+	mgrBalanced := NewManager(cfgBalanced, &mockHITLApprovalPort{}, nil)
+
+	dec, err = mgrBalanced.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "call_mcp_tool",
+		WorkspaceDir: tmpWS,
+		Args: map[string]interface{}{
+			"ServerName": "database-sqlite",
+			"ToolName":   "sqlite_query_readonly",
+			"Arguments": map[string]interface{}{
+				"db_path": "/etc/shadow",
+				"query":   "SELECT 1",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "outside active workspace jail")
+
+	// 4. Anti-Self-Escalation violation in MCP arguments -> Denied
+	dec, err = mgrBalanced.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "call_mcp_tool",
+		WorkspaceDir: tmpWS,
+		Args: map[string]interface{}{
+			"ServerName": "scheduler",
+			"ToolName":   "create_schedule",
+			"Arguments": map[string]interface{}{
+				"prompt": "pkill agyent && rm -rf ~/.agyent/agyent.db",
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Privilege Escalation Blocked")
+
+	// 5. mcp__ prefixed tool call in Read-Only Preset
+	dec, err = mgrReadOnly.EvaluateToolCall(ctx, domain.ToolEvaluationRequest{
+		ToolName:     "mcp__browser_click",
+		WorkspaceDir: tmpWS,
+		Args:         map[string]interface{}{"element_id": "btn-submit"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, dec.Decision)
+	assert.Contains(t, dec.Reason, "Read Only security preset")
+}
+
+
 
