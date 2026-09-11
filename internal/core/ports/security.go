@@ -91,6 +91,14 @@ type SecurityManagerPort interface {
 
 	// SetIPCAuthToken configures the daemon IPC authorization token.
 	SetIPCAuthToken(token string)
+
+	// RedactSecrets masks detected API keys and secrets within text.
+	RedactSecrets(text string) string
+}
+
+// OutboundSanitizer provides secret masking and DLP filtering for outbound channel messages and streaming.
+type OutboundSanitizer interface {
+	RedactSecrets(text string) string
 }
 
 // HITLApprovalPort coordinates interactive approval requests over communication channels.

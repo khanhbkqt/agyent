@@ -52,6 +52,7 @@ type Adapter struct {
 	httpServer  *http.Server
 	secretToken string
 	authorizer  InboundAuthorizer
+	sanitizer   ports.OutboundSanitizer
 
 	mu      sync.RWMutex
 	running bool
@@ -201,6 +202,16 @@ func (a *Adapter) SetInboundAuthorizer(authorizer InboundAuthorizer) {
 	a.authorizer = authorizer
 	if a.router != nil {
 		a.router.SetInboundAuthorizer(authorizer)
+	}
+}
+
+// SetOutboundSanitizer sets the outbound sanitizer for DLP and secret redaction.
+func (a *Adapter) SetOutboundSanitizer(sanitizer ports.OutboundSanitizer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sanitizer = sanitizer
+	if a.throttler != nil {
+		a.throttler.SetOutboundSanitizer(sanitizer)
 	}
 }
 
@@ -367,6 +378,9 @@ func (a *Adapter) Start(ctx context.Context, inbound chan<- domain.CanonicalMess
 		streamingOn = a.cfg.AGY.StreamingEnabled
 	}
 	a.throttler = NewDeliveryThrottler(a.bot, a.mediaMgr, throttleInterval, streamingOn, a.getBot)
+	if a.sanitizer != nil {
+		a.throttler.SetOutboundSanitizer(a.sanitizer)
+	}
 	a.router = NewRouter(a.cfg, a.bot, inbound, a.mediaMgr, a.hitlCoord)
 	a.router.SetBotBindings(a.bindAgents)
 	if a.authorizer != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/PaulSonOfLars/gotgbot/v2"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/ports"
 )
 
 // StreamState represents the lifecycle phase of a streaming session.
@@ -29,6 +30,9 @@ const (
 	StateFailed
 )
 
+// LookbackBufferSize is the size in bytes of trailing lookback buffer across flush boundaries.
+const LookbackBufferSize = 64
+
 // StreamSession manages state and buffers for an active streaming turn.
 type StreamSession struct {
 	SessionKey      string
@@ -42,6 +46,7 @@ type StreamSession struct {
 	State           StreamState
 	Buffer          strings.Builder
 	LastSentText    string
+	LookbackBuffer  string
 	CurrentToolName string
 	ActiveAction    string
 	Dirty           bool
@@ -64,6 +69,7 @@ type DeliveryThrottler struct {
 	bot               *gotgbot.Bot
 	botGetter         func(botID int64) *gotgbot.Bot
 	mediaMgr          *MediaManager
+	sanitizer         ports.OutboundSanitizer
 	throttleSeconds   float64
 	streamingOn       bool
 	generationCounter atomic.Uint64
@@ -90,6 +96,52 @@ func NewDeliveryThrottler(bot *gotgbot.Bot, mediaMgr *MediaManager, throttleInte
 		streamingOn:     streamingOn,
 		terminalEvents:  make(map[string]time.Time),
 	}
+}
+
+// SetOutboundSanitizer sets the central outbound DLP sanitizer for DeliveryThrottler.
+func (dt *DeliveryThrottler) SetOutboundSanitizer(sanitizer ports.OutboundSanitizer) {
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+	dt.sanitizer = sanitizer
+}
+
+// redact applies secret masking and DLP filtering, incorporating trailing lookback
+// across chunk boundaries to prevent split secrets from leaking.
+func (dt *DeliveryThrottler) redact(text string, lookback ...string) string {
+	if dt == nil || text == "" {
+		return text
+	}
+	dt.mu.RLock()
+	s := dt.sanitizer
+	dt.mu.RUnlock()
+	if s == nil {
+		return text
+	}
+
+	lb := ""
+	if len(lookback) > 0 {
+		lb = lookback[0]
+	}
+
+	if lb == "" {
+		return s.RedactSecrets(text)
+	}
+
+	// Prepend lookback buffer to detect secrets straddling boundaries
+	combined := lb + text
+	redactedCombined := s.RedactSecrets(combined)
+
+	redactedLB := s.RedactSecrets(lb)
+	if strings.HasPrefix(redactedCombined, redactedLB) {
+		return redactedCombined[len(redactedLB):]
+	}
+
+	// Find divergence index where redaction touched the boundary
+	idx := 0
+	for idx < len(lb) && idx < len(redactedCombined) && lb[idx] == redactedCombined[idx] {
+		idx++
+	}
+	return redactedCombined[idx:]
 }
 
 const terminalEventRetention = 30 * time.Minute
@@ -537,18 +589,20 @@ func (dt *DeliveryThrottler) sendInitialMessage(ctx context.Context, sess *Strea
 
 	sess.Mu.Lock()
 	text := sess.Buffer.String()
+	lookback := sess.LookbackBuffer
 	sess.State = StateStreaming
 	sess.Mu.Unlock()
 
-	if strings.TrimSpace(text) == "" {
+	redactedText := dt.redact(text, lookback)
+	if strings.TrimSpace(redactedText) == "" {
 		return
 	}
 
-	msg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, text)
+	msg := dt.sendMessageWithFallback(bot, sess.ChatID, sess.ThreadID, redactedText)
 	if msg != nil {
 		sess.Mu.Lock()
 		sess.CurrentMsgID = msg.MessageId
-		sess.LastSentText = text
+		sess.LastSentText = redactedText
 		sess.Dirty = (sess.Buffer.String() != text)
 		sess.LastEditTime = time.Now()
 		sess.Mu.Unlock()
@@ -568,6 +622,7 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 	}
 
 	text := sess.Buffer.String()
+	lookback := sess.LookbackBuffer
 	msgID := sess.CurrentMsgID
 	chatID := sess.ChatID
 	threadID := sess.ThreadID
@@ -578,17 +633,19 @@ func (dt *DeliveryThrottler) performThrottledEdit(ctx context.Context, sess *Str
 		return
 	}
 
+	redactedText := dt.redact(text, lookback)
+
 	// Check for Multi-Message Overflow (>SafeTelegramMessageLimit characters during streaming)
-	runeCount := len([]rune(text))
+	runeCount := len([]rune(redactedText))
 	if runeCount > SafeTelegramMessageLimit {
-		dt.handleMultiMessageOverflow(sess, text)
+		dt.handleMultiMessageOverflow(sess, redactedText)
 		return
 	}
 
-	dt.editMessageWithFallback(bot, chatID, threadID, msgID, text, false)
+	dt.editMessageWithFallback(bot, chatID, threadID, msgID, redactedText, false)
 
 	sess.Mu.Lock()
-	sess.LastSentText = text
+	sess.LastSentText = redactedText
 	sess.Dirty = (sess.Buffer.String() != text)
 	sess.LastEditTime = time.Now()
 	sess.Mu.Unlock()
@@ -599,6 +656,11 @@ func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, ful
 	if bot == nil {
 		return
 	}
+	sess.Mu.Lock()
+	lookback := sess.LookbackBuffer
+	sess.Mu.Unlock()
+	fullText = dt.redact(fullText, lookback)
+
 	chunks := SplitMarkdownPreservingCodeBlocks(fullText, SafeTelegramMessageLimit)
 	if len(chunks) < 2 {
 		return
@@ -623,6 +685,14 @@ func (dt *DeliveryThrottler) handleMultiMessageOverflow(sess *StreamSession, ful
 		sess.LastSentText = lastChunk
 		sess.Dirty = false
 		sess.LastEditTime = time.Now()
+
+		// Update 64-char lookback buffer from the penultimate chunk to preserve boundary continuity
+		prevChunk := chunks[len(chunks)-2]
+		if len(prevChunk) > LookbackBufferSize {
+			sess.LookbackBuffer = prevChunk[len(prevChunk)-LookbackBufferSize:]
+		} else {
+			sess.LookbackBuffer = prevChunk
+		}
 		sess.Mu.Unlock()
 	}
 }
@@ -635,6 +705,7 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 
 	sess.Mu.Lock()
 	text := sess.Buffer.String()
+	lookback := sess.LookbackBuffer
 	msgID := sess.CurrentMsgID
 	chatID := sess.ChatID
 	threadID := sess.ThreadID
@@ -647,6 +718,7 @@ func (dt *DeliveryThrottler) flushFinalSession(sess *StreamSession) {
 
 	// Clean any remaining markdown image references or comments before final dispatch
 	cleanedText, extractedMedia := ExtractAndCleanOutboundMedia(text, wsDir, convID)
+	cleanedText = dt.redact(cleanedText, lookback)
 	sess.Mu.Lock()
 	for _, em := range extractedMedia {
 		normPath := filepath.Clean(filepath.FromSlash(em.FilePath))
@@ -708,6 +780,7 @@ func (dt *DeliveryThrottler) editMessageWithFallback(bot *gotgbot.Bot, chatID, t
 	if bot == nil || strings.TrimSpace(text) == "" {
 		return
 	}
+	text = dt.redact(text)
 	formatted := FormatMarkdownToTelegramHTML(text)
 	opts := &gotgbot.EditMessageTextOpts{
 		ChatId:    chatID,
@@ -794,6 +867,7 @@ func (dt *DeliveryThrottler) sendMessageWithFallback(bot *gotgbot.Bot, chatID, t
 	if bot == nil || strings.TrimSpace(text) == "" {
 		return nil
 	}
+	text = dt.redact(text)
 
 	msg := dt.doSendWithRetry(bot, chatID, threadID, text)
 	if msg == nil && dt.bot != nil && bot != dt.bot {

@@ -28,6 +28,10 @@ type urlSafetyEvaluatorSetter interface {
 	SetURLSafetyEvaluator(ports.URLSafetyEvaluator)
 }
 
+type outboundSanitizerSetter interface {
+	SetOutboundSanitizer(ports.OutboundSanitizer)
+}
+
 // Mux aggregates registered channel adapters while preserving their provider
 // boundaries for inbound authorization, media, and HITL approvals.
 type Mux struct {
@@ -151,6 +155,15 @@ func (m *Mux) SetURLSafetyEvaluator(evaluator ports.URLSafetyEvaluator) {
 	for _, named := range m.adapterSnapshot() {
 		if setter, ok := named.adapter.(urlSafetyEvaluatorSetter); ok {
 			setter.SetURLSafetyEvaluator(evaluator)
+		}
+	}
+}
+
+// SetOutboundSanitizer applies the central secret masking and DLP policy to adapters.
+func (m *Mux) SetOutboundSanitizer(sanitizer ports.OutboundSanitizer) {
+	for _, named := range m.adapterSnapshot() {
+		if setter, ok := named.adapter.(outboundSanitizerSetter); ok {
+			setter.SetOutboundSanitizer(sanitizer)
 		}
 	}
 }

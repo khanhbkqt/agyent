@@ -289,8 +289,6 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		_ = securityAdapter.RemoveGlobalHooks(mainLogger)
 		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
-		channelMux.SetURLSafetyEvaluator(secMgr)
-
 		ipcTokenBytes := make([]byte, 32)
 		if _, err := rand.Read(ipcTokenBytes); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to generate crypto random token for IPC: %v\n", err)
@@ -298,6 +296,7 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		}
 		ipcAuthToken := hex.EncodeToString(ipcTokenBytes)
 		secMgr.SetIPCAuthToken(ipcAuthToken)
+		channelMux.SetOutboundSanitizer(secMgr)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
 		ipcServer.SetAuthToken(ipcAuthToken)
 

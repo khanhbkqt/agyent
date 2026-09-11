@@ -56,6 +56,7 @@ type Adapter struct {
 	httpServer *http.Server
 	pollDone   chan struct{}
 	authorizer ports.InboundAuthorizer
+	sanitizer  ports.OutboundSanitizer
 
 	mu sync.RWMutex
 }
@@ -213,6 +214,16 @@ func (a *Adapter) SetURLSafetyEvaluator(evaluator ports.URLSafetyEvaluator) {
 	a.mu.RUnlock()
 	if media != nil {
 		media.SetURLSafetyEvaluator(evaluator)
+	}
+}
+
+// SetOutboundSanitizer sets the central outbound DLP sanitizer for Zalo.
+func (a *Adapter) SetOutboundSanitizer(sanitizer ports.OutboundSanitizer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sanitizer = sanitizer
+	if a.throttler != nil {
+		a.throttler.SetOutboundSanitizer(sanitizer)
 	}
 }
 

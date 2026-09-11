@@ -2,6 +2,10 @@ package zalo_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,3 +39,37 @@ func TestThrottler_Prune(t *testing.T) {
 	pruned = throttler.Prune(10 * time.Millisecond)
 	assert.Equal(t, 2, pruned)
 }
+
+type mockZaloSanitizer struct{}
+
+func (m *mockZaloSanitizer) RedactSecrets(text string) string {
+	if strings.Contains(text, "sk-ant-secret1234567890123456") {
+		return strings.ReplaceAll(text, "sk-ant-secret1234567890123456", "[REDACTED_SECRET]")
+	}
+	return text
+}
+
+func TestThrottler_SendThrottled_SecretRedaction(t *testing.T) {
+	var sentPayload string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sentPayload = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error": 0, "message": "Success", "data": {"message_id": "msg_001"}}`))
+	}))
+	defer ts.Close()
+
+	client := zalo.NewClient("test-token", ts.URL, ts.Client())
+	throttler := zalo.NewThrottler(client, 5*time.Millisecond)
+	throttler.SetOutboundSanitizer(&mockZaloSanitizer{})
+
+	secret := "sk-ant-secret1234567890123456"
+	err := throttler.SendThrottled(context.Background(), zalo.SendMessageRequest{
+		ChatID: "user_123",
+		Text:   "Here is your secret: " + secret,
+	})
+	assert.NoError(t, err)
+	assert.NotContains(t, sentPayload, secret, "Secret must be redacted from Zalo outbound message")
+	assert.Contains(t, sentPayload, "[REDACTED_SECRET]", "Redaction token must be present in Zalo outbound message")
+}
+
