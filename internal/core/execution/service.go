@@ -259,6 +259,11 @@ func (s *Service) ExecuteTurn(
 	}
 	req.Env["AGYENT_TURN_ID"] = turnID
 	req.Env["AGYENT_PROJECT_ID"] = agyProjectID
+	if s.securityManager != nil {
+		if token := s.securityManager.GetIPCAuthToken(); token != "" {
+			req.Env["AGYENT_SECURITY_IPC_TOKEN"] = token
+		}
+	}
 
 	// 6. Register Turn in Security Manager
 	if s.securityManager != nil {

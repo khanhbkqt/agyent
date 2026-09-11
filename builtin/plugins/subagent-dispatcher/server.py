@@ -9,6 +9,7 @@ def send_ipc_action(action, params):
     """Sends an authenticated/scoped action to the agyent core IPC daemon via local socket."""
     ipc_addr_str = os.environ.get("AGYENT_ACTION_IPC_ADDR", DEFAULT_IPC_ADDR).strip()
     turn_id = os.environ.get("AGYENT_TURN_ID", "").strip()
+    auth_token = os.environ.get("AGYENT_SECURITY_IPC_TOKEN", "").strip()
     try:
         host, port_str = ipc_addr_str.split(":")
         port = int(port_str)
@@ -22,6 +23,7 @@ def send_ipc_action(action, params):
         action_payload = {
             "action": action,
             "turn_id": turn_id,
+            "auth_token": auth_token,
             "params": params,
         }
         payload = json.dumps(action_payload) + "\n"

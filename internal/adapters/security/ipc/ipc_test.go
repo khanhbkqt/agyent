@@ -2,6 +2,8 @@ package ipc
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"testing"
 	"time"
 
@@ -15,6 +17,15 @@ type mockSecurityManager struct {
 	evaluateToolCallFn   func(ctx context.Context, req domain.ToolEvaluationRequest) (domain.SecurityDecision, error)
 	sanitizeToolOutputFn func(ctx context.Context, toolName string, output string) (string, error)
 	turn                 *domain.TurnSecurityContext
+	authToken            string
+}
+
+func (m *mockSecurityManager) GetIPCAuthToken() string {
+	return m.authToken
+}
+
+func (m *mockSecurityManager) SetIPCAuthToken(token string) {
+	m.authToken = token
 }
 
 type allowPolicy struct{}
@@ -708,3 +719,84 @@ func TestIPC_ActionTurnCapabilityAndHookValidation(t *testing.T) {
 	assert.Equal(t, string(domain.DecisionDeny), hookResp.Decision)
 	assert.Contains(t, hookResp.Reason, "Unsupported or unauthorized hook type")
 }
+
+func TestIPC_AuthToken_Validation(t *testing.T) {
+	addr := "127.0.0.1:49977"
+	secretToken := "secret-token-12345"
+
+	mockMgr := &mockSecurityManager{
+		authToken: secretToken,
+		turn: &domain.TurnSecurityContext{
+			TurnID:         "turn-token-test",
+			ConversationID: "conv-1",
+			SessionKey:     "telegram:12345",
+			AgentName:      "agyent",
+			WorkspaceDir:   "/tmp",
+		},
+	}
+	server := NewServer(mockMgr, addr, nil)
+	server.SetPolicyEngine(allowPolicy{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	assert.Equal(t, secretToken, server.AuthToken())
+
+	time.Sleep(20 * time.Millisecond)
+	client := NewClient(addr)
+
+	// 1. Hook request with missing auth token is denied
+	hookResp, err := client.SendHookRequest(HookRequest{
+		HookType: "pre",
+		TurnID:   "turn-token-test",
+		ToolCall: HookToolCall{Name: "bash"},
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, string(domain.DecisionDeny), hookResp.Decision)
+	assert.Contains(t, hookResp.Reason, "missing or invalid security IPC auth token")
+
+	// 2. Hook request with wrong auth token is denied
+	hookResp, err = client.SendHookRequest(HookRequest{
+		HookType:  "pre",
+		TurnID:    "turn-token-test",
+		ToolCall:  HookToolCall{Name: "bash"},
+		AuthToken: "wrong-token",
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, string(domain.DecisionDeny), hookResp.Decision)
+	assert.Contains(t, hookResp.Reason, "missing or invalid security IPC auth token")
+
+	// 3. Hook request with correct auth token passes token validation
+	hookResp, err = client.SendHookRequest(HookRequest{
+		HookType:  "pre",
+		TurnID:    "turn-token-test",
+		ToolCall:  HookToolCall{Name: "bash"},
+		AuthToken: secretToken,
+	}, 2*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, string(domain.DecisionAllow), hookResp.Decision)
+
+	// 4. Custom action request with wrong auth token is rejected
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	badAction := map[string]interface{}{
+		"action":     "list_subagents",
+		"turn_id":    "turn-token-test",
+		"auth_token": "wrong-token",
+	}
+	enc := json.NewEncoder(conn)
+	require.NoError(t, enc.Encode(badAction))
+
+	var resp ActionResponse
+	dec := json.NewDecoder(conn)
+	require.NoError(t, dec.Decode(&resp))
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Error, "missing or invalid security IPC auth token")
+}
+
