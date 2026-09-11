@@ -247,4 +247,37 @@ func TestMCPSyncer_MultiSessionMountIsolation(t *testing.T) {
 	assert.NotContains(t, string(content), "tool-beta")
 }
 
+func TestMCPSyncer_APIS4DEnvironmentPropagation(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "mcp_apis4d.json")
+
+	syncer, err := mcp.NewMCPSyncer(configPath)
+	require.NoError(t, err)
+
+	t.Setenv("AGYENT_AGENT_WORKSPACE", "/test/ws")
+	t.Setenv("AGYENT_AGENT_NAME", "coder")
+	t.Setenv("AGYENT_USER_ID", "user-42")
+	t.Setenv("AGYENT_TURN_ID", "turn-99")
+
+	servers := []domain.MCPServerConfig{
+		{
+			ServerName: "camoufox",
+			Command:    "node",
+			Args:       []string{"index.js"},
+		},
+	}
+
+	ctx := context.Background()
+	err = syncer.MountServers(ctx, "tg:session-99", servers)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), `"AGYENT_SESSION_KEY": "tg:session-99"`)
+	assert.Contains(t, string(content), `"AGYENT_AGENT_WORKSPACE": "/test/ws"`)
+	assert.Contains(t, string(content), `"AGYENT_AGENT_NAME": "coder"`)
+	assert.Contains(t, string(content), `"AGYENT_USER_ID": "user-42"`)
+	assert.Contains(t, string(content), `"AGYENT_TURN_ID": "turn-99"`)
+}
+
 
