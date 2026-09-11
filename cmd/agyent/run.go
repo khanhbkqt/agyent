@@ -367,6 +367,7 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		subDispatcher.SetSecurityManager(secMgr)
 		subDispatcher.SetPolicyEngine(policyEngine)
 		subDispatcher.SetStoragePort(store)
+		subDispatcher.SetExecutionService(execSvc)
 		eng.SetSubagentDispatcher(subDispatcher)
 		ipcServer.SetSubagents(subDispatcher)
 
@@ -384,7 +385,6 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 			fmt.Fprintf(os.Stderr, "❌ Failed to start mandatory security IPC server: %v\n", err)
 			os.Exit(1)
 		}
-		defer ipcServer.Stop()
 
 		if err := eng.Start(daemonCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ Failed to start agyent engine: %v\n", err)
@@ -402,44 +402,55 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		sig := <-sigChan
 		fmt.Printf("\n🛑 Received signal %v. Initiating graceful shutdown (< 3.0s)...\n", sig)
 
+		// ARCH-03: Immediately halt channel inbound ingestion (polling / webhooks)
+		cancelDaemon()
+
 		shutdownStart := time.Now()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 2800*time.Millisecond)
 		defer cancelShutdown()
 
-		// Step 1: Halt Channel Inbound & Drain Throttlers
-		fmt.Print("   [1/5] Stopping Telegram Channel Adapter... ")
-		if err := channel.Stop(); err != nil {
+		// Step 1: Stop Security IPC Server (prevents incoming IPC requests panicking on closed SQLite store)
+		fmt.Print("   [1/6] Stopping Security IPC Server... ")
+		if err := ipcServer.Stop(); err != nil {
 			fmt.Printf("⚠️ %v\n", err)
 		} else {
 			fmt.Println("✅ done.")
 		}
 
-		// Step 2: Flush In-flight Debouncer buffers
-		fmt.Print("   [2/5] Flushing Message Debouncer buffers... ")
+		// Step 2: Flush In-flight Debouncer buffers into the active engine
+		fmt.Print("   [2/6] Flushing Message Debouncer buffers... ")
 		if err := deb.Close(shutdownCtx); err != nil {
 			fmt.Printf("⚠️ %v\n", err)
 		} else {
 			fmt.Println("✅ done.")
 		}
 
-		// Step 3: Stop Engine & Cancel Subprocesses
-		fmt.Print("   [3/5] Stopping Orchestration Engine... ")
+		// Step 3: Stop Engine & Cancel/Drain Active Turns and Subagents
+		fmt.Print("   [3/6] Stopping Orchestration Engine & Active Turns... ")
 		if err := eng.Stop(shutdownCtx); err != nil {
 			fmt.Printf("⚠️ %v\n", err)
 		} else {
 			fmt.Println("✅ done.")
 		}
 
-		// Step 4: Drain EventBus Async Queue
-		fmt.Print("   [4/5] Draining EventBus queues... ")
+		// Step 4: Drain and Stop Channel Adapters & Delivery Throttlers (allows buffered terminal messages to send)
+		fmt.Print("   [4/6] Stopping Channel Adapters & Delivery Throttlers... ")
+		if err := channel.Stop(); err != nil {
+			fmt.Printf("⚠️ %v\n", err)
+		} else {
+			fmt.Println("✅ done.")
+		}
+
+		// Step 5: Drain EventBus Async Queue
+		fmt.Print("   [5/6] Draining EventBus queues... ")
 		if err := bus.CloseWithTimeout(shutdownCtx); err != nil {
 			fmt.Printf("⚠️ %v\n", err)
 		} else {
 			fmt.Println("✅ done.")
 		}
 
-		// Step 5: Close SQLite Database Connection
-		fmt.Print("   [5/5] Closing SQLite Database... ")
+		// Step 6: Close SQLite Database Connection
+		fmt.Print("   [6/6] Closing SQLite Database... ")
 		if err := store.Close(); err != nil {
 			fmt.Printf("⚠️ %v\n", err)
 		} else {

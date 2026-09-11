@@ -205,8 +205,113 @@ func TestTaskExecutorWorkspaceIsolationAndFailClosedPolicy(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 
 	tCtx := &taskRuntimeContext{task: task, startedAt: time.Now()}
-	res, err := executor.executeTurn(ctx, tCtx, task.Prompt, "", nil)
+	res, err := executor.executeTurn(ctx, tCtx, task.Prompt, "")
 	require.Error(t, err)
 	require.NotNil(t, res)
 	assert.Contains(t, err.Error(), "policy engine is not initialized")
+}
+
+type mockExecutionService struct {
+	executeTurnCalled   bool
+	capturedPrincipal   domain.Principal
+	capturedReq         domain.ExecutionRequest
+	capturedSessionKey  string
+	capturedIsStreaming bool
+	executeTurnFunc     func(ctx context.Context, principal domain.Principal, req domain.ExecutionRequest, sessionKey string, isStreaming bool) (*domain.ExecutionResult, error)
+	interruptTurnFunc   func(ctx context.Context, sessionKey string) error
+}
+
+func (m *mockExecutionService) ExecuteTurn(ctx context.Context, principal domain.Principal, req domain.ExecutionRequest, sessionKey string, isStreaming bool) (*domain.ExecutionResult, error) {
+	m.executeTurnCalled = true
+	m.capturedPrincipal = principal
+	m.capturedReq = req
+	m.capturedSessionKey = sessionKey
+	m.capturedIsStreaming = isStreaming
+	if m.executeTurnFunc != nil {
+		return m.executeTurnFunc(ctx, principal, req, sessionKey, isStreaming)
+	}
+	return &domain.ExecutionResult{
+		Success:        true,
+		ConversationID: "sub-conv-123",
+		ResponseText:   "mock subagent response",
+		DurationSec:    1.5,
+		Usage:          domain.TokenUsage{TotalTokens: 42},
+	}, nil
+}
+
+func (m *mockExecutionService) InterruptTurn(ctx context.Context, sessionKey string) error {
+	if m.interruptTurnFunc != nil {
+		return m.interruptTurnFunc(ctx, sessionKey)
+	}
+	return nil
+}
+
+type mockPolicyEngine struct {
+	authorizeFunc func(ctx context.Context, p domain.Principal, action domain.Action, res domain.Resource) error
+}
+
+func (m *mockPolicyEngine) Authorize(ctx context.Context, p domain.Principal, action domain.Action, res domain.Resource) error {
+	if m.authorizeFunc != nil {
+		return m.authorizeFunc(ctx, p, action, res)
+	}
+	return nil
+}
+
+func (m *mockPolicyEngine) ResolveAgentRole(ctx context.Context, p domain.Principal, agentName string) (domain.AgentRole, error) {
+	return domain.AgentRoleAdmin, nil
+}
+
+func (m *mockPolicyEngine) CanAssumeRole(ctx context.Context, p domain.Principal, targetRole domain.AgentRole) bool {
+	return true
+}
+
+func TestTaskExecutor_RoutesThroughExecutionServiceChokepoint(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "subagent_chokepoint.db"))
+	require.NoError(t, err)
+	defer store.Close()
+
+	workspace := t.TempDir()
+	require.NoError(t, store.SaveAgent(ctx, &domain.Agent{
+		Name:           "researcher",
+		Status:         domain.StatusInitialized,
+		WorkspacePath:  workspace,
+		SecurityPreset: domain.PresetStrict,
+	}))
+
+	mockExec := &mockExecutionService{}
+	mockPol := &mockPolicyEngine{}
+
+	executor := newTaskExecutor("must-not-run", 10*time.Second)
+	executor.storage = store
+	executor.policy = mockPol
+	executor.executionService = mockExec
+
+	task := domain.SubagentTask{
+		ID:               "task-chokepoint-01",
+		TenantID:         "tenant-alpha",
+		ParentSessionKey: "telegram:12345",
+		AgentName:        "researcher",
+		WorkspaceMode:    "persona",
+		Prompt:           "Analyze this architecture",
+		Model:            "flash",
+		Effort:           "low",
+	}
+
+	tCtx := &taskRuntimeContext{task: task, startedAt: time.Now()}
+	res, err := executor.executeTurn(ctx, tCtx, task.Prompt, "conv-parent-01")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, domain.TaskStatusCompleted, res.Status)
+	assert.Equal(t, "mock subagent response", res.Response)
+	assert.Equal(t, "sub-conv-123", res.ConversationID)
+
+	// Verify chokepoint was invoked
+	assert.True(t, mockExec.executeTurnCalled)
+	assert.Equal(t, "system:subagent", mockExec.capturedPrincipal.SubjectID)
+	assert.Equal(t, "tenant-alpha", mockExec.capturedPrincipal.TenantID)
+	assert.Equal(t, "subagent:task-chokepoint-01", mockExec.capturedSessionKey)
+	assert.True(t, mockExec.capturedIsStreaming)
+	assert.Equal(t, "researcher", mockExec.capturedReq.AgentName)
+	assert.Equal(t, workspace, mockExec.capturedReq.WorkspaceDir)
 }
