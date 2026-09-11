@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Propagated verified administrative status (`IsAdmin`) and agent ownership (`Role`) through `TurnSecurityContext` from `execution.Service`, `Engine`, and engine recovery routines.
   - Added multi-factor administrator evaluation in `SecurityManager.isTurnAdmin` checking `TurnSecurityContext.IsAdmin`, agent owner/admin roles, system principals, and configured `admin_user_ids`.
   - Eliminated unwanted HITL approval prompts when running Python commands (`python -c`, `python3 -c`, `pip install`, etc.) in unrestricted preset for authenticated administrators, while preserving fail-closed downgrade protection for unprivileged callers.
+- **Configuration Linting False-Positive Elimination & Path Normalization (`doctor`):**
+  - Deduplicated static and configured forbidden paths to prevent duplicate collision warnings.
+  - Excluded relative workspace root `.` from static forbidden path subsumption checks, preventing spurious warnings for agent workspaces.
+  - Added fallback naming (`bot-N`) for multi-bot Telegram configurations without explicit names.
 
 ---
 
