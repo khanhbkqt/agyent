@@ -313,6 +313,8 @@ func (m *mockSecurityManager) ResolveTurnByID(turnID string) (domain.TurnSecurit
 	return domain.TurnSecurityContext{}, false
 }
 func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string) {}
+func (m *mockSecurityManager) GetIPCAuthToken() string                 { return "" }
+func (m *mockSecurityManager) SetIPCAuthToken(token string)            {}
 
 func TestTaskExecutor_DelegatedPrincipal_AndSessionRouting(t *testing.T) {
 	cfg := config.DefaultConfig()

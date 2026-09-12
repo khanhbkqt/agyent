@@ -8,12 +8,14 @@ DEFAULT_IPC_ADDR = "127.0.0.1:49216"
 def send_ipc_action(action, params=None, timeout=10.0):
     ipc_addr = os.environ.get("AGYENT_ACTION_IPC_ADDR", DEFAULT_IPC_ADDR)
     turn_id = os.environ.get("AGYENT_TURN_ID", "").strip()
+    auth_token = os.environ.get("AGYENT_SECURITY_IPC_TOKEN", "").strip()
     host, port_str = ipc_addr.split(":", 1)
     port = int(port_str)
 
     payload = {
         "action": action,
         "turn_id": turn_id,
+        "auth_token": auth_token,
         "params": params or {}
     }
 

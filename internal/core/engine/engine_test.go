@@ -1867,24 +1867,24 @@ func TestEngine_AppendMode_SoftInterrupt(t *testing.T) {
 	turn1Blocked := make(chan struct{})
 	var startOnce sync.Once
 
+	var callCount int32
 	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
-		startOnce.Do(func() {
-			close(turn1Started)
-		})
-		select {
-		case <-turn1Blocked:
+		if atomic.AddInt32(&callCount, 1) == 1 {
+			startOnce.Do(func() {
+				close(turn1Started)
+			})
+			<-turn1Blocked
 			return &domain.ExecutionResult{
 				Success:        true,
 				ConversationID: "conv-append-1",
 				ResponseText:   "Finished naturally",
 			}, nil
-		default:
-			return &domain.ExecutionResult{
-				Success:        true,
-				ConversationID: "conv-append-2",
-				ResponseText:   "Turn 2 executed successfully",
-			}, nil
 		}
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: "conv-append-2",
+			ResponseText:   "Turn 2 executed successfully",
+		}, nil
 	}
 
 	go func() {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/signal"
@@ -288,7 +290,16 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
 		channelMux.SetURLSafetyEvaluator(secMgr)
+
+		ipcTokenBytes := make([]byte, 32)
+		if _, err := rand.Read(ipcTokenBytes); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Failed to generate crypto random token for IPC: %v\n", err)
+			os.Exit(1)
+		}
+		ipcAuthToken := hex.EncodeToString(ipcTokenBytes)
+		secMgr.SetIPCAuthToken(ipcAuthToken)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
+		ipcServer.SetAuthToken(ipcAuthToken)
 
 		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)
 		starterWS := config.ResolveAgentWorkspace(cfg.Storage.AgentsDir, "")

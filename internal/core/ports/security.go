@@ -85,6 +85,12 @@ type SecurityManagerPort interface {
 
 	// CancelSessionApprovals terminates all pending approval requests for a given session.
 	CancelSessionApprovals(sessionKey string)
+
+	// GetIPCAuthToken returns the active daemon IPC authorization token.
+	GetIPCAuthToken() string
+
+	// SetIPCAuthToken configures the daemon IPC authorization token.
+	SetIPCAuthToken(token string)
 }
 
 // HITLApprovalPort coordinates interactive approval requests over communication channels.
