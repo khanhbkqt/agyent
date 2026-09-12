@@ -13,8 +13,10 @@ import (
 
 var (
 	cloudMetadataCIDRs = []net.IPNet{
-		*mustCIDR("169.254.169.254/32"), // AWS / GCP / Azure metadata
+		*mustCIDR("169.254.0.0/16"),     // Entire IPv4 Link-Local / Cloud Metadata block (AWS, GCP, Azure, OpenStack)
 		*mustCIDR("100.100.100.200/32"), // Alibaba Cloud metadata
+		*mustCIDR("fd00:ec2::254/128"),  // AWS EC2 IMDSv2 IPv6
+		*mustCIDR("fe80::/10"),          // IPv6 Link-Local
 	}
 
 	privateCIDRs = []net.IPNet{
@@ -87,12 +89,14 @@ func (e *Evaluator) EvaluateURL(rawURL string) (domain.SecurityDecision, error) 
 	}
 
 	// 1. Check known metadata hostnames
-	lowerHost := strings.ToLower(host)
+	lowerHost := strings.TrimSuffix(strings.ToLower(host), ".")
 	if e.blockMetadata {
 		if lowerHost == "metadata.google.internal" ||
 			lowerHost == "instance-data" ||
+			lowerHost == "metadata.tencentyun.com" ||
 			strings.Contains(lowerHost, "169.254.169.254") ||
-			strings.Contains(lowerHost, "100.100.100.200") {
+			strings.Contains(lowerHost, "100.100.100.200") ||
+			strings.Contains(lowerHost, "fd00:ec2::254") {
 			return domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
 				Reason:   "🛡️ [SSRF Guardrail]: Direct access to Cloud Instance Metadata is forbidden",

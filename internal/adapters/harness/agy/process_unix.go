@@ -9,9 +9,11 @@ import (
 )
 
 func configureCmd(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
+	attr := &syscall.SysProcAttr{
 		Setpgid: true,
 	}
+	setProcDeathSig(attr)
+	cmd.SysProcAttr = attr
 }
 
 func killProcessTree(cmd *exec.Cmd) error {

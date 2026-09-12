@@ -55,4 +55,26 @@ func TestNetworkEvaluator_SSRFProtection(t *testing.T) {
 	decision, err = evaluator.EvaluateURL("https://api.github.com/repos/google/antigravity")
 	require.NoError(t, err)
 	assert.Equal(t, domain.DecisionAllow, decision.Decision)
+
+	// Test 8: Trailing dot FQDN metadata hostname
+	decision, err = evaluator.EvaluateURL("http://metadata.google.internal./computeMetadata/v1/")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "Cloud Instance Metadata")
+
+	// Test 9: AWS EC2 IPv6 metadata address
+	decision, err = evaluator.EvaluateURL("http://[fd00:ec2::254]/latest/meta-data")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "Metadata")
+
+	// Test 10: Metadata-only blocking (Developer preset with blockPrivateNetworks=false)
+	devEvaluator := NewEvaluator(config.NetworkGuardrailConfig{
+		BlockCloudMetadata:   true,
+		BlockPrivateNetworks: false,
+	})
+	decision, err = devEvaluator.EvaluateURL("http://169.254.10.20/metadata")
+	require.NoError(t, err)
+	assert.Equal(t, domain.DecisionDeny, decision.Decision)
+	assert.Contains(t, decision.Reason, "Cloud Metadata IP")
 }

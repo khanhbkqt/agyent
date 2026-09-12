@@ -1774,8 +1774,11 @@ func TestEngine_ForceUnlock_ConcurrentPromptHandoff_NoDeadlock(t *testing.T) {
 	sender := domain.SenderUser{ID: "123456", Username: "admin"}
 	chat := domain.ChatContext{ID: "123456", Type: "private"}
 
+	turn1Started := make(chan struct{})
+	var turn1StartedOnce sync.Once
 	turn1Unwound := make(chan struct{})
 	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		turn1StartedOnce.Do(func() { close(turn1Started) })
 		<-ctx.Done()
 		// Simulate slight unwinding latency
 		time.Sleep(20 * time.Millisecond)
@@ -1796,7 +1799,11 @@ func TestEngine_ForceUnlock_ConcurrentPromptHandoff_NoDeadlock(t *testing.T) {
 		_ = eng.HandleDebouncedMessage(ctx, msg)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-turn1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Turn 1 did not start in time")
+	}
 	require.True(t, eng.HasActiveTurn(sessionKey), "Turn 1 must be active")
 
 	// 2. User sends Turn 2 (a normal prompt, not a slash command) while Turn 1 is executing

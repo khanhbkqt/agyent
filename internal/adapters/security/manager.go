@@ -1069,10 +1069,19 @@ func (m *Manager) EvaluateURL(ctx context.Context, urlStr string) (domain.Securi
 	return bundle.networkEval.EvaluateURL(urlStr)
 }
 
-// SanitizeToolOutput masks secrets within tool output.
+// SanitizeToolOutput masks secrets within tool output and validates against indirect prompt injection.
 func (m *Manager) SanitizeToolOutput(ctx context.Context, toolName string, output string) (string, error) {
 	bundle := m.getEvaluatorBundle(m.defaultPreset)
-	return bundle.sanitizerEval.RedactSecrets(output), nil
+	redacted := bundle.sanitizerEval.RedactSecrets(output)
+	if err := bundle.sanitizerEval.ValidateInjection(output); err != nil {
+		m.logger.WarnContext(ctx, "Indirect prompt injection detected in tool output",
+			"tool_name", toolName,
+			"error", err,
+		)
+		neutralized := fmt.Sprintf("[POTENTIAL PROMPT INJECTION DETECTED AND NEUTRALIZED]\n%s", redacted)
+		return neutralized, err
+	}
+	return redacted, nil
 }
 
 // HasWildcardGrant checks if the active session has an active wildcard (*) grant.
