@@ -64,7 +64,7 @@ func TestZaloAdapter_FullLifecycleWithMockServer(t *testing.T) {
 				OK: true,
 				Result: json.RawMessage(`[
 					{
-						"update_id": 1,
+						"update_id": 1001,
 						"message": {
 							"message_id": "in_msg_1",
 							"from": {"id": "user_456", "name": "Test User"},
@@ -90,6 +90,7 @@ func TestZaloAdapter_FullLifecycleWithMockServer(t *testing.T) {
 
 	adapter, err := zalo.NewAdapter(cfg, nil)
 	require.NoError(t, err)
+	adapter.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 	assert.Equal(t, "zalo", adapter.Name())
 
 	inboundChan := make(chan domain.CanonicalMessage, 10)
@@ -243,6 +244,7 @@ func TestZaloAdapter_WebhookMode(t *testing.T) {
 
 	adapter, err := zalo.NewAdapter(cfg, nil)
 	require.NoError(t, err)
+	adapter.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	inboundChan := make(chan domain.CanonicalMessage, 10)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -483,6 +485,7 @@ func TestZaloAdapter_Polling_408TimeoutDoesNotBackoff(t *testing.T) {
 
 	adapter, err := zalo.NewAdapter(cfg, nil)
 	require.NoError(t, err)
+	adapter.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	inboundChan := make(chan domain.CanonicalMessage, 10)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -508,44 +511,44 @@ func TestZaloAdapter_Polling_408TimeoutDoesNotBackoff(t *testing.T) {
 
 func TestZaloAdapter_Polling_NativeZaloEnvelopeAndTimeout(t *testing.T) {
 	var attempts atomic.Int32
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/botnative_poll/getMe" {
-			_, _ = w.Write([]byte(`{
-				"error": 0,
-				"message": "Success",
-				"data": {"id": "bot_native_poll", "name": "Native Poll Bot", "is_bot": true}
-			}`))
+			_ = json.NewEncoder(w).Encode(zalo.APIResponse{
+				OK:     true,
+				Result: json.RawMessage(`{"id": "bot_native", "name": "Native Bot", "is_bot": true}`),
+			})
 			return
 		}
-
 		if r.URL.Path == "/botnative_poll/getUpdates" {
-			cur := attempts.Add(1)
-			if cur == 1 {
-				// 1st attempt: native Zalo 408 timeout
-				_, _ = w.Write([]byte(`{"error": 408, "message": "Request timeout", "data": null}`))
+			current := attempts.Add(1)
+			if current == 1 {
+				// Native envelope returning timeout error
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":   408,
+					"message": "Request timeout from Zalo gateway",
+				})
 				return
 			}
-			// 2nd attempt: native Zalo update delivery
-			_, _ = w.Write([]byte(`{
-				"error": 0,
+			// Second attempt returns valid update within native wrapper
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":   0,
 				"message": "Success",
-				"data": [
+				"data": []map[string]any{
 					{
-						"update_id": 200,
-						"message": {
+						"update_id": 2001,
+						"message": map[string]any{
 							"message_id": "msg_native_200",
-							"from": {"id": "user_native", "name": "Native User"},
-							"chat": {"id": "chat_native", "type": "private"},
-							"date": 1724947200,
-							"text": "received via native Zalo envelope"
-						}
-					}
-				]
-			}`))
+							"from":       map[string]any{"id": "user_native"},
+							"chat":       map[string]any{"id": "chat_native"},
+							"text":       "received via native Zalo envelope",
+						},
+					},
+				},
+			})
 			return
 		}
-
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
@@ -558,6 +561,7 @@ func TestZaloAdapter_Polling_NativeZaloEnvelopeAndTimeout(t *testing.T) {
 
 	adapter, err := zalo.NewAdapter(cfg, nil)
 	require.NoError(t, err)
+	adapter.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	inboundChan := make(chan domain.CanonicalMessage, 10)
 	ctx, cancel := context.WithCancel(context.Background())

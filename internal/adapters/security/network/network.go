@@ -81,9 +81,23 @@ func (e *Evaluator) EvaluateURL(rawURL string) (domain.SecurityDecision, error) 
 		}, nil
 	}
 
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   fmt.Sprintf("🛡️ [SSRF Guardrail]: Scheme '%s' is not supported; only http and https are permitted", parsed.Scheme),
+		}, nil
+	}
+
 	host := parsed.Hostname()
 	if host == "" {
 		host = parsed.Host
+	}
+	if host == "" {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   "🛡️ [SSRF Guardrail]: Target URL host cannot be empty",
+		}, nil
 	}
 
 	// 1. Check known metadata hostnames

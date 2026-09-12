@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,6 +106,11 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 				// Unauthorized private message: drop with zero side-effects
 				return nil
 			}
+		} else {
+			if !IsUserAdmin(r.cfg, msg.From.Id) {
+				slog.WarnContext(ctx, "inbound Telegram private message dropped: authorizer is not configured (fail-closed)", "sender_id", msg.From.Id)
+				return nil
+			}
 		}
 	} else if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" {
 		if !IsGroupAllowed(r.cfg, msg.Chat.Id) {
@@ -132,6 +138,11 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 			if err != nil || !allowed {
 				// The group itself is allowed, but the sender is not authorized for
 				// the target agent. Do not create a session or download attachments.
+				return nil
+			}
+		} else {
+			if !IsUserAdmin(r.cfg, msg.From.Id) {
+				slog.WarnContext(ctx, "inbound Telegram group message dropped: authorizer is not configured (fail-closed)", "sender_id", msg.From.Id, "chat_id", msg.Chat.Id)
 				return nil
 			}
 		}
@@ -405,6 +416,44 @@ func (r *Router) HandleCallbackQuery(ctx context.Context, b *gotgbot.Bot, cb *go
 	if chatID == "" {
 		chatID = strconv.FormatInt(cb.From.Id, 10)
 		chatType = "private"
+	}
+
+	// 5. Group Whitelist Check for callbacks
+	if chatType == "group" || chatType == "supergroup" {
+		chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+		if err == nil && !IsGroupAllowed(r.cfg, chatIDInt) {
+			slog.WarnContext(ctx, "telegram callback query dropped: unlisted group", "chat_id", chatID)
+			return nil
+		}
+	}
+
+	// 6. Security Gate: Administrative actions require admin privileges
+	if strings.HasPrefix(data, "sec:") || strings.HasPrefix(data, "hb:") || strings.HasPrefix(data, "task:cancel:") || strings.HasPrefix(data, "sched:cancel:") || data == "task:clean" {
+		if !IsUserAdmin(r.cfg, cb.From.Id) {
+			slog.WarnContext(ctx, "unauthorized callback query attempt for admin action", "sender_id", cb.From.Id, "data", data)
+			return nil
+		}
+	}
+
+	// 7. Inbound Authorization Check for callback caller
+	r.mu.RLock()
+	auth := r.authorizer
+	r.mu.RUnlock()
+
+	sessionKey := domain.FormatSessionKey("telegram", chatID, threadID, botID)
+	senderID := strconv.FormatInt(cb.From.Id, 10)
+
+	if auth != nil {
+		allowed, err := authorizeInboundMessage(ctx, auth, senderID, bindAgent, chatType, sessionKey)
+		if err != nil || !allowed {
+			slog.WarnContext(ctx, "telegram callback query unauthorized", "sender_id", senderID, "chat_id", chatID)
+			return nil
+		}
+	} else {
+		if !IsUserAdmin(r.cfg, cb.From.Id) {
+			slog.WarnContext(ctx, "telegram callback query dropped: authorizer is not configured (fail-closed)", "sender_id", cb.From.Id, "chat_id", chatID)
+			return nil
+		}
 	}
 
 	fullName := strings.TrimSpace(cb.From.FirstName + " " + cb.From.LastName)

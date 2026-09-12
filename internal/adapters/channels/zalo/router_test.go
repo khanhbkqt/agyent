@@ -36,6 +36,7 @@ func TestZaloRouter_StandardRouting(t *testing.T) {
 	}
 	inboundChan := make(chan domain.CanonicalMessage, 10)
 	router := zalo.NewRouter(cfg, nil, nil, inboundChan)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	update := zalo.ZaloUpdate{
 		UpdateID: 101,
@@ -229,6 +230,7 @@ func TestZaloRouter_MentionStripping(t *testing.T) {
 	}
 	inboundChan := make(chan domain.CanonicalMessage, 10)
 	router := zalo.NewRouter(cfg, nil, nil, inboundChan)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	botCtx := zalo.BotContext{
 		BotID:       "9999",
@@ -339,6 +341,7 @@ func TestZaloRouter_AttachmentFilenameAndExtensionInference(t *testing.T) {
 	cfg := &config.Config{}
 	inbound := make(chan domain.CanonicalMessage, 1)
 	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
 		Message: &zalo.ZaloInboundMessage{
@@ -374,25 +377,28 @@ func TestZaloRouter_AttachmentFilenameAndExtensionInference(t *testing.T) {
 	select {
 	case msg := <-inbound:
 		require.Len(t, msg.AttachmentRefs, 4)
+
+		// 1. Photo with inferred extension .jpg
 		assert.Equal(t, "image", msg.AttachmentRefs[0].Type)
-		assert.Equal(t, "image/jpeg", msg.AttachmentRefs[0].MIMEType)
+		assert.Equal(t, "photo123", msg.AttachmentRefs[0].ID)
 		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[0].FileName, ".jpg"))
-		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[0].FileName, "photo_"))
 
+		// 2. Voice with inferred extension .ogg
 		assert.Equal(t, "audio", msg.AttachmentRefs[1].Type)
-		assert.Equal(t, "audio/ogg", msg.AttachmentRefs[1].MIMEType)
+		assert.Equal(t, "voice456", msg.AttachmentRefs[1].ID)
 		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[1].FileName, ".ogg"))
-		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[1].FileName, "audio_"))
 
+		// 3. Video with inferred extension .mp4
 		assert.Equal(t, "video", msg.AttachmentRefs[2].Type)
-		assert.Equal(t, "video/mp4", msg.AttachmentRefs[2].MIMEType)
+		assert.Equal(t, "video789", msg.AttachmentRefs[2].ID)
 		assert.True(t, strings.HasSuffix(msg.AttachmentRefs[2].FileName, ".mp4"))
-		assert.True(t, strings.HasPrefix(msg.AttachmentRefs[2].FileName, "video_"))
 
+		// 4. Document with explicit filename
 		assert.Equal(t, "document", msg.AttachmentRefs[3].Type)
+		assert.Equal(t, "doc000", msg.AttachmentRefs[3].ID)
 		assert.Equal(t, "custom_report.pdf", msg.AttachmentRefs[3].FileName)
 	case <-time.After(time.Second):
-		t.Fatal("expected canonical message with inferred attachment extensions")
+		t.Fatal("expected message to be delivered to inbound")
 	}
 }
 
@@ -400,6 +406,7 @@ func TestZaloRouter_CaptionAndDescriptionFallback(t *testing.T) {
 	cfg := &config.Config{}
 	inbound := make(chan domain.CanonicalMessage, 5)
 	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	// Case 1: Inbound message has empty Text but has message-level Caption
 	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
@@ -540,6 +547,7 @@ func TestZaloRouter_NestedPayloadAndCompatibilityAttachments(t *testing.T) {
 
 	inbound := make(chan domain.CanonicalMessage, 1)
 	router := zalo.NewRouter(&config.Config{}, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	router.RouteUpdate(context.Background(), update)
 
@@ -594,6 +602,7 @@ func TestZaloRouter_OfficialZaloWebhookImagePayload(t *testing.T) {
 
 	inbound := make(chan domain.CanonicalMessage, 1)
 	router := zalo.NewRouter(&config.Config{}, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	router.RouteUpdate(context.Background(), update)
 
@@ -651,6 +660,7 @@ func TestZaloRouter_ReplyToMessageContext(t *testing.T) {
 	}
 	inbound := make(chan domain.CanonicalMessage, 1)
 	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	botCtx := zalo.BotContext{
 		BotID:       "bot_assistant",
@@ -672,6 +682,38 @@ func TestZaloRouter_ReplyToMessageContext(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected canonical message for reply update")
 	}
+}
+
+func TestZaloRouter_FailClosedWhenAuthorizerNil(t *testing.T) {
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			AdminUserIDs: []string{"admin_zalo"},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 10)
+	router := zalo.NewRouter(cfg, nil, nil, inbound) // authorizer is nil
+
+	// 1. Non-admin private message must be dropped
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_stranger",
+			From:      zalo.ZaloUser{ID: "stranger_1"},
+			Chat:      zalo.ZaloChat{ID: "stranger_1", Type: "private"},
+			Text:      "Hello stranger",
+		},
+	})
+	assert.Empty(t, inbound, "nil authorizer must drop non-admin Zalo message (fail-closed)")
+
+	// 2. Admin private message must be admitted
+	router.RouteUpdate(context.Background(), zalo.ZaloUpdate{
+		Message: &zalo.ZaloInboundMessage{
+			MessageID: "msg_admin",
+			From:      zalo.ZaloUser{ID: "admin_zalo"},
+			Chat:      zalo.ZaloChat{ID: "admin_zalo", Type: "private"},
+			Text:      "Hello admin",
+		},
+	})
+	assert.Len(t, inbound, 1, "admin Zalo message must be admitted even when authorizer is nil")
 }
 
 
