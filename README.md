@@ -105,6 +105,77 @@ agyent init \
 
 Avoid putting real tokens in shell history. Prefer a protected environment or
 secret injection mechanism when automating installation.
+## Usage
+
+Trong kiến trúc của agyent, việc quản lý phiên chat được thiết kế theo mô hình phân tầng chặt chẽ. Hệ thống tách bạch rạch ròi giữa Session (Điểm neo kênh chat) và Conversation (Ngữ cảnh hội thoại AI):
+
+---
+
+### 1. Phân biệt: Session vs Conversation
+
+| Khái niệm | Định danh (Key/ID) | Bản chất |
+| --- | --- | --- |
+| **Session** | `telegram:<chat_id>`<br>*(hoặc `telegram:<bot_id>:<chat_id>:<thread_id>`)* | Đại diện cho kênh kết nối cố định giữa một người dùng/nhóm Telegram với Bot. |
+| **Conversation** | Chuỗi UUID *(ví dụ: `f8b6c9bf-55ad-...`)* | Là ngữ cảnh hội thoại cụ thể của Google Antigravity CLI (`agy`), chứa toàn bộ lịch sử hỏi-đáp, biến số, code và file đệm trong `~/.gemini/antigravity/brain/<conversation-id>/`. |
+
+---
+
+### 2. Nguyên tắc: Giữ xuyên suốt hay tạo mới mỗi lần chat?
+
+> [!NOTE]
+> **Mặc định: Giữ xuyên suốt (Stateful & Continuous Context)**
+>
+> - **Không tạo mới sau mỗi tin nhắn:** Mỗi khi bạn nhắn tin, agyent tìm `ConversationID` đang active của phiên đó và truyền cờ `--conversation <uuid>` vào Antigravity CLI. Nhờ vậy, AI nhớ toàn bộ ngữ cảnh trước đó, bạn có thể nói "tiếp tục phần vừa nãy", "sửa lại hàm trên" mà không sợ bị mất trí nhớ.
+> - **Dữ liệu được lưu bền vững:** Bản ghi session và cuộc hội thoại được lưu trong SQLite (`agyent.db` ở chế độ WAL). Kể cả khi khởi động lại daemon hoặc reboot máy chủ, phiên chat vẫn được bảo lưu trọn vẹn.
+
+#### Khi nào thì hệ thống mới tạo Conversation mới?
+
+1. **Lần đầu tiên chat:** Khi chưa từng có cuộc trò chuyện nào → sinh UUID đầu tiên.
+2. **Khi bạn gõ lệnh `/new` (hoặc `/reset`):** Ngữ cảnh cũ được lưu trữ lại, và tin nhắn tiếp theo của bạn sẽ mở ra một ngữ cảnh hoàn toàn mới sạch sẽ.
+3. **Khi dùng lệnh hỏi nhanh `/ask <câu hỏi>` (Ephemeral Query):** Hệ thống chạy một lượt tính toán độc lập mà không lưu vào lịch sử hội thoại, không làm phình dung lượng token và không sửa đổi bộ nhớ dài hạn.
+4. **Khi bạn chủ động đổi qua lại giữa các chủ đề bằng `/c` (`/conversations`):** Cho phép bạn tạo nhiều nhánh thảo luận song song (ví dụ: một luồng code backend, một luồng hỏi tin tức) trong cùng một bot.
+5. **Tự động nén ngữ cảnh (Auto-Compaction):** Khi số lượng token trong phiên tích lũy vượt quá 90% cửa sổ ngữ cảnh (ví dụ vượt ~1.88M tokens đối với Gemini 2M context), hệ thống sẽ tự động tóm tắt thành bản tóm tắt điều hành (Executive Continuity Digest), đóng conversation cũ và khởi động conversation mới mang theo bản tóm tắt này.
+
+---
+
+### 3. Thời gian lưu giữ phiên là bao lâu? (Vòng đời Lifecycle & GC)
+
+Hệ thống quản lý vòng đời theo máy trạng thái 4 cấp độ:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Hot : Nhắn tin hoặc /new
+    Hot --> Pinned : Gõ /pin
+    Pinned --> Hot : Gõ /unpin
+    Hot --> Archived : Không hoạt động > 14 ngày HOẶC vượt quá 10 phiên
+    Archived --> Hot : Chọn lại bằng /c (Auto-Unarchive)
+    Archived --> Purged : Nằm trong Archive > 30 ngày HOẶC /c clean
+    Purged --> [*] : Xóa khỏi SQLite + Xóa thư mục brain/{conversation_id}/ trên đĩa
+```
+
+#### Chi tiết thời gian lưu giữ
+
+| Cấp độ | Tên trạng thái | Thời gian tồn tại | Hành vi của hệ thống |
+| --- | --- | --- | --- |
+| **Cố định** | Session Key | Vĩnh viễn | Bản ghi người dùng trong SQLite không bao giờ hết hạn. Bot luôn nhớ bạn là ai, đang dùng agent nào. |
+| **Cấp 1** | Hot *(Đang hoạt động)* | Vô thời hạn | Miễn là bạn vẫn tiếp tục tương tác và chưa bị đẩy sang Archive. |
+| **Cấp 2** | Pinned *(Đã Ghim bằng `/pin`)* | Vĩnh viễn *(Bảo vệ tuyệt đối)* | Không bao giờ bị tự động đưa vào Archive hay bị xóa bởi tiến trình dọn rác định kỳ. |
+| **Cấp 3** | Archived *(Lưu trữ ẩn)* | Tối thiểu 30 ngày | • Tự động Archive nếu không có tin nhắn mới sau 14 ngày.<br>• Hoặc tự động Archive phiên cũ nhất nếu số phiên chưa ghim vượt quá 10 phiên.<br>*(Bạn vẫn có thể gõ `/c` để mở lại bất kỳ lúc nào).* |
+| **Cấp 4** | Purged *(Xóa sạch)* | Sau 30 ngày nằm trong Archive | Tiến trình nền chạy mỗi 24 giờ một lần sẽ quét các phiên đã archive quá 30 ngày (và không ghim) để:<br>1. Xóa bản ghi trong SQLite database.<br>2. Xóa sạch thư mục trên ổ cứng (`~/.gemini/antigravity/brain/<conversation-id>/`) nhằm tiết kiệm dung lượng đĩa. |
+
+---
+
+### 4. Bảng lệnh hữu ích để kiểm soát phiên chat
+
+- `/new`: Bắt đầu một chủ đề mới ngay lập tức (giữ nguyên chủ đề cũ trong kho).
+- `/pin`: Ghim cuộc trò chuyện hiện tại (bảo vệ vĩnh viễn, không bao giờ bị dọn rác).
+- `/unpin`: Bỏ ghim.
+- `/c` hoặc `/conversations`: Mở menu tương tác dạng nút bấm trên Telegram để chọn, đổi tên hoặc chuyển đổi giữa các cuộc hội thoại.
+- `/c clean`: Xóa dọn dẹp ngay lập tức toàn bộ các phiên cũ đã archive để giải phóng ổ cứng.
+- `/compact`: Chủ động nén phiên chat hiện tại nếu thấy tốc độ phản hồi chậm lại do tích lũy quá nhiều token.
+
+---
+
 
 ## CLI surface
 
