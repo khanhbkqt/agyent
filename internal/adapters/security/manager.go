@@ -600,12 +600,9 @@ func (m *Manager) EvaluateToolCall(ctx context.Context, req domain.ToolEvaluatio
 		decision, err = bundle.subagentEval.EvaluateSubagent(req.IsSubagent, req.CascadeDepth, req.ToolName, role, 0)
 
 	default:
-		// Check if it's an MCP tool (starts with mcp__ or call_mcp_tool)
-		if strings.HasPrefix(req.ToolName, "mcp__") || req.ToolName == "call_mcp_tool" {
-			decision = domain.SecurityDecision{
-				Decision: domain.DecisionAllow,
-				Reason:   "Registered MCP tool permitted",
-			}
+		// Check if it's an MCP tool (starts with mcp__, mcp_ or call_mcp_tool)
+		if strings.HasPrefix(req.ToolName, "mcp__") || strings.HasPrefix(req.ToolName, "mcp_") || req.ToolName == "call_mcp_tool" {
+			decision, err = m.evaluateMCPToolCall(ctx, sessionKey, req, hasTurn, turnCtx, bundle)
 		} else {
 			decision = domain.SecurityDecision{
 				Decision: domain.DecisionDeny,
@@ -1392,3 +1389,158 @@ func (m *Manager) CancelSessionApprovals(sessionKey string) {
 		hitl.CancelPendingRequestsForSession(sessionKey)
 	}
 }
+
+func (m *Manager) evaluateMCPToolCall(
+	ctx context.Context,
+	sessionKey string,
+	req domain.ToolEvaluationRequest,
+	hasTurn bool,
+	turnCtx domain.TurnSecurityContext,
+	bundle *presetEvaluators,
+) (domain.SecurityDecision, error) {
+	preset := domain.SecurityPreset(bundle.cfg.Preset)
+
+	var subToolName string
+	var subArgs map[string]interface{}
+
+	if req.ToolName == "call_mcp_tool" {
+		if tn, ok := req.Args["ToolName"].(string); ok && tn != "" {
+			subToolName = tn
+		} else if tn, ok := req.Args["tool_name"].(string); ok && tn != "" {
+			subToolName = tn
+		}
+		if args, ok := req.Args["Arguments"].(map[string]interface{}); ok && args != nil {
+			subArgs = args
+		} else if args, ok := req.Args["arguments"].(map[string]interface{}); ok && args != nil {
+			subArgs = args
+		}
+	} else if strings.HasPrefix(req.ToolName, "mcp__") {
+		subToolName = strings.TrimPrefix(req.ToolName, "mcp__")
+		subArgs = req.Args
+	} else if strings.HasPrefix(req.ToolName, "mcp_") {
+		subToolName = strings.TrimPrefix(req.ToolName, "mcp_")
+		subArgs = req.Args
+	}
+
+	if subToolName == "" {
+		subToolName = req.ToolName
+	}
+	if subArgs == nil {
+		subArgs = make(map[string]interface{})
+	}
+
+	// 1. Anti-Self-Escalation: scan string arguments
+	for _, v := range subArgs {
+		if s, ok := v.(string); ok && s != "" {
+			if isSelfEscalationCommand(s) {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   "🛡️ [Security Gate - Privilege Escalation Blocked]: MCP tool argument contains forbidden references to gateway configuration or database",
+				}, nil
+			}
+		}
+	}
+
+	// 2. Read-Only Preset enforcement
+	if preset == domain.PresetReadOnly {
+		if isMCPToolMutating(subToolName) {
+			return domain.SecurityDecision{
+				Decision: domain.DecisionDeny,
+				Reason:   fmt.Sprintf("🛡️ [Security Gate]: MCP tool '%s' performs state mutation and is forbidden under Read Only security preset", subToolName),
+			}, nil
+		}
+	}
+
+	// 3. Workspace-Only Preset enforcement
+	if preset == domain.PresetWorkspaceOnly && (subToolName == "dispatch_subagent" || strings.Contains(subToolName, "subagent")) && bundle.cfg.Subagents.MaxCascadeDepth == 0 {
+		return domain.SecurityDecision{
+			Decision: domain.DecisionDeny,
+			Reason:   "🛡️ [Security Gate]: Subagent cascading dispatch via MCP is disabled in workspace_only security preset",
+		}, nil
+	}
+
+	// 4. Resolve workspace directory
+	ws := req.WorkspaceDir
+	if ws == "" && hasTurn {
+		ws = turnCtx.WorkspaceDir
+	}
+	if ws == "" {
+		ws = "."
+	}
+
+	// 5. Inspect Path Arguments against Path Jail
+	pathKeys := []string{"db_path", "target_file", "TargetFile", "file_path", "FilePath", "path", "Path", "directory_path", "DirectoryPath", "download_dir", "dest_path"}
+	for _, k := range pathKeys {
+		if pVal, ok := subArgs[k].(string); ok && strings.TrimSpace(pVal) != "" {
+			isWrite := isMCPToolMutating(subToolName)
+			pathDec, pathErr := bundle.pathjailEval.EvaluatePath(ws, pVal, isWrite, bundle.cfg.AgentConfigManagement.Enabled)
+			if pathErr != nil || pathDec.Decision == domain.DecisionDeny {
+				return domain.SecurityDecision{
+					Decision: domain.DecisionDeny,
+					Reason:   fmt.Sprintf("🛡️ [Security Gate - Path Jail]: MCP tool '%s' path '%s' is outside active workspace jail: %s", subToolName, pVal, pathDec.Reason),
+				}, nil
+			}
+			if pathDec.Decision == domain.DecisionAsk {
+				return pathDec, nil
+			}
+		}
+	}
+
+	// 6. Inspect Command Arguments against Command Policy
+	cmdKeys := []string{"CommandLine", "command", "cmd", "script"}
+	for _, k := range cmdKeys {
+		if cmdVal, ok := subArgs[k].(string); ok && strings.TrimSpace(cmdVal) != "" {
+			return m.evaluateCommandWithBundle(ctx, sessionKey, req.Role, cmdVal, ws, ws, bundle)
+		}
+	}
+
+	// 7. Inspect URL Arguments against Network Evaluator
+	urlKeys := []string{"url", "Url", "endpoint", "target_url", "uri"}
+	for _, k := range urlKeys {
+		if urlVal, ok := subArgs[k].(string); ok && strings.TrimSpace(urlVal) != "" {
+			netDec, netErr := bundle.networkEval.EvaluateURL(urlVal)
+			if netErr != nil || netDec.Decision == domain.DecisionDeny {
+				return netDec, netErr
+			}
+		}
+	}
+
+	return domain.SecurityDecision{
+		Decision: domain.DecisionAllow,
+		Reason:   fmt.Sprintf("Registered MCP tool '%s' permitted", subToolName),
+	}, nil
+}
+
+func isMCPToolMutating(toolName string) bool {
+	lower := strings.ToLower(toolName)
+	// Whitelisted known read-only tools
+	switch lower {
+	case "sqlite_query_readonly", "get_system_health", "list_schedules", "get_heartbeat",
+		"check_subagent_progress", "list_subagents", "get_subagent_task",
+		"browser_navigate", "browser_extract_text", "browser_screenshot", "browser_get_dom",
+		"browser_get_content", "browser_search":
+		return false
+	}
+
+	// Mutating prefixes
+	mutatingPrefixes := []string{"create_", "delete_", "remove_", "cancel_", "dispatch_", "write_", "set_", "modify_", "update_", "exec_", "run_", "click_", "type_", "press_", "fill_", "upload_", "eval_"}
+	for _, p := range mutatingPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+
+	mutatingKeywords := []string{
+		"delete", "remove", "cancel", "dispatch", "write", "upload", "eval", "exec",
+		"kill", "purge", "restart", "click", "type", "press", "fill", "drag", "drop",
+		"send", "post", "edit", "mutate",
+	}
+	for _, kw := range mutatingKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+
+	return false
+}
+
