@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -976,3 +977,103 @@ func TestThrottler_ImageOnlyDoesNotInjectWarning(t *testing.T) {
 	assert.Empty(t, mockServer.SentMessages, "No warning or empty text message should be sent for image-only turn")
 	mockServer.mu.Unlock()
 }
+
+type testOutboundSanitizer struct {
+	redactFn func(string) string
+}
+
+func (m *testOutboundSanitizer) RedactSecrets(text string) string {
+	if m.redactFn != nil {
+		return m.redactFn(text)
+	}
+	re := regexp.MustCompile(`sk-ant-[a-zA-Z0-9_\-]{20,}`)
+	return re.ReplaceAllString(text, "[REDACTED_SECRET]")
+}
+
+// TestThrottler_OutboundStreamingDLP_SecretRedaction verifies that secrets are redacted during streaming and final flush
+func TestThrottler_OutboundStreamingDLP_SecretRedaction(t *testing.T) {
+	mockServer := NewMockTelegramServer("token_dlp_01")
+	defer mockServer.Close()
+
+	bot, err := mockServer.NewBot()
+	require.NoError(t, err)
+
+	throttler := NewDeliveryThrottler(bot, nil, 0.05, true)
+	defer throttler.Stop()
+	throttler.SetOutboundSanitizer(&testOutboundSanitizer{})
+
+	sessionKey := "telegram:999888:0"
+	ctx := context.Background()
+
+	_ = throttler.OnStreamInit(ctx, domain.NewEvent(domain.EventStreamInit, domain.StreamInitPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_dlp_01",
+		TurnID:         "turn-dlp-01",
+	}))
+
+	// Delta with an Anthropic API Key
+	secretKey := "sk-ant-api03-secretkey1234567890abcdef"
+	err = throttler.OnStreamDelta(ctx, domain.NewEvent(domain.EventStreamDelta, domain.StreamDeltaPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_dlp_01",
+		StepIndex:      0,
+		TextDelta:      "Here is your API key: " + secretKey + " - keep it safe!",
+	}))
+	require.NoError(t, err)
+
+	// Wait for edit/send
+	require.Eventually(t, func() bool {
+		mockServer.mu.Lock()
+		defer mockServer.mu.Unlock()
+		return len(mockServer.SentMessages) > 0
+	}, 2*time.Second, 20*time.Millisecond)
+
+	mockServer.mu.Lock()
+	for _, msg := range mockServer.SentMessages {
+		assert.NotContains(t, msg.Text, secretKey, "Raw secret must never be sent in message")
+		assert.Contains(t, msg.Text, "[REDACTED_SECRET]", "Secret should be replaced with redaction token")
+	}
+	mockServer.mu.Unlock()
+
+	// Complete turn
+	err = throttler.OnStreamResult(ctx, domain.NewEvent(domain.EventStreamResult, domain.StreamResultPayload{
+		SessionKey:     sessionKey,
+		ConversationID: "conv_dlp_01",
+		TurnID:         "turn-dlp-01",
+		Status:         "SUCCESS",
+		Response:       "Final response with key: " + secretKey,
+	}))
+	require.NoError(t, err)
+
+	// Verify all edited and sent messages have no secrets
+	mockServer.mu.Lock()
+	for _, edit := range mockServer.EditMessages {
+		assert.NotContains(t, edit.Text, secretKey, "Raw secret must never be edited in message")
+		assert.Contains(t, edit.Text, "[REDACTED_SECRET]")
+	}
+	mockServer.mu.Unlock()
+}
+
+// TestThrottler_OutboundStreamingDLP_LookbackBoundary verifies that a secret straddling chunk boundaries is caught by the lookback buffer
+func TestThrottler_OutboundStreamingDLP_LookbackBoundary(t *testing.T) {
+	san := &testOutboundSanitizer{}
+	dt := &DeliveryThrottler{}
+	dt.SetOutboundSanitizer(san)
+
+	// A secret split across boundaries:
+	// Chunk 1 ends with "sk-ant-"
+	// Chunk 2 starts with "api03-abcdef1234567890123456 and more"
+	chunk1Tail := "Here is the key: sk-ant-"
+	chunk2 := "api03-abcdef1234567890123456 and more text"
+
+	lookback := chunk1Tail
+	if len(chunk1Tail) > LookbackBufferSize {
+		lookback = chunk1Tail[len(chunk1Tail)-LookbackBufferSize:]
+	}
+	redactedChunk2 := dt.redact(chunk2, lookback)
+
+	assert.NotContains(t, redactedChunk2, "api03-abcdef1234567890123456", "Split secret suffix must not leak in chunk 2")
+	assert.Contains(t, redactedChunk2, "[REDACTED_SECRET]", "Redaction token must be present in chunk 2")
+	assert.Contains(t, redactedChunk2, "and more text", "Remaining text must be preserved")
+}
+

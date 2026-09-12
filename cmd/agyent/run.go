@@ -288,6 +288,7 @@ and begins processing inbound turns through the local Antigravity (AGY) harness.
 		secMgr := securityAdapter.NewManager(cfg.Security, channelMux, mainLogger)
 		secMgr.SetEventBus(bus)
 		channelMux.SetURLSafetyEvaluator(secMgr)
+		channelMux.SetOutboundSanitizer(secMgr)
 		ipcServer := ipc.NewServer(secMgr, "", mainLogger)
 
 		_ = config.MigrateLegacyWorkspace(cfg.Storage.AgentsDir)
