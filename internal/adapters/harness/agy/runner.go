@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -781,6 +782,8 @@ func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []str
 		"LANG": true, "LC_ALL": true, "LC_CTYPE": true, "USER": true, "LOGNAME": true,
 		"SHELL": true, "TERM": true, "NO_COLOR": true, "SYSTEMROOT": true, "COMSPEC": true,
 		"PATHEXT": true, "WINDIR": true, "APPDATA": true, "LOCALAPPDATA": true,
+		"USERPROFILE": true, "HOMEDRIVE": true, "HOMEPATH": true, "SYSTEMDRIVE": true,
+		"PROGRAMDATA": true, "PROGRAMFILES": true, "PROGRAMFILES(X86)": true, "ALLUSERSPROFILE": true,
 		"GO_WANT_MOCK_AGY_HELPER": true, "MOCK_SCENARIO": true,
 	}
 
@@ -792,6 +795,25 @@ func buildCommandEnv(req domain.ExecutionRequest, sessionKeyOpt ...string) []str
 		}
 	}
 	envList = append(envList, "NO_COLOR=1", "TERM=dumb")
+
+	// On Windows, Antigravity CLI and Go's os.UserHomeDir strictly require USERPROFILE
+	// (or HOMEDRIVE+HOMEPATH). Ensure they are never missing in the child subprocess.
+	if runtime.GOOS == "windows" {
+		hasUserProfile := false
+		for _, e := range envList {
+			if strings.HasPrefix(strings.ToUpper(e), "USERPROFILE=") {
+				hasUserProfile = true
+				break
+			}
+		}
+		if !hasUserProfile {
+			if up := os.Getenv("USERPROFILE"); up != "" {
+				envList = append(envList, "USERPROFILE="+up)
+			} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+				envList = append(envList, "USERPROFILE="+home)
+			}
+		}
+	}
 	if req.AgentName != "" {
 		envList = append(envList, "AGYENT_AGENT_NAME="+req.AgentName)
 	}

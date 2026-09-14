@@ -18,6 +18,7 @@ import (
 	"agyent/internal/adapters/security"
 	"agyent/internal/adapters/security/ipc"
 	"agyent/internal/config"
+	"agyent/internal/core/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,7 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 	t.Run("OfflineFailSafeDefaultDeny", func(t *testing.T) {
 		payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"dir"}},"stepIdx":1,"conversationId":"test-offline"}`
 		cmd := exec.Command(exePath, "hook-bridge", "pre")
-		cmd.Env = append(os.Environ(), "AGYENT_SECURITY_IPC_ADDR=127.0.0.1:49992")
+		cmd.Env = append(os.Environ(), "AGYENT_SECURITY_IPC_ADDR=127.0.0.1:49992", "AGYENT_TURN_ID=turn-offline-test")
 		cmd.Stdin = strings.NewReader(payload)
 		var outBuf bytes.Buffer
 		cmd.Stdout = &outBuf
@@ -102,6 +103,47 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 		t.Logf("Offline Fail-Safe verdict: %+v", resp)
 	})
 
+	// 2.1. Pass-through outside active turn (IDE developer direct usage)
+	t.Run("PassThroughOutsideAgyentTurn_Pre", func(t *testing.T) {
+		payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"dir"}},"stepIdx":1,"conversationId":"ide-test"}`
+		cmd := exec.Command(exePath, "hook-bridge", "pre")
+		var cleanEnv []string
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "AGYENT_TURN_ID=") && !strings.HasPrefix(e, "AGYENT_SECURITY_IPC_TOKEN=") {
+				cleanEnv = append(cleanEnv, e)
+			}
+		}
+		cmd.Env = cleanEnv
+		cmd.Stdin = strings.NewReader(payload)
+		var outBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		err := cmd.Run()
+		require.NoError(t, err)
+
+		var resp HookOutput
+		require.NoError(t, json.Unmarshal(outBuf.Bytes(), &resp))
+		assert.Equal(t, "allow", resp.Decision)
+	})
+
+	t.Run("PassThroughOutsideAgyentTurn_Post", func(t *testing.T) {
+		payload := `{"toolCall":{"name":"run_command","args":{"output":"hello"}},"stepIdx":1,"conversationId":"ide-test"}`
+		cmd := exec.Command(exePath, "hook-bridge", "post")
+		var cleanEnv []string
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "AGYENT_TURN_ID=") && !strings.HasPrefix(e, "AGYENT_SECURITY_IPC_TOKEN=") {
+				cleanEnv = append(cleanEnv, e)
+			}
+		}
+		cmd.Env = cleanEnv
+		cmd.Stdin = strings.NewReader(payload)
+		var outBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		err := cmd.Run()
+		require.NoError(t, err)
+
+		assert.Equal(t, "{}\n", outBuf.String())
+	})
+
 	// 3. Live IPC Server testing with active daemon
 	t.Run("LiveGatewayInterception", func(t *testing.T) {
 		cfg := config.GetEffectiveSecurityPreset("balanced")
@@ -110,6 +152,12 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 		testIPCAddr := "127.0.0.1:49991"
 		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		secMgr := security.NewManager(cfg, nil, logger)
+		secMgr.RegisterActiveTurn(domain.TurnSecurityContext{
+			TurnID:         "turn-e2e-live",
+			SessionKey:     "c1",
+			ConversationID: "c1",
+			WorkspaceDir:   filepath.Clean("."),
+		})
 		ipcServer := ipc.NewServer(secMgr, testIPCAddr, logger)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -209,7 +257,7 @@ func TestBinary_LiveRealWorldScenarios(t *testing.T) {
 func executeHookWithAddr(t *testing.T, binPath, hookType, payload, addr string) HookOutput {
 	t.Helper()
 	cmd := exec.Command(binPath, "hook-bridge", hookType)
-	cmd.Env = append(os.Environ(), "AGYENT_SECURITY_IPC_ADDR="+addr)
+	cmd.Env = append(os.Environ(), "AGYENT_SECURITY_IPC_ADDR="+addr, "AGYENT_TURN_ID=turn-e2e-live")
 	cmd.Stdin = strings.NewReader(payload)
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf

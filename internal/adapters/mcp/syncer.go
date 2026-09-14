@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -286,9 +287,13 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 			_ = f.Close()
 		}
 
+		_ = os.Chmod(target, 0600)
 		if err := os.Rename(tmpFile, target); err != nil {
-			_ = os.Remove(tmpFile)
-			return fmt.Errorf("failed to atomically replace %s: %w", target, err)
+			_ = os.Remove(target)
+			if retryErr := os.Rename(tmpFile, target); retryErr != nil {
+				_ = os.Remove(tmpFile)
+				return fmt.Errorf("failed to atomically replace %s: %w", target, err)
+			}
 		}
 	}
 
@@ -310,6 +315,11 @@ func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return &mcpConfigFile{
+			MCPServers: make(map[string]domain.MCPServerConfig),
+		}, nil
 	}
 	var cfg mcpConfigFile
 	if err := json.Unmarshal(data, &cfg); err != nil {

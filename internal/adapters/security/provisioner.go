@@ -145,9 +145,13 @@ func EnsureWorkspaceHooksProvisioned(workspaceDir string, agyentBinPath string, 
 		_ = f.Close()
 	}
 
+	_ = os.Chmod(hookFilePath, 0600)
 	if err := os.Rename(tmpFile, hookFilePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return "", fmt.Errorf("failed to atomically replace %s: %w", hookFilePath, err)
+		_ = os.Remove(hookFilePath)
+		if retryErr := os.Rename(tmpFile, hookFilePath); retryErr != nil {
+			_ = os.Remove(tmpFile)
+			return "", fmt.Errorf("failed to atomically replace %s: %w", hookFilePath, err)
+		}
 	}
 	_ = os.Chmod(hookFilePath, 0444)
 
@@ -407,7 +411,11 @@ func mergeSettingsPermissions(filePath string) error {
 	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
 		return err
 	}
-	_ = os.Rename(tmpFile, filePath)
+	_ = os.Chmod(filePath, 0600)
+	if err := os.Rename(tmpFile, filePath); err != nil {
+		_ = os.Remove(filePath)
+		_ = os.Rename(tmpFile, filePath)
+	}
 	return nil
 }
 
@@ -446,7 +454,11 @@ func RemoveGlobalHooks(logger *slog.Logger) error {
 			updated, _ := json.MarshalIndent(hooks, "", "  ")
 			tmpFile := fmt.Sprintf("%s.tmp.%d.%d", hookFilePath, os.Getpid(), time.Now().UnixNano())
 			if err := os.WriteFile(tmpFile, updated, 0600); err == nil {
-				_ = os.Rename(tmpFile, hookFilePath)
+				_ = os.Chmod(hookFilePath, 0600)
+				if err := os.Rename(tmpFile, hookFilePath); err != nil {
+					_ = os.Remove(hookFilePath)
+					_ = os.Rename(tmpFile, hookFilePath)
+				}
 			}
 			logger.Info("Cleaned agyent-security-gate from global hooks", "path", hookFilePath)
 		}
@@ -593,9 +605,13 @@ func EnsureAGYProjectProvisioned(projectID, agentName, workspaceDir string, logg
 		return fmt.Errorf("failed to write tmp project file %s: %w", tmpFile, err)
 	}
 
+	_ = os.Chmod(projFilePath, 0600)
 	if err := os.Rename(tmpFile, projFilePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to atomically replace %s: %w", projFilePath, err)
+		_ = os.Remove(projFilePath)
+		if retryErr := os.Rename(tmpFile, projFilePath); retryErr != nil {
+			_ = os.Remove(tmpFile)
+			return fmt.Errorf("failed to atomically replace %s: %w", projFilePath, err)
+		}
 	}
 
 	logger.Debug("Provisioned AGY project configuration", "project_id", projectID, "path", projFilePath)

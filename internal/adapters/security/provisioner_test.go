@@ -86,3 +86,24 @@ func TestEnsureAGYProjectProvisionedRejectsProjectPathTraversal(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid path character")
 }
+
+func TestEnsureWorkspaceHooksProvisionedOverwritesReadOnlyFile(t *testing.T) {
+	workspace := t.TempDir()
+	agentsDir := filepath.Join(workspace, ".agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0700))
+	hooksPath := filepath.Join(agentsDir, "hooks.json")
+	require.NoError(t, os.WriteFile(hooksPath, []byte("{}"), 0444))
+
+	// Ensure the file is read-only
+	_ = os.Chmod(hooksPath, 0444)
+
+	// Second provisioning run should succeed in overwriting the read-only file
+	outPath, err := EnsureWorkspaceHooksProvisioned(workspace, "agyent", nil)
+	require.NoError(t, err)
+	assert.Equal(t, hooksPath, outPath)
+
+	data, err := os.ReadFile(hooksPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "agyent-security-gate")
+}
+
