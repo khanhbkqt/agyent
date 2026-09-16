@@ -280,4 +280,41 @@ func TestMCPSyncer_APIS4DEnvironmentPropagation(t *testing.T) {
 	assert.Contains(t, string(content), `"AGYENT_TURN_ID": "turn-99"`)
 }
 
+func TestMCPSyncer_EmptyAndWhitespaceConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "mcp_empty.json")
+
+	// Create a 0-byte file
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0644))
+
+	syncer, err := mcp.NewMCPSyncer(configPath)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	servers := []domain.MCPServerConfig{
+		{
+			ServerName: "test-server",
+			Command:    "node",
+			Args:       []string{"srv.js"},
+		},
+	}
+
+	err = syncer.MountServers(ctx, "session-empty", servers)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "test-server")
+
+	// Test with whitespace-only content
+	wsPath := filepath.Join(tmpDir, "mcp_ws.json")
+	require.NoError(t, os.WriteFile(wsPath, []byte("   \n\t  \n"), 0644))
+
+	syncerWS, err := mcp.NewMCPSyncer(wsPath)
+	require.NoError(t, err)
+	err = syncerWS.MountServers(ctx, "session-ws", servers)
+	require.NoError(t, err)
+}
+
+
 
