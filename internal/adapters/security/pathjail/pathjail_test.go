@@ -268,3 +268,28 @@ func TestPathJail_ExtraAllowedPaths(t *testing.T) {
 	assert.Equal(t, domain.DecisionDeny, dec.Decision)
 }
 
+func TestPathJail_CaseInsensitiveOS_ForbiddenPath(t *testing.T) {
+	tempDir := t.TempDir()
+	workspaceDir := filepath.Join(tempDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspaceDir, 0755))
+
+	forbiddenFile := filepath.Join(workspaceDir, "secret_key.pem")
+
+	cfg := config.FilesystemGuardrailConfig{
+		EnforceWorkspaceJail: true,
+		AllowedPaths:         []string{workspaceDir},
+		ForbiddenPaths:       []string{forbiddenFile},
+	}
+	evaluator := NewEvaluator(cfg, nil)
+
+	// Target with uppercase casing
+	casedFile := filepath.Join(workspaceDir, "SECRET_KEY.PEM")
+	dec, err := evaluator.EvaluatePath(workspaceDir, casedFile, false, false)
+	require.NoError(t, err)
+
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		assert.Equal(t, domain.DecisionDeny, dec.Decision)
+		assert.Contains(t, dec.Reason, "Access strictly forbidden")
+	}
+}
+

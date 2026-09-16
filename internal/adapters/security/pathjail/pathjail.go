@@ -244,6 +244,8 @@ func canonicalize(p string) string {
 	if runtime.GOOS == "windows" {
 		cleaned = strings.ToLower(cleaned)
 		cleaned = strings.ReplaceAll(cleaned, "/", "\\")
+	} else if runtime.GOOS == "darwin" {
+		cleaned = strings.ToLower(cleaned)
 	}
 	return cleaned
 }

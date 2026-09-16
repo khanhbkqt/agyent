@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -163,11 +164,11 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 		key := formatEphemeralKey(serverName, sessionKey)
 		s.activeMounts[key]++
 
-		// Ensure fallback environment variables for multi-tenant isolation
+		// Ensure fallback environment variables for APIS-4D multi-tenant isolation
 		if srv.Env == nil {
 			srv.Env = make(map[string]string)
 		} else {
-			envCopy := make(map[string]string, len(srv.Env)+2)
+			envCopy := make(map[string]string, len(srv.Env)+6)
 			for k, v := range srv.Env {
 				envCopy[k] = v
 			}
@@ -175,6 +176,26 @@ func (s *MCPSyncer) MountServers(ctx context.Context, sessionKey string, servers
 		}
 		if _, exists := srv.Env["AGYENT_SESSION_KEY"]; !exists && sessionKey != "" {
 			srv.Env["AGYENT_SESSION_KEY"] = sessionKey
+		}
+		if _, exists := srv.Env["AGYENT_AGENT_WORKSPACE"]; !exists {
+			if v := os.Getenv("AGYENT_AGENT_WORKSPACE"); v != "" {
+				srv.Env["AGYENT_AGENT_WORKSPACE"] = v
+			}
+		}
+		if _, exists := srv.Env["AGYENT_AGENT_NAME"]; !exists {
+			if v := os.Getenv("AGYENT_AGENT_NAME"); v != "" {
+				srv.Env["AGYENT_AGENT_NAME"] = v
+			}
+		}
+		if _, exists := srv.Env["AGYENT_USER_ID"]; !exists {
+			if v := os.Getenv("AGYENT_USER_ID"); v != "" {
+				srv.Env["AGYENT_USER_ID"] = v
+			}
+		}
+		if _, exists := srv.Env["AGYENT_TURN_ID"]; !exists {
+			if v := os.Getenv("AGYENT_TURN_ID"); v != "" {
+				srv.Env["AGYENT_TURN_ID"] = v
+			}
 		}
 
 		cfg.MCPServers[key] = srv
@@ -266,9 +287,13 @@ func (s *MCPSyncer) atomicWriteUnderLock(cfg *mcpConfigFile) error {
 			_ = f.Close()
 		}
 
+		_ = os.Chmod(target, 0600)
 		if err := os.Rename(tmpFile, target); err != nil {
-			_ = os.Remove(tmpFile)
-			return fmt.Errorf("failed to atomically replace %s: %w", target, err)
+			_ = os.Remove(target)
+			if retryErr := os.Rename(tmpFile, target); retryErr != nil {
+				_ = os.Remove(tmpFile)
+				return fmt.Errorf("failed to atomically replace %s: %w", target, err)
+			}
 		}
 	}
 
@@ -290,6 +315,11 @@ func (s *MCPSyncer) readConfigUnderLock() (*mcpConfigFile, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return &mcpConfigFile{
+			MCPServers: make(map[string]domain.MCPServerConfig),
+		}, nil
 	}
 	var cfg mcpConfigFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
