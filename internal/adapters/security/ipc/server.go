@@ -69,6 +69,13 @@ func (s *Server) SetAuthToken(token string) {
 	s.authToken = token
 }
 
+// AuthToken returns the configured expected bearer token for IPC requests.
+func (s *Server) AuthToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.authToken
+}
+
 // SetPolicyEngine configures the centralized policy evaluator for IPC actions.
 // IPC requests are capabilities of an active turn, never administrative tokens.
 func (s *Server) SetPolicyEngine(policy ports.PolicyEngine) {
@@ -105,6 +112,12 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.running {
 		s.mu.Unlock()
 		return nil
+	}
+
+	if s.authToken == "" && s.manager != nil {
+		if tok := s.manager.GetIPCAuthToken(); tok != "" {
+			s.authToken = tok
+		}
 	}
 
 	listener, err := net.Listen("tcp", s.addr)
@@ -911,16 +924,10 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 
 	case "post":
 		if req.TurnID == "" {
-			return HookResponse{
-				Decision: string(domain.DecisionDeny),
-				Reason:   "Missing TurnID: unauthenticated hook execution",
-			}, nil
+			return HookResponse{}, nil
 		}
 		if _, ok := s.manager.ResolveTurnByID(req.TurnID); !ok {
-			return HookResponse{
-				Decision: string(domain.DecisionDeny),
-				Reason:   "Invalid or expired TurnID",
-			}, nil
+			return HookResponse{}, nil
 		}
 
 		// Handle PostToolUse output sanitization and return overwritten output

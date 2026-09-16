@@ -70,9 +70,10 @@ func (m *mockPolicy) ResolveAgentRole(ctx context.Context, principal domain.Prin
 }
 
 type mockSecurityManager struct {
-	mu         sync.Mutex
-	registered map[string]domain.TurnSecurityContext
-	unregTurns []string
+	mu           sync.Mutex
+	registered   map[string]domain.TurnSecurityContext
+	unregTurns   []string
+	ipcAuthToken string
 }
 
 func newMockSecurityManager() *mockSecurityManager {
@@ -133,6 +134,18 @@ func (m *mockSecurityManager) GetDashboardSummary(sessionKey string) domain.Secu
 }
 func (m *mockSecurityManager) EnsureWorkspaceHooks(workspaceDir string) error { return nil }
 func (m *mockSecurityManager) CancelSessionApprovals(sessionKey string)       {}
+
+func (m *mockSecurityManager) GetIPCAuthToken() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ipcAuthToken
+}
+
+func (m *mockSecurityManager) SetIPCAuthToken(token string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ipcAuthToken = token
+}
 
 type mockConfigProvider struct {
 	admins map[string]bool
@@ -314,6 +327,7 @@ func TestExecuteTurn_ExecutionAdmissionAndProjectScope(t *testing.T) {
 	runner := &mockRunner{}
 	policy := &mockPolicy{}
 	secMgr := newMockSecurityManager()
+	secMgr.SetIPCAuthToken("test-ipc-token")
 	svc := NewService(runner, policy, secMgr, nil, nil, nil)
 
 	principal := domain.Principal{
@@ -342,6 +356,7 @@ func TestExecuteTurn_ExecutionAdmissionAndProjectScope(t *testing.T) {
 	assert.Equal(t, "/tmp/worker-1", callReq.Admission.WorkspaceDir)
 	assert.Equal(t, callReq.TurnID, callReq.Admission.TurnID)
 	assert.Equal(t, "agy-proj-tenant-99-worker-1", callReq.Env["AGYENT_PROJECT_ID"])
+	assert.Equal(t, "test-ipc-token", callReq.Env["AGYENT_SECURITY_IPC_TOKEN"])
 	assert.Equal(t, "tg:session-99", callReq.SessionKey)
 	assert.Equal(t, "user-alpha", callReq.UserID)
 }

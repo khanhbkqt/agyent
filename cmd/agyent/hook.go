@@ -23,6 +23,10 @@ var hookBridgeCmd = &cobra.Command{
 		var req ipc.HookRequest
 		if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
 			// If stdin cannot be decoded, output fail-safe response
+			if hookType == "post" {
+				fmt.Println("{}")
+				return
+			}
 			resp, _ := json.Marshal(ipc.HookResponse{
 				Decision: string(domain.DecisionDeny),
 				Reason:   fmt.Sprintf("Failed to decode STDIN hook payload: %v", err),
@@ -39,6 +43,17 @@ var hookBridgeCmd = &cobra.Command{
 			req.AuthToken = os.Getenv("AGYENT_SECURITY_IPC_TOKEN")
 		}
 
+		// When tool calls run outside an active agyent turn (e.g. developer using Antigravity CLI/IDE directly),
+		// pass-through immediately so the developer is not locked out of their IDE.
+		if req.TurnID == "" && req.AuthToken == "" {
+			if hookType == "post" {
+				fmt.Println("{}")
+			} else {
+				fmt.Println(`{"decision":"allow"}`)
+			}
+			return
+		}
+
 		ipcAddr := os.Getenv("AGYENT_SECURITY_IPC_ADDR")
 		if ipcAddr == "" {
 			ipcAddr = ipc.DefaultIPCAddress
@@ -46,11 +61,26 @@ var hookBridgeCmd = &cobra.Command{
 		client := ipc.NewClient(ipcAddr)
 		resp, err := client.SendHookRequest(req, 65*time.Second)
 		if err != nil {
+			if hookType == "post" {
+				fmt.Println("{}")
+				return
+			}
 			// Fail-safe Default-Deny if daemon is unreachable
 			resp = ipc.HookResponse{
 				Decision: string(domain.DecisionDeny),
 				Reason:   fmt.Sprintf("🛡️ [Security Gateway]: Gateway daemon offline (%v). Fail-safe Default-Deny engaged.", err),
 			}
+		}
+
+		if hookType == "post" {
+			// Antigravity PostToolUse protojson expects {} or sanitized output mutation without a "decision" field.
+			postResp := make(map[string]interface{})
+			if len(resp.Overwrite) > 0 {
+				postResp["overwrite"] = resp.Overwrite
+			}
+			respBytes, _ := json.Marshal(postResp)
+			fmt.Println(string(respBytes))
+			return
 		}
 
 		respBytes, _ := json.Marshal(resp)

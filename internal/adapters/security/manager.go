@@ -141,6 +141,7 @@ type Manager struct {
 	shortCodeSeq     uint32
 	activeTurns      map[string]domain.TurnSecurityContext // convID -> TurnSecurityContext
 	activeWorkspaces map[string]domain.TurnSecurityContext // workspaceDir -> TurnSecurityContext
+	ipcAuthToken     string
 	eventBus         ports.EventBusPort
 	logger           *slog.Logger
 
@@ -162,6 +163,20 @@ func (m *Manager) SetEventBus(bus ports.EventBusPort) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventBus = bus
+}
+
+// GetIPCAuthToken returns the configured daemon IPC authorization token.
+func (m *Manager) GetIPCAuthToken() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.ipcAuthToken
+}
+
+// SetIPCAuthToken sets the daemon IPC authorization token.
+func (m *Manager) SetIPCAuthToken(token string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ipcAuthToken = token
 }
 
 // NewManager constructs a new Security Manager with isolated evaluator pools per preset.
