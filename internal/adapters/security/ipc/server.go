@@ -924,16 +924,10 @@ func (s *Server) HandleHookRequest(ctx context.Context, req HookRequest) (HookRe
 
 	case "post":
 		if req.TurnID == "" {
-			return HookResponse{
-				Decision: string(domain.DecisionDeny),
-				Reason:   "Missing TurnID: unauthenticated hook execution",
-			}, nil
+			return HookResponse{}, nil
 		}
 		if _, ok := s.manager.ResolveTurnByID(req.TurnID); !ok {
-			return HookResponse{
-				Decision: string(domain.DecisionDeny),
-				Reason:   "Invalid or expired TurnID",
-			}, nil
+			return HookResponse{}, nil
 		}
 
 		// Handle PostToolUse output sanitization and return overwritten output
