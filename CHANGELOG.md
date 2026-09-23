@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Dual-Tier Dialogue Resolution:** Implemented disk-first backward transcript scanning (`FindBrainTranscript`, `ExtractLastDialogueFromTranscript`) across candidate brain directories (`~/.gemini/antigravity` and `~/.gemini/antigravity-cli`), with thread-safe in-memory `recentTurns` tracking as engine fallback.
   - **KV-Cache Invariance:** Anchored all retained dialogue and technical summaries strictly in Level 4 (`[CONVERSATION CONTINUITY & CONTEXT SNAPSHOT]`), keeping Levels 0–3 system prompt prefix cache invariant.
 
+### Fixed
+- **Windows NTFS & Antigravity IDE Environment Hardening (`harness`, `mcp`, `security`, `cmd`):**
+  - **Windows Subprocess Environment:** Inherited `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, and `PROGRAMDATA` to prevent Antigravity CLI and Go runtime home directory lookup failures.
+  - **NTFS Atomic File Replacement:** Handled read-only attribute (`0444`) collisions on Windows NTFS during hooks and MCP sync provisioning by enforcing `0600` chmod and atomic fallback.
+  - **Empty MCP Config Resilience:** Handled empty or whitespace-only `mcp_config.json` gracefully without unmarshal syntax corruption errors.
+  - **Antigravity PostToolUse Schema Compliance:** Conformed hook responses to Antigravity protojson expectations (`{}` or output overwrite) rather than emitting unsupported `deny` decisions.
+  - **Direct IDE Developer Pass-Through:** Permitted unauthenticated hook executions when `TurnID` and auth tokens are empty, preventing developer lockouts when using Antigravity CLI or IDE directly.
+
 ---
 
 ## [1.0.58] - 2026-09-11
