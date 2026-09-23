@@ -149,12 +149,16 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	attachmentRefs := make([]domain.InboundAttachmentRef, 0, len(allAttachments))
 	for _, attachment := range allAttachments {
 		remoteURL := attachment.GetEffectiveURL()
-		if remoteURL == "" {
+		fileID := attachment.GetEffectiveFileID()
+		if remoteURL == "" && fileID == "" {
 			continue
 		}
-		fileID := attachment.GetEffectiveFileID()
 		if fileID == "" {
 			fileID = fmt.Sprintf("att_%d", time.Now().UnixNano())
+		}
+		sourceID := remoteURL
+		if sourceID == "" {
+			sourceID = fileID
 		}
 		attachmentType := strings.ToLower(strings.TrimSpace(attachment.Type))
 		mimeType := "application/octet-stream"
@@ -193,7 +197,7 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 		attachmentRefs = append(attachmentRefs, domain.InboundAttachmentRef{
 			Channel:  "zalo",
 			ID:       fileID,
-			SourceID: remoteURL,
+			SourceID: sourceID,
 			FileName: fileName,
 			MIMEType: mimeType,
 			Size:     attachment.GetEffectiveFileSize(),
@@ -201,15 +205,6 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 			Caption:  caption,
 			BotID:    botID,
 		})
-	}
-
-	// Zero-Empty-Prompt Guard: Ensure prompt is never empty to prevent headless TUI crashes
-	if strings.TrimSpace(rawText) == "" {
-		if len(attachmentRefs) > 0 {
-			rawText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
-		} else {
-			rawText = "Xin chào!"
-		}
 	}
 
 	// Intercept HITL Approvals (Quote replies, /approve, /deny, /kill, short codes)
@@ -228,8 +223,17 @@ func (r *Router) RouteUpdate(ctx context.Context, update ZaloUpdate, botCtx ...B
 	}
 
 	cleanText, isMentioned := CleanZaloMention(rawText, botCtxObj)
-	if cleanText == "" {
-		cleanText = rawText
+
+	// Zero-Empty-Prompt Guard: Ensure prompt is never empty to prevent headless TUI crashes
+	if strings.TrimSpace(cleanText) == "" {
+		if len(attachmentRefs) > 0 || len(allAttachments) > 0 {
+			cleanText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			cleanText = "Xin chào!"
+		}
+		if strings.TrimSpace(rawText) == "" {
+			rawText = cleanText
+		}
 	}
 
 	r.mu.RLock()

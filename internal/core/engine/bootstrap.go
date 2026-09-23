@@ -229,7 +229,7 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 
 	userText := msg.Text
 	if strings.TrimSpace(userText) == "" {
-		if len(msg.Attachments) > 0 {
+		if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 			userText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
 		} else {
 			userText = "Xin chào!"
@@ -240,6 +240,13 @@ func ComposeTurnPrompt(knowledgeDirectives string, msg domain.CanonicalMessage) 
 		sb.WriteString("[ATTACHED FILES RECEIVED]\n")
 		for _, att := range msg.Attachments {
 			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", att.FilePath, att.Type, att.Size))
+		}
+		sb.WriteString("\nUser Prompt: ")
+		sb.WriteString(userText)
+	} else if len(msg.AttachmentRefs) > 0 {
+		sb.WriteString("[ATTACHED FILES RECEIVED]\n")
+		for _, ref := range msg.AttachmentRefs {
+			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", ref.FileName, ref.Type, ref.Size))
 		}
 		sb.WriteString("\nUser Prompt: ")
 		sb.WriteString(userText)
@@ -295,6 +302,12 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", att.FilePath, att.Type, att.Size))
 		}
 		sb.WriteString("\n")
+	} else if len(msg.AttachmentRefs) > 0 {
+		sb.WriteString("[ATTACHED FILES RECEIVED]\n")
+		for _, ref := range msg.AttachmentRefs {
+			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", ref.FileName, ref.Type, ref.Size))
+		}
+		sb.WriteString("\n")
 	}
 
 	// Level 4: Replied Message Short Context (if turn is a reply)
@@ -321,14 +334,14 @@ func ComposeResolvedTurnPrompt(resolved *domain.ResolvedContext, msg domain.Cano
 
 	resolvedUserText := msg.Text
 	if strings.TrimSpace(resolvedUserText) == "" {
-		if len(msg.Attachments) > 0 {
+		if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 			resolvedUserText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
 		} else {
 			resolvedUserText = "Xin chào!"
 		}
 	}
 
-	if len(msg.Attachments) > 0 {
+	if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 		sb.WriteString("User Prompt: ")
 		sb.WriteString(resolvedUserText)
 	} else {
@@ -356,6 +369,12 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", att.FilePath, att.Type, att.Size))
 		}
 		sb.WriteString("\n")
+	} else if len(msg.AttachmentRefs) > 0 {
+		sb.WriteString("[ATTACHED FILES RECEIVED]\n")
+		for _, ref := range msg.AttachmentRefs {
+			sb.WriteString(fmt.Sprintf("- File: %s (Type: %s, Size: %d bytes)\n", ref.FileName, ref.Type, ref.Size))
+		}
+		sb.WriteString("\n")
 	}
 
 	appendReplyContext(&sb, msg.ReplyContext)
@@ -367,14 +386,14 @@ func ComposeContinuationPrompt(msg domain.CanonicalMessage, temporalTagOpt ...st
 
 	continuationUserText := msg.Text
 	if strings.TrimSpace(continuationUserText) == "" {
-		if len(msg.Attachments) > 0 {
+		if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 			continuationUserText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
 		} else {
 			continuationUserText = "Xin chào!"
 		}
 	}
 
-	if len(msg.Attachments) > 0 {
+	if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 		sb.WriteString("User Prompt: ")
 		sb.WriteString(continuationUserText)
 	} else if msg.ReplyContext != nil {

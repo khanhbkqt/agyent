@@ -121,6 +121,8 @@ type ZaloAttachment struct {
 	URL          string                 `json:"url,omitempty"`
 	ImageURL     string                 `json:"image_url,omitempty"`
 	ThumbnailURL string                 `json:"thumbnail_url,omitempty"`
+	Thumbnail    string                 `json:"thumbnail,omitempty"`
+	ThumbURL     string                 `json:"thumb_url,omitempty"`
 	SRC          string                 `json:"src,omitempty"`
 	Link         string                 `json:"link,omitempty"`
 	FileID       string                 `json:"file_id,omitempty"`
@@ -140,6 +142,15 @@ func (a ZaloAttachment) GetEffectiveURL() string {
 	if u := strings.TrimSpace(a.ImageURL); u != "" {
 		return u
 	}
+	if u := strings.TrimSpace(a.ThumbnailURL); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(a.Thumbnail); u != "" {
+		return u
+	}
+	if u := strings.TrimSpace(a.ThumbURL); u != "" {
+		return u
+	}
 	if u := strings.TrimSpace(a.SRC); u != "" {
 		return u
 	}
@@ -153,16 +164,16 @@ func (a ZaloAttachment) GetEffectiveURL() string {
 		if u := strings.TrimSpace(a.Payload.ImageURL); u != "" {
 			return u
 		}
-		if u := strings.TrimSpace(a.Payload.SRC); u != "" {
-			return u
-		}
-		if u := strings.TrimSpace(a.Payload.Link); u != "" {
-			return u
-		}
 		if u := strings.TrimSpace(a.Payload.ThumbnailURL); u != "" {
 			return u
 		}
 		if u := strings.TrimSpace(a.Payload.Thumbnail); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.SRC); u != "" {
+			return u
+		}
+		if u := strings.TrimSpace(a.Payload.Link); u != "" {
 			return u
 		}
 	}
@@ -312,11 +323,15 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 		Caption     string              `json:"caption"`
 		Description string              `json:"description"`
 		Attachments json.RawMessage     `json:"attachments"`
-		Photo       json.RawMessage     `json:"photo"`
-		PhotoURL    json.RawMessage     `json:"photo_url"`
-		Image       json.RawMessage     `json:"image"`
-		ImageURL    json.RawMessage     `json:"image_url"`
-		Document    json.RawMessage     `json:"document"`
+		Photo        json.RawMessage     `json:"photo"`
+		PhotoURL     json.RawMessage     `json:"photo_url"`
+		Photos       json.RawMessage     `json:"photos"`
+		Image        json.RawMessage     `json:"image"`
+		ImageURL     json.RawMessage     `json:"image_url"`
+		Images       json.RawMessage     `json:"images"`
+		ThumbURL     json.RawMessage     `json:"thumb_url"`
+		ThumbnailURL json.RawMessage     `json:"thumbnail_url"`
+		Document     json.RawMessage     `json:"document"`
 		DocURL      json.RawMessage     `json:"doc_url"`
 		DocumentURL json.RawMessage     `json:"document_url"`
 		File        json.RawMessage     `json:"file"`
@@ -374,10 +389,25 @@ func (m *ZaloInboundMessage) UnmarshalJSON(data []byte) error {
 		m.Photo = parseFlexibleAttachments(raw.PhotoURL, "photo")
 	}
 	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.Photos, "photo")
+	}
+	if len(m.Photo) == 0 {
 		m.Photo = parseFlexibleAttachments(raw.Image, "photo")
 	}
 	if len(m.Photo) == 0 {
 		m.Photo = parseFlexibleAttachments(raw.ImageURL, "photo")
+	}
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.Images, "photo")
+	}
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.ThumbnailURL, "photo")
+	}
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.ThumbURL, "photo")
+	}
+	if len(m.Photo) == 0 {
+		m.Photo = parseFlexibleAttachments(raw.URL, "photo")
 	}
 	if docs := parseFlexibleAttachments(raw.Document, "document"); len(docs) > 0 {
 		m.Document = &docs[0]

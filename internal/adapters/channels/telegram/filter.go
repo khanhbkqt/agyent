@@ -75,8 +75,11 @@ func IsMessageForBot(botUsername string, botID int64, msg *gotgbot.Message) (sho
 		}
 	}
 
-	// 3. Check Telegram Message Entities for mentions
-	for _, ent := range msg.Entities {
+	// 3. Check Telegram Message Entities and CaptionEntities for mentions
+	allEntities := make([]gotgbot.MessageEntity, 0, len(msg.Entities)+len(msg.CaptionEntities))
+	allEntities = append(allEntities, msg.Entities...)
+	allEntities = append(allEntities, msg.CaptionEntities...)
+	for _, ent := range allEntities {
 		if ent.Type == "mention" && botUsername != "" {
 			runes := []rune(text)
 			if int(ent.Offset+ent.Length) <= len(runes) {

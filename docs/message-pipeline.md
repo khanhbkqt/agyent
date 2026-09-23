@@ -73,6 +73,8 @@ When a user uploads code files, logs, or photos:
    
    User Prompt: "Please analyze this error log for me"
    ```
+6. **Zero-Empty-Prompt Handling:** When inbound messages contain only attachments or photos with no text or caption, channel adapters and the core prompt composer inject an explicit prompt instruction (`[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]`) alongside the attachment details rather than falling back to an empty prompt or greeting, ensuring the assistant immediately inspects and analyzes the media.
+
 
 ---
 

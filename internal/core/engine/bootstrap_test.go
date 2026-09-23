@@ -370,3 +370,49 @@ func TestComposePrompts_WithReplyContext(t *testing.T) {
 	})
 }
 
+func TestPromptComposers_AttachmentRefsFallback(t *testing.T) {
+	msgWithRefs := domain.CanonicalMessage{
+		ID:   "img_msg_1",
+		Text: "", // Empty user prompt
+		AttachmentRefs: []domain.InboundAttachmentRef{
+			{
+				Channel:  "telegram",
+				ID:       "att_unique_99",
+				FileName: "screenshot.png",
+				Type:     "image",
+				Size:     4096,
+			},
+		},
+	}
+
+	resolved := &domain.ResolvedContext{}
+
+	// 1. ComposeTurnPrompt
+	turnPrompt := engine.ComposeTurnPrompt("", msgWithRefs)
+	assert.Contains(t, turnPrompt, "User Prompt: [Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]")
+	assert.NotContains(t, turnPrompt, "Xin chào!")
+	assert.Contains(t, turnPrompt, "[ATTACHED FILES RECEIVED]")
+	assert.Contains(t, turnPrompt, "screenshot.png")
+
+	// 2. ComposeResolvedTurnPrompt
+	resolvedPrompt := engine.ComposeResolvedTurnPrompt(resolved, msgWithRefs)
+	assert.Contains(t, resolvedPrompt, "User Prompt: [Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]")
+	assert.NotContains(t, resolvedPrompt, "Xin chào!")
+	assert.Contains(t, resolvedPrompt, "[ATTACHED FILES RECEIVED]")
+	assert.Contains(t, resolvedPrompt, "screenshot.png")
+
+	// 3. ComposeContinuationPrompt
+	continuationPrompt := engine.ComposeContinuationPrompt(msgWithRefs)
+	assert.Contains(t, continuationPrompt, "User Prompt: [Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]")
+	assert.NotContains(t, continuationPrompt, "Xin chào!")
+	assert.Contains(t, continuationPrompt, "[ATTACHED FILES RECEIVED]")
+	assert.Contains(t, continuationPrompt, "screenshot.png")
+
+	// 4. Truly empty message without attachments or refs should fallback to "Xin chào!"
+	emptyMsg := domain.CanonicalMessage{
+		ID:   "empty_msg_2",
+		Text: "",
+	}
+	continuationEmpty := engine.ComposeContinuationPrompt(emptyMsg)
+	assert.Equal(t, "Xin chào!", continuationEmpty)
+}

@@ -674,6 +674,108 @@ func TestZaloRouter_ReplyToMessageContext(t *testing.T) {
 	}
 }
 
+func TestZaloRouter_ThumbnailURLAndFileIDFallback(t *testing.T) {
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			Bots: []config.BotConfig{{BotToken: "zalo_token_123"}},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 2)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
 
+	// Case 1: Image with top-level thumbnail_url and no caption/text
+	rawJSON1 := `{
+		"update_id": 10001,
+		"message": {
+			"message_id": "zalo-thumb-1",
+			"from": {"id": "user-1", "name": "Bình"},
+			"chat": {"id": "chat-1", "type": "private"},
+			"thumbnail_url": "https://cdn.zalo.example/thumb.jpg"
+		}
+	}`
+	var update1 zalo.ZaloUpdate
+	require.NoError(t, json.Unmarshal([]byte(rawJSON1), &update1))
+	router.RouteUpdate(context.Background(), update1)
 
+	select {
+	case msg := <-inbound:
+		assert.Contains(t, msg.Text, "Người dùng gửi ảnh/tệp đính kèm")
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "https://cdn.zalo.example/thumb.jpg", msg.AttachmentRefs[0].SourceID)
+	case <-time.After(time.Second):
+		t.Fatal("expected message with thumbnail_url to be routed")
+	}
 
+	// Case 2: Image with only file_id (no remote URL) and no caption/text
+	rawJSON2 := `{
+		"update_id": 10002,
+		"message": {
+			"message_id": "zalo-fileid-only",
+			"from": {"id": "user-2", "name": "Chi"},
+			"chat": {"id": "chat-2", "type": "private"},
+			"photo": [{"file_id": "photo_fid_999", "type": "photo"}]
+		}
+	}`
+	var update2 zalo.ZaloUpdate
+	require.NoError(t, json.Unmarshal([]byte(rawJSON2), &update2))
+	router.RouteUpdate(context.Background(), update2)
+
+	select {
+	case msg := <-inbound:
+		assert.Contains(t, msg.Text, "Người dùng gửi ảnh/tệp đính kèm")
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "photo_fid_999", msg.AttachmentRefs[0].ID)
+		assert.Equal(t, "photo_fid_999", msg.AttachmentRefs[0].SourceID)
+	case <-time.After(time.Second):
+		t.Fatal("expected message with photo file_id to be routed")
+	}
+}
+
+func TestZaloRouter_GroupPhotoMentionOnly_ZeroEmptyPromptFallback(t *testing.T) {
+	cfg := &config.Config{
+		Zalo: config.ZaloConfig{
+			AllowedGroupIDs: []string{"group_101"},
+			Bots: []config.BotConfig{
+				{
+					Name:      "traomofc",
+					BotToken:  "token_123",
+					BindAgent: "traomofc",
+				},
+			},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 2)
+	router := zalo.NewRouter(cfg, nil, nil, inbound)
+
+	botCtx := zalo.BotContext{
+		BotID:       "9999",
+		BotName:     "Trao Mơ FC",
+		BotUsername: "traomofc",
+		BindAgent:   "traomofc",
+	}
+
+	rawJSON := `{
+		"update_id": 10003,
+		"message": {
+			"message_id": "zalo-grp-photo-mention",
+			"from": {"id": "user-grp", "name": "Nam"},
+			"chat": {"id": "group_101", "type": "group"},
+			"text": "@traomofc",
+			"photo": [{"file_id": "photo_fid_888", "type": "photo", "url": "https://cdn.zalo.example/grp.jpg"}]
+		}
+	}`
+	var update zalo.ZaloUpdate
+	require.NoError(t, json.Unmarshal([]byte(rawJSON), &update))
+	router.RouteUpdate(context.Background(), update, botCtx)
+
+	select {
+	case msg := <-inbound:
+		assert.True(t, msg.IsMentioned)
+		assert.Equal(t, "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]", msg.Text)
+		assert.Equal(t, "@traomofc", msg.RawText)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "photo_fid_888", msg.AttachmentRefs[0].ID)
+	case <-time.After(time.Second):
+		t.Fatal("expected photo with only bot mention in group to be routed with fallback prompt")
+	}
+}

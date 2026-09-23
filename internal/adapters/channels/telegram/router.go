@@ -154,6 +154,18 @@ func (r *Router) HandleUpdate(ctx context.Context, b *gotgbot.Bot, u *gotgbot.Up
 		attachmentRefs = r.mediaMgr.ExtractAttachmentRefs(msg, botID)
 	}
 
+	// Zero-Empty-Prompt Guard: Ensure prompt is never empty to prevent headless TUI crashes
+	if strings.TrimSpace(cleanText) == "" {
+		if len(attachmentRefs) > 0 {
+			cleanText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+		} else {
+			cleanText = "Xin chào!"
+		}
+		if strings.TrimSpace(rawText) == "" {
+			rawText = cleanText
+		}
+	}
+
 	// 4. Construct CanonicalMessage
 	threadID := ExtractThreadID(msg)
 	fullName := strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)

@@ -514,3 +514,203 @@ func TestRouter_DedicatedAgentBinding(t *testing.T) {
 		t.Fatal("expected message to be delivered to inbound")
 	}
 }
+
+func TestTelegramRouter_ZeroTextPhotoMessageFallback(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AdminUserIDs: []int64{12345},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 10)
+	mediaMgr := NewMediaManager(cfg, nil)
+	router := NewRouter(cfg, nil, inbound, mediaMgr)
+
+	mockBot := &gotgbot.Bot{
+		User: gotgbot.User{
+			Id:       999,
+			Username: "test_bot",
+		},
+	}
+
+	// Update with only photo, zero text and zero caption
+	update := &gotgbot.Update{
+		UpdateId: 102,
+		Message: &gotgbot.Message{
+			MessageId: 2,
+			Date:      time.Now().Unix(),
+			Chat: gotgbot.Chat{
+				Id:   12345,
+				Type: "private",
+			},
+			From: &gotgbot.User{
+				Id:        12345,
+				Username:  "dev_user",
+				FirstName: "Alice",
+			},
+			Photo: []gotgbot.PhotoSize{
+				{
+					FileId:       "photo_abc_low",
+					FileUniqueId: "uniq_abc_low",
+					FileSize:     512,
+					Width:        100,
+					Height:       100,
+				},
+				{
+					FileId:       "photo_abc_high",
+					FileUniqueId: "uniq_abc_high",
+					FileSize:     2048,
+					Width:        800,
+					Height:       800,
+				},
+			},
+		},
+	}
+
+	err := router.HandleUpdate(context.Background(), mockBot, update)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inbound:
+		assert.Contains(t, msg.Text, "Người dùng gửi ảnh/tệp đính kèm")
+		assert.Contains(t, msg.RawText, "Người dùng gửi ảnh/tệp đính kèm")
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "uniq_abc_high", msg.AttachmentRefs[0].ID)
+		assert.Equal(t, "photo_abc_high", msg.AttachmentRefs[0].SourceID)
+		assert.Equal(t, "image", msg.AttachmentRefs[0].Type)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected photo message to be delivered to inbound with fallback prompt")
+	}
+}
+
+func TestTelegramRouter_CaptionEntityMentionInGroup(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AllowedGroupIDs: []string{"-100999"},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 10)
+	mediaMgr := NewMediaManager(cfg, nil)
+	router := NewRouter(cfg, nil, inbound, mediaMgr)
+
+	mockBot := &gotgbot.Bot{
+		User: gotgbot.User{
+			Id:       999,
+			Username: "test_bot",
+		},
+	}
+
+	update := &gotgbot.Update{
+		UpdateId: 103,
+		Message: &gotgbot.Message{
+			MessageId: 3,
+			Date:      time.Now().Unix(),
+			Chat: gotgbot.Chat{
+				Id:   -100999,
+				Type: "supergroup",
+			},
+			From: &gotgbot.User{
+				Id:        12345,
+				Username:  "dev_user",
+				FirstName: "Alice",
+			},
+			Caption: "Please check this photo @test_bot",
+			CaptionEntities: []gotgbot.MessageEntity{
+				{
+					Type:   "mention",
+					Offset: 24,
+					Length: 9,
+				},
+			},
+			Photo: []gotgbot.PhotoSize{
+				{
+					FileId:       "photo_grp",
+					FileUniqueId: "uniq_grp",
+					FileSize:     1024,
+				},
+			},
+		},
+	}
+
+	err := router.HandleUpdate(context.Background(), mockBot, update)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inbound:
+		assert.True(t, msg.IsMentioned)
+		assert.Equal(t, "Please check this photo", msg.Text)
+		require.Len(t, msg.AttachmentRefs, 1)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected caption entity mentioned photo to be delivered to inbound")
+	}
+}
+
+func TestTelegramRouter_GroupPhotoMentionOnly_ZeroEmptyPromptFallback(t *testing.T) {
+	cfg := &config.Config{
+		Telegram: config.TelegramConfig{
+			AdminUserIDs:    []int64{12345},
+			AllowedGroupIDs: []string{"-100999"},
+			Bots: []config.BotConfig{
+				{
+					Name:     "test",
+					BotToken: "mock:token",
+				},
+			},
+		},
+	}
+	inbound := make(chan domain.CanonicalMessage, 10)
+	mediaMgr := NewMediaManager(cfg, nil)
+	router := NewRouter(cfg, nil, inbound, mediaMgr)
+
+	mockBot := &gotgbot.Bot{
+		User: gotgbot.User{
+			Id:       999,
+			Username: "test_bot",
+		},
+	}
+
+	update := &gotgbot.Update{
+		UpdateId: 104,
+		Message: &gotgbot.Message{
+			MessageId: 4,
+			Date:      time.Now().Unix(),
+			Chat: gotgbot.Chat{
+				Id:   -100999,
+				Type: "supergroup",
+			},
+			From: &gotgbot.User{
+				Id:        12345,
+				Username:  "dev_user",
+				FirstName: "Alice",
+			},
+			Caption: "@test_bot",
+			CaptionEntities: []gotgbot.MessageEntity{
+				{
+					Type:   "mention",
+					Offset: 0,
+					Length: 9,
+				},
+			},
+			Photo: []gotgbot.PhotoSize{
+				{
+					FileId:       "photo_grp_only_mention",
+					FileUniqueId: "uniq_grp_only_mention",
+					FileSize:     2048,
+				},
+			},
+		},
+	}
+
+	err := router.HandleUpdate(context.Background(), mockBot, update)
+	require.NoError(t, err)
+
+	select {
+	case msg := <-inbound:
+		assert.True(t, msg.IsMentioned)
+		assert.Equal(t, "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]", msg.Text)
+		assert.Equal(t, "@test_bot", msg.RawText)
+		require.Len(t, msg.AttachmentRefs, 1)
+		assert.Equal(t, "photo_grp_only_mention", msg.AttachmentRefs[0].SourceID)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected photo with only bot mention to be delivered with fallback prompt")
+	}
+}
