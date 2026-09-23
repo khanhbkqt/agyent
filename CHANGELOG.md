@@ -5,6 +5,17 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.59] - 2026-09-23
+
+### Added
+- **Context Compaction Dialogue Tail Retention & High-Resolution Continuity Checkpoint (`engine`):**
+  - **Retained Dialogue Tail:** Automatically preserves the last 2 conversation turns (the latest User request and Agent reply) verbatim during context compaction, appending them directly to the Level 4 continuity snapshot to eliminate conversational amnesia.
+  - **Anti-Over-Summarization Checkpoint:** Upgraded the compaction synthesis prompt to a 5-section Technical Continuity Checkpoint (Task Trajectory, Key Decisions & Trade-offs, Modified Files & Working Tree State, Errors Encountered & Solutions, Immediate Next Action & Open Items) inspired by Claude Code compaction architecture.
+  - **Rune-Safe Truncation:** Implemented UTF-8 safe `PruneMessageContent` (capped at 1,000 runes per message) preventing multi-byte character corruption in Vietnamese text and languages with multibyte graphemes.
+  - **Prompt & System Wrapper Sanitization:** Implemented `CleanUserPromptText` to strip XML envelope tags (`<USER_REQUEST>`) and bootstrap templates (`[USER MESSAGE]`), preserving pure user intent without leaking daemon metadata.
+  - **Dual-Tier Dialogue Resolution:** Implemented disk-first backward transcript scanning (`FindBrainTranscript`, `ExtractLastDialogueFromTranscript`) across candidate brain directories (`~/.gemini/antigravity` and `~/.gemini/antigravity-cli`), with thread-safe in-memory `recentTurns` tracking as engine fallback.
+  - **KV-Cache Invariance:** Anchored all retained dialogue and technical summaries strictly in Level 4 (`[CONVERSATION CONTINUITY & CONTEXT SNAPSHOT]`), keeping Levels 0–3 system prompt prefix cache invariant.
+
 ## [1.0.58] - 2026-09-11
 
 ### Changed

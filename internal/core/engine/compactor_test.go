@@ -2,11 +2,16 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agyent/internal/core/domain"
+	"agyent/internal/core/engine"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -388,4 +393,271 @@ func TestCompactAndContinueTurn(t *testing.T) {
 	assert.Contains(t, outStats.Text, "Context Compactor Efficiency")
 	assert.Contains(t, outStats.Text, "Successful Compactions")
 	assert.Contains(t, outStats.Text, "Breakdown by Model")
+}
+
+func TestCompactor_CleanUserPromptText(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Plain user text",
+			input:    "em check nginx tren may giup a",
+			expected: "em check nginx tren may giup a",
+		},
+		{
+			name: "XML wrapped user request",
+			input: `<USER_REQUEST>
+em check nginx trên máy giúp a
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-09-06T22:08:39+07:00.
+</ADDITIONAL_METADATA>`,
+			expected: "em check nginx trên máy giúp a",
+		},
+		{
+			name: "Bootstrap template with [USER MESSAGE]",
+			input: `<USER_REQUEST>
+[SYSTEM RUNTIME FOUNDATION]
+Rule 1: Identity
+[USER MESSAGE]
+xin chao agent, hom nay lam gi
+</USER_REQUEST>`,
+			expected: "xin chao agent, hom nay lam gi",
+		},
+		{
+			name: "Continuation with User Prompt marker",
+			input: `[ATTACHED FILES RECEIVED]
+- File: test.png (Type: image, Size: 100 bytes)
+
+User Prompt: phan tich anh nay giup minh`,
+			expected: "phan tich anh nay giup minh",
+		},
+		{
+			name:     "Empty input",
+			input:    "   \n\t  ",
+			expected: "",
+		},
+		{
+			name:     "Preserve legitimate user XML and uppercase HTML tags (CORR-02)",
+			input:    "Cần cấu hình <CONFIG><PORT>8080</PORT></CONFIG> trong <DIV class='main'><BUTTON>Click</BUTTON></DIV>",
+			expected: "Cần cấu hình <CONFIG><PORT>8080</PORT></CONFIG> trong <DIV class='main'><BUTTON>Click</BUTTON></DIV>",
+		},
+		{
+			name:     "Strip temporal context tags (SEC-04)",
+			input:    "[TEMPORAL CONTEXT: 15m elapsed since previous turn]\n[TEMPORAL GAP: 2 hours]\nSửa lỗi logic giùm anh",
+			expected: "Sửa lỗi logic giùm anh",
+		},
+		{
+			name:     "Strip known system envelope metadata tags",
+			input:    "<CONTEXT_SUMMARY>Old historical context</CONTEXT_SUMMARY>\n<SYSTEM_DIRECTIVES>Be helpful</SYSTEM_DIRECTIVES>\nLàm tiếp tính năng mới",
+			expected: "Làm tiếp tính năng mới",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := engine.CleanUserPromptText(tt.input)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func TestCompactor_ScrubSensitiveDialogue(t *testing.T) {
+	raw := "My OpenAI key is sk-1234567890abcdef1234567890, anthropic: sk-ant-api03-abcdef12345678901234567890, token: ghpat_1234567890abcdef1234567890, bearer: Bearer token12345678901234567890. password: 'supersecretpassword123'"
+	scrubbed := engine.ScrubSensitiveDialogue(raw)
+	assert.NotContains(t, scrubbed, "sk-1234567890abcdef1234567890")
+	assert.NotContains(t, scrubbed, "sk-ant-api03-abcdef12345678901234567890")
+	assert.NotContains(t, scrubbed, "supersecretpassword123")
+	assert.Contains(t, scrubbed, "[REDACTED")
+}
+
+func TestCompactor_FindBrainTranscript_PathTraversal(t *testing.T) {
+	// SEC-01 & CORR-03: Ensure malicious or traversed convIDs are rejected immediately
+	assert.Empty(t, engine.FindBrainTranscript("../../etc/passwd"))
+	assert.Empty(t, engine.FindBrainTranscript("conv/with/slash"))
+	assert.Empty(t, engine.FindBrainTranscript("conv\\with\\backslash"))
+	assert.Empty(t, engine.FindBrainTranscript("../.."))
+	assert.Empty(t, engine.FindBrainTranscript("valid_id; rm -rf /"))
+	assert.Empty(t, engine.FindBrainTranscript(""))
+}
+
+func TestCompactor_PruneMessageContent(t *testing.T) {
+	short := "Đây là tin nhắn ngắn không bị cắt."
+	assert.Equal(t, short, engine.PruneMessageContent(short, 200))
+
+	long := "Bắt đầu kiểm tra kiến trúc: " + strings.Repeat("hệ thống hoạt động ổn định và chính xác. ", 50) + "Kết thúc kiểm tra."
+	pruned := engine.PruneMessageContent(long, 300)
+	assert.Less(t, len(pruned), len(long))
+	assert.Contains(t, pruned, "TRUNCATED")
+	assert.True(t, strings.HasPrefix(pruned, "Bắt đầu kiểm tra kiến trúc:"))
+	assert.True(t, strings.HasSuffix(pruned, "Kết thúc kiểm tra."))
+
+	// Short limit test
+	tiny := engine.PruneMessageContent("ngắn", 2)
+	assert.NotEmpty(t, tiny)
+}
+
+func TestCompactor_ExtractLastDialogueFromTranscript(t *testing.T) {
+	tempDir := t.TempDir()
+	transcriptPath := filepath.Join(tempDir, "transcript.jsonl")
+
+	lines := []string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nTurn 1: xin chao\n</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Chao ban! Toi la Agyent."}`,
+		`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nTurn 2: em check race condition giup anh\n</USER_REQUEST>"}`,
+		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command"}]}`,
+		`{"step_index":4,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Da em da kiem tra xong, moi thu an toan a!"}`,
+	}
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(strings.Join(lines, "\n")), 0600))
+
+	messages, err := engine.ExtractLastDialogueFromTranscript(transcriptPath, 500)
+	require.NoError(t, err)
+	require.Len(t, messages, 2)
+
+	assert.Equal(t, "user", messages[0].Role)
+	assert.Equal(t, "Turn 2: em check race condition giup anh", messages[0].Content)
+
+	assert.Equal(t, "agent", messages[1].Role)
+	assert.Equal(t, "Da em da kiem tra xong, moi thu an toan a!", messages[1].Content)
+}
+
+func TestCompactor_ExtractLastDialogueFromTranscript_ToolOnlyOrInterruptedTurn(t *testing.T) {
+	// CORR-01: If the final turn has only tool calls without textual response (or was interrupted),
+	// it must NOT pair Turn 1's agent response with Turn 2's prompt!
+	tempDir := t.TempDir()
+	transcriptPath := filepath.Join(tempDir, "transcript.jsonl")
+
+	lines := []string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nTurn 1: chào em\n</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Dạ em chào anh!"}`,
+		`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nTurn 2: chạy lệnh build cho anh\n</USER_REQUEST>"}`,
+		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command"}]}`,
+	}
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(strings.Join(lines, "\n")), 0600))
+
+	messages, err := engine.ExtractLastDialogueFromTranscript(transcriptPath, 500)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+
+	assert.Equal(t, "user", messages[0].Role)
+	assert.Equal(t, "Turn 2: chạy lệnh build cho anh", messages[0].Content)
+}
+
+func TestCompactor_RecentDialogueTracking_BoundedCapacity(t *testing.T) {
+	eng, _, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	// Fill more than 500 session entries to verify eviction (SEC-02, CORR-05)
+	for i := 0; i < 550; i++ {
+		sessionKey := fmt.Sprintf("session:%d", i)
+		convID := fmt.Sprintf("conv-%d", i)
+		eng.RecordRecentTurn(sessionKey, convID, "hello", "hi")
+	}
+
+	// Verify it didn't panic and still operates correctly
+	recent := eng.GetRecentDialogue("session:549", "conv-549")
+	require.Len(t, recent, 2)
+}
+
+func TestCompactor_RecentDialogueTracking_ThreadSafety(t *testing.T) {
+	eng, _, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	sessionKey := "test:session:concurrency"
+	convID := "conv-concurrent-101"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			userMsg := fmt.Sprintf("User message iteration %d", idx)
+			agentMsg := fmt.Sprintf("Agent response iteration %d", idx)
+			eng.RecordRecentTurn(sessionKey, convID, userMsg, agentMsg)
+			_ = eng.GetRecentDialogue(sessionKey, convID)
+		}(i)
+	}
+	wg.Wait()
+
+	recent := eng.GetRecentDialogue(sessionKey, convID)
+	require.Len(t, recent, 2)
+	assert.Equal(t, "user", recent[0].Role)
+	assert.Equal(t, "agent", recent[1].Role)
+}
+
+func TestCompactSessionContext_WithRetainedMessages(t *testing.T) {
+	eng, runner, _, store, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sessionKey := "telegram:user:retained_context"
+	convID := "conv-retained-test-01"
+
+	session, err := store.GetOrCreateSession(ctx, sessionKey, "agyent")
+	require.NoError(t, err)
+	session.SetActiveConversationID(convID)
+	require.NoError(t, store.SaveSession(ctx, session))
+
+	agent := &domain.Agent{
+		Name:          "agyent",
+		Status:        domain.StatusInitialized,
+		WorkspacePath: t.TempDir(),
+	}
+	require.NoError(t, store.SaveAgent(ctx, agent))
+
+	conv := &domain.Conversation{
+		ID:         convID,
+		SessionKey: sessionKey,
+		AgentName:  "agyent",
+		Title:      "Active Session With Dialogue History",
+		TurnCount:  5,
+		CreatedAt:  time.Now().Add(-30 * time.Minute),
+		UpdatedAt:  time.Now(),
+	}
+	require.NoError(t, store.SaveConversation(ctx, conv))
+
+	// Record the recent dialogue turn in engine
+	userTurn := "em sửa bug timeout trong compactor.go nhé"
+	agentTurn := "Dạ em đã sửa timeout thành 35s và chạy kiểm thử thành công rồi anh!"
+	eng.RecordRecentTurn(sessionKey, convID, userTurn, agentTurn)
+
+	// Mock runner for semantic synthesis
+	runner.executeFunc = func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		assert.Contains(t, req.Prompt, "Context Compaction Checkpoint")
+		return &domain.ExecutionResult{
+			Success:        true,
+			ConversationID: req.ConversationID,
+			ResponseText: `### Executive Continuity Digest
+1. 🎯 **Context & Task Trajectory**: Refactor compactor timeout and recent messages retention.
+2. 💡 **Key Decisions, Invariants & Trade-offs**: Keep Level 0-3 KV-cache invariant, add recent dialogue tail.
+3. 📁 **Modified Files & Working Tree**: internal/core/engine/compactor.go.
+4. ⚠️ **Errors Encountered & Solutions**: None.
+5. ⏳ **Immediate Next Action & Open Items**: Verify test coverage and synchronize architecture docs.`,
+		}, nil
+	}
+
+	// Execute compaction
+	result, err := eng.CompactSessionContext(ctx, session, agent, "manual", "User requested compaction")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// 1. Verify RetainedMessages in CompactionResult
+	require.Len(t, result.RetainedMessages, 2)
+	assert.Equal(t, "user", result.RetainedMessages[0].Role)
+	assert.Equal(t, userTurn, result.RetainedMessages[0].Content)
+	assert.Equal(t, "agent", result.RetainedMessages[1].Role)
+	assert.Equal(t, agentTurn, result.RetainedMessages[1].Content)
+
+	// 2. Verify Digest contains the Recent Interaction block
+	assert.Contains(t, result.Digest, "### Recent Interaction (Last Messages Retained for Context)")
+	assert.Contains(t, result.Digest, userTurn)
+	assert.Contains(t, result.Digest, agentTurn)
+
+	// 3. Verify staged digest in engine preserves recent dialogue for next turn
+	stagedDigest := eng.GetAndClearPendingCompactionDigest(sessionKey)
+	assert.Contains(t, stagedDigest, "Recent Interaction (Last Messages Retained for Context)")
+	assert.Contains(t, stagedDigest, userTurn)
+	assert.Contains(t, stagedDigest, agentTurn)
 }

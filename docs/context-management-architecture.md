@@ -185,18 +185,35 @@ compression percentage:
 
 ```mermaid
 flowchart TD
-    A["Bloated Context (>= 70% of MaxContext, e.g. 800k tokens)"] --> B["Synthesize Continuity Digest<br/>(1. Goals | 2. Decisions | 3. Files | 4. Next Steps)"]
-    B --> C["Archive Old Conversation<br/>(is_archived=1, '[Compacted]')"]
-    C --> D["Seed New Conversation at Level 4<br/>([CONVERSATION CONTINUITY & CONTEXT SNAPSHOT] ~3k tokens)"]
+    A["Bloated Context (>= 90% of MaxContext, e.g. 1.8M tokens)"] --> B["Synthesize 5-Section Technical Checkpoint<br/>(Trajectory | Decisions | Files | Errors | Next Action)"]
+    A -.-> C["Extract Recent Dialogue Tail<br/>(Last 2 turns: User request + Agent reply)"]
+    B --> D["Assemble Level 4 Continuity Snapshot<br/>(Technical Checkpoint + Retained Dialogue)"]
+    C --> D
+    D --> E["Archive Old Conversation<br/>(is_archived=1, '[Compacted]')"]
+    E --> F["Seed New Conversation at Level 4<br/>([CONVERSATION CONTINUITY & CONTEXT SNAPSHOT] ~3k tokens)"]
 ```
 
-### 6.1. Hybrid Synthesis Architecture
-1. **Primary Path (Semantic LLM Synthesis):** Runs a fast, low-effort single-turn synthesis prompt (`--mode plan --effort low`) to extract an executive 4-block Markdown Continuity Digest.
-2. **Fallback Path (Heuristic Extraction):** If the LLM execution times out or fails, the engine falls back deterministically to extracting recent audit log snippets, project scope, and touched files without blocking the session.
+### 6.1. High-Resolution Synthesis & Dialogue Retention Architecture
+
+To eliminate context amnesia and over-summarization during compaction, the compactor implements a high-resolution technical checkpoint coupled with conversational tail retention:
+
+1. **Primary Path (Technical LLM Synthesis):** Runs a single-turn synthesis prompt (`--mode plan --effort low`, 35s timeout) producing a 5-section structured Technical Continuity Checkpoint:
+   - `### 1. Current Context & Task Trajectory`: High-level goal, current operational phase, and active focus.
+   - `### 2. Key Decisions & Technical Trade-offs`: Architectural decisions, selected libraries/patterns, and rejected approaches.
+   - `### 3. Modified Files & Working Tree State`: Exact repository file paths touched, changes made, and uncommitted edits.
+   - `### 4. Errors Encountered & Solutions`: Root causes investigated, test/build errors encountered, and verified fixes.
+   - `### 5. Immediate Next Action & Open Items`: Specific next steps, pending commands/tests, and unresolved questions.
+2. **Retained Dialogue Tail (Anti-Amnesia Protection):**
+   - Automatically preserves the **last 2 messages** (the most recent User request and the Agent's response) directly within the Level 4 continuity block under `### Recent Interaction (Last Messages Retained for Context)`.
+   - Strips system wrappers, XML tags (`<USER_REQUEST>`), and bootstrap templates (`[USER MESSAGE]`) using `CleanUserPromptText` to ensure only the real prompt text is retained.
+   - Applies rune-safe UTF-8 pruning (`PruneMessageContent`, capped at 1,000 runes per message) to guarantee multi-byte character integrity (e.g. Vietnamese diacritics).
+   - Resolves dialogue through a dual-tier strategy: scanning disk `transcript.jsonl` backwards (authoritative across restarts) with fallback to in-memory `recentTurns` tracking.
+3. **Fallback Path (Heuristic Extraction):** If LLM synthesis times out or fails, the engine deterministically extracts recent audit log snippets, project scope, touched files, and the retained dialogue tail without blocking the session.
+4. **Prompt Invariance & KV-Cache Protection:** The entire continuity snapshot and retained dialogue are placed exclusively in **Level 4** (`[CONVERSATION CONTINUITY & CONTEXT SNAPSHOT]`). Levels 0–3 static system prompts, soul, agent personas, and progressive skill indexes remain completely unmodified, preserving LLM KV-cache reuse.
 
 ### 6.2. Trigger Mechanisms
 * **Manual Command (`/compact` or `/compress`):** Users can explicitly compact their current session context on-demand.
-* **Auto-Compact Watchdog:** Automatically triggers post-turn when `audit.Usage.InputTokens >= capability.EffectiveCompactThreshold()` (default: **70% of Max Context Window**), proactively avoiding high-latency and watchdog timeout limits.
+* **Auto-Compact Watchdog:** Automatically triggers post-turn when `audit.Usage.InputTokens >= capability.EffectiveCompactThreshold()` (default: **90% of Max Context Window**), proactively avoiding high-latency and watchdog timeout limits.
 
 ---
 

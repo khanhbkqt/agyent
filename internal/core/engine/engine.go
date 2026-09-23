@@ -53,6 +53,9 @@ type Engine struct {
 	compactionMu            sync.RWMutex
 	pendingCompactedDigests map[string]string
 
+	recentTurnsMu sync.RWMutex
+	recentTurns   map[string][]RetainedMessage
+
 	inboundChan chan domain.CanonicalMessage
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -93,6 +96,7 @@ func NewEngine(
 		pluginManager:           pluginManager,
 		activeTurns:             make(map[string]activeTurnEntry),
 		pendingCompactedDigests: make(map[string]string),
+		recentTurns:             make(map[string][]RetainedMessage),
 		inboundChan:             make(chan domain.CanonicalMessage, 200),
 		ctx:                     ctx,
 		cancel:                  cancel,
@@ -215,6 +219,85 @@ func (e *Engine) GetAndClearPendingCompactionDigest(sessionKey string) string {
 	digest := e.pendingCompactedDigests[sessionKey]
 	delete(e.pendingCompactedDigests, sessionKey)
 	return digest
+}
+
+// RecordRecentTurn records the latest user message and agent response for in-memory session continuity.
+func (e *Engine) RecordRecentTurn(sessionKey, convID, userText, agentResponse string) {
+	if strings.TrimSpace(userText) == "" && strings.TrimSpace(agentResponse) == "" {
+		return
+	}
+
+	// SEC-05: Preprocess text and scrub secrets outside of the lock
+	var turns []RetainedMessage
+	if strings.TrimSpace(userText) != "" {
+		cleanUser := CleanUserPromptText(userText)
+		cleanUser = ScrubSensitiveDialogue(cleanUser)
+		prunedUser := PruneMessageContent(cleanUser, 1000)
+		turns = append(turns, RetainedMessage{
+			Role:    "user",
+			Content: prunedUser,
+		})
+	}
+	if strings.TrimSpace(agentResponse) != "" {
+		cleanAgent := strings.TrimSpace(agentResponse)
+		cleanAgent = ScrubSensitiveDialogue(cleanAgent)
+		prunedAgent := PruneMessageContent(cleanAgent, 1000)
+		turns = append(turns, RetainedMessage{
+			Role:    "agent",
+			Content: prunedAgent,
+		})
+	}
+	if len(turns) == 0 {
+		return
+	}
+
+	e.recentTurnsMu.Lock()
+	defer e.recentTurnsMu.Unlock()
+	if e.recentTurns == nil {
+		e.recentTurns = make(map[string][]RetainedMessage)
+	}
+
+	// SEC-02 & CORR-05: Bound recentTurns capacity to 500 keys to prevent unbounded memory growth
+	const maxRecentTurnsCapacity = 500
+	if len(e.recentTurns) >= maxRecentTurnsCapacity {
+		count := 0
+		for k := range e.recentTurns {
+			delete(e.recentTurns, k)
+			count++
+			if count >= 50 {
+				break
+			}
+		}
+	}
+
+	if sessionKey != "" {
+		e.recentTurns[sessionKey] = turns
+	}
+	if convID != "" {
+		e.recentTurns[convID] = turns
+	}
+}
+
+// GetRecentDialogue retrieves the recent conversation exchange from memory for sessionKey or convID.
+func (e *Engine) GetRecentDialogue(sessionKey, convID string) []RetainedMessage {
+	e.recentTurnsMu.RLock()
+	defer e.recentTurnsMu.RUnlock()
+	if e.recentTurns == nil {
+		return nil
+	}
+	if convID != "" {
+		if turns, ok := e.recentTurns[convID]; ok && len(turns) > 0 {
+			out := make([]RetainedMessage, len(turns))
+			copy(out, turns)
+			return out
+		}
+	}
+	if turns, ok := e.recentTurns[sessionKey]; ok && len(turns) > 0 {
+		out := make([]RetainedMessage, len(turns))
+		copy(out, turns)
+		return out
+	}
+	return nil
 }
 
 // Start initializes inbound channel consumption and begins background turn processing.
@@ -889,7 +972,15 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	var activeMCPServers []domain.MCPServerConfig
 
 	if isBootstrap {
-		promptText = BuildBootstrapPrompt(agent, msg.Sender, msg.Text)
+		bootstrapUserText := msg.Text
+		if strings.TrimSpace(bootstrapUserText) == "" {
+			if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
+				bootstrapUserText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
+			} else {
+				bootstrapUserText = "Xin chào!"
+			}
+		}
+		promptText = BuildBootstrapPrompt(agent, msg.Sender, bootstrapUserText)
 	} else {
 		var resolved *domain.ResolvedContext
 		if e.contextResolver != nil {
@@ -970,7 +1061,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 	}
 
 	if strings.TrimSpace(promptText) == "" {
-		if len(msg.Attachments) > 0 {
+		if len(msg.Attachments) > 0 || len(msg.AttachmentRefs) > 0 {
 			promptText = "[Người dùng gửi ảnh/tệp đính kèm. Em hãy kiểm tra và phân tích tệp này.]"
 		} else {
 			promptText = "Xin chào!"
@@ -1288,6 +1379,9 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			session.SetActiveConversationID(execResult.ConversationID)
 			_ = e.storage.SaveSession(turnCtx, session)
 			_ = e.storage.TouchConversation(turnCtx, sessionKey, agent.Name, session.ActiveProject, execResult.ConversationID, msg.Text)
+		}
+		if auditStatus == domain.StatusSuccess && !isEphemeral {
+			e.RecordRecentTurn(sessionKey, session.GetActiveConversationID(), msg.Text, execResult.ResponseText)
 		}
 	}
 
