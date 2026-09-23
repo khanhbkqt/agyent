@@ -623,6 +623,7 @@ func TestTelegramRouter_CaptionEntityMentionInGroup(t *testing.T) {
 	inbound := make(chan domain.CanonicalMessage, 10)
 	mediaMgr := NewMediaManager(cfg, nil)
 	router := NewRouter(cfg, nil, inbound, mediaMgr)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	mockBot := &gotgbot.Bot{
 		User: gotgbot.User{

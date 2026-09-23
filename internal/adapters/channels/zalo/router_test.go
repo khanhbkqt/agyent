@@ -724,6 +724,7 @@ func TestZaloRouter_ThumbnailURLAndFileIDFallback(t *testing.T) {
 	}
 	inbound := make(chan domain.CanonicalMessage, 2)
 	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	// Case 1: Image with top-level thumbnail_url and no caption/text
 	rawJSON1 := `{
@@ -788,6 +789,7 @@ func TestZaloRouter_GroupPhotoMentionOnly_ZeroEmptyPromptFallback(t *testing.T) 
 	}
 	inbound := make(chan domain.CanonicalMessage, 2)
 	router := zalo.NewRouter(cfg, nil, nil, inbound)
+	router.SetInboundAuthorizer(&testInboundAuthorizer{allowed: true})
 
 	botCtx := zalo.BotContext{
 		BotID:       "9999",
