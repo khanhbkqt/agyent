@@ -19,6 +19,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "polling", cfg.Telegram.Mode)
 	assert.Equal(t, "agy", cfg.AGY.BinaryPath)
 	assert.Equal(t, 1800, cfg.AGY.DefaultTimeoutSeconds)
+	assert.Equal(t, "gemini-3.8-flash", cfg.AGY.DefaultModel)
 	assert.Equal(t, "high", cfg.AGY.DefaultEffort)
 	assert.Equal(t, "accept-edits", cfg.AGY.DefaultMode)
 	assert.False(t, cfg.AGY.DangerouslySkipPermissions)

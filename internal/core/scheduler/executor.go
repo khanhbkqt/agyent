@@ -220,7 +220,8 @@ func (e *TaskExecutor) ExecuteSchedule(ctx context.Context, task domain.Schedule
 		if domain.IsEffortError(execErr, result) && req.Effort != "" {
 			e.logger.Warn("Model rejected reasoning effort in scheduled task, retrying without --effort flag",
 				"task_id", task.ID, "model", req.Model, "effort", req.Effort)
-			req.Effort = ""
+			req.Effort = domain.EffortNone
+			req.DisableEffort = true
 			result, execErr = e.runner.Execute(ctx, req)
 		}
 	} else {
@@ -409,7 +410,8 @@ func (e *TaskExecutor) ExecuteHeartbeat(ctx context.Context, hb domain.Heartbeat
 		if domain.IsEffortError(execErr, result) && req.Effort != "" {
 			e.logger.Warn("Model rejected reasoning effort in heartbeat task, retrying without --effort flag",
 				"agent", hb.AgentName, "model", req.Model, "effort", req.Effort)
-			req.Effort = ""
+			req.Effort = domain.EffortNone
+			req.DisableEffort = true
 			result, execErr = e.runner.Execute(ctx, req)
 		}
 	} else {

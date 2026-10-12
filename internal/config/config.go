@@ -289,7 +289,7 @@ func DefaultConfig() *Config {
 		AGY: AGYConfig{
 			BinaryPath:                       "agy",
 			DefaultTimeoutSeconds:            1800,
-			DefaultModel:                     "",
+			DefaultModel:                     "gemini-3.8-flash",
 			DefaultEffort:                    "high",
 			DefaultMode:                      "accept-edits",
 			ModelAliases:                     make(map[string]string),

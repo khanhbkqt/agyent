@@ -164,10 +164,10 @@ func runMockAGYHelper() {
 		os.Exit(0)
 
 	case "verify_claude_flags":
+		hasEffort := false
 		for i, arg := range args {
 			if arg == "--effort" {
-				fmt.Fprintf(os.Stderr, "Error: invalid model selection: --effort is not supported for Claude model, args: %v\n", args)
-				os.Exit(1)
+				hasEffort = true
 			}
 			if arg == "--model" && i+1 < len(args) {
 				m := args[i+1]
@@ -175,13 +175,27 @@ func runMockAGYHelper() {
 					fmt.Fprintf(os.Stderr, "Error: uncanonical alias passed directly to CLI: %s\n", m)
 					os.Exit(1)
 				}
-				if m != "claude-sonnet-4-6" && m != "claude-opus-4-6-thinking" {
+				if m != "claude-sonnet-5-5" && m != "claude-opus-5-5" {
 					fmt.Fprintf(os.Stderr, "Error: unexpected model passed: %s\n", m)
 					os.Exit(1)
 				}
 			}
 		}
-		fmt.Println(`{"conversation_id":"c-claude-success","status":"SUCCESS","response":"Claude model executed cleanly without effort","duration_seconds":0.5}`)
+		if !hasEffort {
+			fmt.Fprintf(os.Stderr, "Error: claude-5-5 models require --effort flag, args: %v\n", args)
+			os.Exit(1)
+		}
+		fmt.Println(`{"conversation_id":"c-claude-success","status":"SUCCESS","response":"Claude model executed cleanly with effort","duration_seconds":0.5}`)
+		os.Exit(0)
+
+	case "verify_no_effort_flags":
+		for _, arg := range args {
+			if arg == "--effort" {
+				fmt.Fprintf(os.Stderr, "Error: --effort flag was passed to a no-effort model: %v\n", args)
+				os.Exit(1)
+			}
+		}
+		fmt.Println(`{"conversation_id":"c-no-effort-success","status":"SUCCESS","response":"No-effort model executed cleanly","duration_seconds":0.5}`)
 		os.Exit(0)
 
 	case "verify_print_timeout_flags":
@@ -797,7 +811,7 @@ func TestHarness_InterruptStream(t *testing.T) {
 	})
 }
 
-func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testing.T) {
+func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffort(t *testing.T) {
 	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
 	t.Setenv("MOCK_SCENARIO", "verify_claude_flags")
 
@@ -805,7 +819,7 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 	harness := newTestHarness("verify_claude_flags", 5)
 	tempDir := t.TempDir()
 
-	t.Run("Sonnet alias is normalized to claude-sonnet-4-6 and effort is stripped", func(t *testing.T) {
+	t.Run("Sonnet alias is normalized to claude-sonnet-5-5 and effort is passed", func(t *testing.T) {
 		req := domain.ExecutionRequest{
 			Prompt:    "hello sonnet",
 			Model:     "sonnet",
@@ -816,10 +830,10 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 		require.NoError(t, err)
 		require.NotNil(t, res)
 		assert.True(t, res.Success)
-		assert.Contains(t, res.ResponseText, "Claude model executed cleanly without effort")
+		assert.Contains(t, res.ResponseText, "Claude model executed cleanly with effort")
 	})
 
-	t.Run("Opus alias is normalized to claude-opus-4-6-thinking and effort is stripped", func(t *testing.T) {
+	t.Run("Opus alias is normalized to claude-opus-5-5 and effort is passed", func(t *testing.T) {
 		req := domain.ExecutionRequest{
 			Prompt:    "hello opus",
 			Model:     "opus",
@@ -830,8 +844,37 @@ func TestHarness_ClaudeSonnetAndOpus_CanonicalizationAndEffortStripped(t *testin
 		require.NoError(t, err)
 		require.NotNil(t, res)
 		assert.True(t, res.Success)
-		assert.Contains(t, res.ResponseText, "Claude model executed cleanly without effort")
+		assert.Contains(t, res.ResponseText, "Claude model executed cleanly with effort")
 	})
+}
+
+func TestHarness_NoEffortModel_EffortIsStripped(t *testing.T) {
+	t.Setenv("GO_WANT_MOCK_AGY_HELPER", "1")
+	t.Setenv("MOCK_SCENARIO", "verify_no_effort_flags")
+
+	domain.SetDynamicModelCapabilities([]domain.ModelCapability{
+		{
+			ID:               "fixed-no-effort",
+			Aliases:          []string{"fixed"},
+			SupportedEfforts: []string{},
+		},
+	})
+	defer domain.SetDynamicModelCapabilities(domain.DefaultModelCapabilities)
+
+	harness := newTestHarness("verify_no_effort_flags", 5)
+	tempDir := t.TempDir()
+
+	req := domain.ExecutionRequest{
+		Prompt:    "hello fixed",
+		Model:     "fixed",
+		Effort:    "high",
+		Admission: testAdmission("fixed-test", tempDir),
+	}
+	res, err := harness.Execute(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+	assert.Contains(t, res.ResponseText, "No-effort model executed cleanly")
 }
 
 func TestHarness_PrintTimeoutForwardedToCLI(t *testing.T) {

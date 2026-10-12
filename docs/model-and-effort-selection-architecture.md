@@ -56,12 +56,11 @@ Each model is characterized by a `ModelCapability` profile with explicit context
 | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
 | `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Flagship frontier multimodal & reasoning Flash |
 | `gemini-3.7-flash` | `3.7`, `3.7-flash`, `gemini-3.7` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Fast frontier multimodal & reasoning |
+| `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6`, `3.5-flash`, `gemini-3.5` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | High efficiency flash model |
 | `gemini-3.1-pro` | `pro`, `smart`, `3.1-pro` | Gemini 3.1 Pro | `["low", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Deep reasoning. **No medium effort** in agy. |
-| `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | High efficiency flash model |
-| `gemini-3.5-flash` | `3.5-flash`, `gemini-3.5` | Gemini 3.5 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Stable flash model |
-| `claude-sonnet-4-6` | `claude`, `sonnet` | Claude Sonnet 4.6 | `[]` (None) | `""` (Omit flag) | **200,000** | 8,192 | 180,000 | **No effort**: Harness strips `--effort` entirely |
-| `claude-opus-4-6-thinking` | `opus`, `claude-opus` | Claude Opus 4.6 (Thinking) | `[]` (None) | `""` (Omit flag) | **200,000** | 8,192 | 180,000 | Built-in thinking; `--effort` flag rejected |
-| `gpt-oss-120b-medium` | `gpt-oss`, `oss-120b` | GPT-OSS 120B (Medium) | `[]` (None) | `""` (Omit flag) | **128,000** | 16,384 | 115,200 | Fixed medium model; `--effort` flag rejected |
+| `claude-opus-5-5` | `opus`, `claude-opus`, `opus-5.5`, `claude-opus-4-6-thinking` | Claude Opus 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude reasoning with effort support |
+| `claude-sonnet-5-5` | `claude`, `sonnet`, `claude-sonnet`, `sonnet-5.5`, `claude-sonnet-4-6` | Claude Sonnet 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude coding with effort support |
+| `gpt-oss-120b` | `gpt-oss`, `oss-120b`, `gpt`, `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | `["medium"]` | `medium` | **128,000** | 16,384 | 115,200 | Open-weight model with medium effort |
 
 ---
 

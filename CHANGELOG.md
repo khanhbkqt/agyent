@@ -5,6 +5,22 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.60] - 2026-10-12
+
+### Added & Changed
+- **Antigravity CLI (agy) Frontier Models Update & Dynamic Aliasing:**
+  - Upgraded model catalogue to support the latest Google Antigravity models: `gemini-3.8-flash` (flagship flash), `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.1-pro`, `claude-opus-5-5`, `claude-sonnet-5-5`, and `gpt-oss-120b`.
+  - Configured `gemini-3.8-flash` with reasoning effort `high` as the default model across global gateway configuration (`DefaultConfig()`, `~/.agyent/config.yaml`) and fallback catalogue.
+  - Added full reasoning effort support for Claude 5.5 models (`low`, `medium`, `high`, default `high`) conforming to Antigravity CLI requirement where `--effort` is mandatory.
+  - Maintained backward compatibility aliases: legacy `claude-sonnet-4-6` seamlessly resolves to `claude-sonnet-5-5`, `claude-opus-4-6-thinking` to `claude-opus-5-5`, and `gemini-3.5-flash` to `gemini-3.6-flash`.
+- **Dynamic Model Parser & Precision Scoping:**
+  - Refined `generateSmartAliases` to scope `"flash"`, `"fast"`, and `"gemini-flash"` strictly to the flagship Gemini 3.8 Flash model, preventing alphabetical output order in CLI discovery from hijacking default flash aliases.
+  - Normalized hyphenated and dotted version identifiers (`5-5` and `5.5`) in version shorthand generator.
+
+### Fixed
+- **Scheduler & Execution Failure Recovery Hardening:**
+  - Hardened `scheduler/executor.go` upon `domain.IsEffortError` to set both `req.Effort = domain.EffortNone` and `req.DisableEffort = true`, preventing harness from re-injecting default effort flags during execution retry.
+
 ## [1.0.59] - 2026-09-23
 
 ### Security & Hardening

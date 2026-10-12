@@ -45,8 +45,8 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 		agent := &domain.Agent{DefaultModel: "gemini-3.1-pro", DefaultEffort: "low"}
 
 		model, effort, source := eng.ResolveExecutionParams("", "", sess, agent)
-		assert.Equal(t, "claude-sonnet-4-6", model)
-		assert.Equal(t, "", effort, "claude-sonnet-4-6 has no effort support, effort must be stripped")
+		assert.Equal(t, "claude-sonnet-5-5", model)
+		assert.Equal(t, "high", effort, "claude-sonnet-5-5 supports high effort")
 		assert.Equal(t, "Session Override", source)
 	})
 

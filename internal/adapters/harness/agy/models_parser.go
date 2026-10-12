@@ -114,37 +114,49 @@ func ParseModelsOutput(output string) []domain.ModelCapability {
 func generateSmartAliases(modelID string) []string {
 	var aliases []string
 	idLower := strings.ToLower(modelID)
+	idNormalized := strings.ReplaceAll(idLower, "-", ".")
 
 	if strings.Contains(idLower, "pro") {
-		aliases = append(aliases, "pro", "smart")
+		aliases = append(aliases, "pro", "smart", "gemini-pro")
 	}
+	// Only assign "flash" and "fast" to flagship flash (Gemini 3.8 Flash)
 	if strings.Contains(idLower, "flash") && !strings.Contains(idLower, "lite") {
-		aliases = append(aliases, "flash", "fast")
+		if strings.Contains(idNormalized, "3.8") {
+			aliases = append(aliases, "flash", "fast", "gemini-flash")
+		}
 	}
 	if strings.Contains(idLower, "lite") {
 		aliases = append(aliases, "lite", "flash-lite")
 	}
 	if strings.Contains(idLower, "sonnet") {
-		aliases = append(aliases, "claude", "sonnet", "claude-sonnet")
+		aliases = append(aliases, "claude", "sonnet", "claude-sonnet", "sonnet-5.5", "claude-sonnet-5-5", "claude-sonnet-4-6")
 	}
 	if strings.Contains(idLower, "opus") {
-		aliases = append(aliases, "opus", "claude-opus")
+		aliases = append(aliases, "opus", "claude-opus", "opus-5.5", "claude-opus-5-5", "claude-opus-4-6-thinking", "claude-opus-4-6")
 	}
 	if strings.Contains(idLower, "gpt") || strings.Contains(idLower, "oss") {
-		aliases = append(aliases, "gpt-oss", "oss-120b", "gpt")
+		aliases = append(aliases, "gpt-oss", "oss-120b", "gpt", "gpt-oss-120b-medium")
 	}
 
-	// Version-specific shorthand aliases (e.g. "3.8", "3.8-flash", "gemini-3.8")
-	for _, ver := range []string{"3.8", "3.7", "3.6", "3.5", "3.1", "2.5", "2.0"} {
-		if strings.Contains(idLower, ver) {
+	// Version-specific shorthand aliases (e.g. "5.5", "3.8", "3.8-flash", "gemini-3.8")
+	for _, ver := range []string{"5.5", "3.8", "3.7", "3.6", "3.5", "3.1", "2.5", "2.0"} {
+		if strings.Contains(idNormalized, ver) {
 			aliases = append(aliases, ver)
 			if strings.Contains(idLower, "flash") {
 				aliases = append(aliases, ver+"-flash", "gemini-"+ver)
 			} else if strings.Contains(idLower, "pro") {
 				aliases = append(aliases, ver+"-pro", "gemini-"+ver)
+			} else if strings.Contains(idLower, "sonnet") {
+				aliases = append(aliases, "sonnet-"+ver, "claude-"+ver, "claude-sonnet-"+ver)
+			} else if strings.Contains(idLower, "opus") {
+				aliases = append(aliases, "opus-"+ver, "claude-"+ver, "claude-opus-"+ver)
 			}
 			break
 		}
+	}
+
+	if strings.Contains(idNormalized, "3.6") && strings.Contains(idLower, "flash") {
+		aliases = append(aliases, "3.5", "3.5-flash", "gemini-3.5", "gemini-3.5-flash")
 	}
 
 	return aliases

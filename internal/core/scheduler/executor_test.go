@@ -37,10 +37,10 @@ func TestTaskExecutor_ModelAndEffortResolution(t *testing.T) {
 	assert.Equal(t, "gemini-3.8-flash", model)
 	assert.Equal(t, "high", effort)
 
-	// 2. Agent with Claude: effort should be stripped
+	// 2. Agent with Claude: resolves to claude-sonnet-5-5 with high effort
 	modelClaude, effortClaude := exec.resolveModelAndEffort("claude_agent")
-	assert.Equal(t, "claude-sonnet-4-6", modelClaude)
-	assert.Equal(t, "", effortClaude)
+	assert.Equal(t, "claude-sonnet-5-5", modelClaude)
+	assert.Equal(t, "high", effortClaude)
 
 	// 3. Agent with Pro: medium effort should be clamped to high
 	modelPro, effortPro := exec.resolveModelAndEffort("pro_agent")
@@ -58,7 +58,7 @@ func (r *effortRejectingRunner) Execute(ctx context.Context, req domain.Executio
 	r.attempts++
 	r.receivedReqs = append(r.receivedReqs, req)
 
-	if req.Effort != "" {
+	if !req.DisableEffort && req.Effort != "" && req.Effort != domain.EffortNone {
 		return nil, fmt.Errorf("exit status 1: invalid model selection (--model %q --effort %q): --effort is not supported for model %q", req.Model, req.Effort, req.Model)
 	}
 
@@ -101,11 +101,13 @@ func TestTaskExecutor_EffortRejectionRecovery(t *testing.T) {
 	assert.True(t, res.Success)
 	assert.Equal(t, "Executed successfully without effort flag.", res.ResponseText)
 
-	// Should have attempted twice: first with effort, then retried with empty effort
+	// Should have attempted twice: first with effort, then retried with DisableEffort=true
 	assert.Equal(t, 2, runner.attempts)
 	require.Len(t, runner.receivedReqs, 2)
 	assert.NotEmpty(t, runner.receivedReqs[0].Effort)
-	assert.Empty(t, runner.receivedReqs[1].Effort)
+	assert.False(t, runner.receivedReqs[0].DisableEffort)
+	assert.True(t, runner.receivedReqs[1].DisableEffort)
+	assert.Equal(t, domain.EffortNone, runner.receivedReqs[1].Effort)
 }
 
 type artifactReturningRunner struct {

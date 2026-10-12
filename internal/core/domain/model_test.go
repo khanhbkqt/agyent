@@ -96,67 +96,123 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2: Model with NO effort support (claude-sonnet-4-6) strips effort",
-			rawModel:         "claude-sonnet-4-6",
+			name:             "Edge Case 2: Claude Sonnet 5.5 preserves effort",
+			rawModel:         "claude-sonnet-5-5",
 			rawEffort:        "high",
-			expectedModel:    "claude-sonnet-4-6",
-			expectedEffort:   "",
+			expectedModel:    "claude-sonnet-5-5",
+			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2b: Alias 'claude' strips effort",
+			name:             "Edge Case 2b: Alias 'claude' defaults to high effort",
 			rawModel:         "claude",
-			rawEffort:        "low",
-			expectedModel:    "claude-sonnet-4-6",
-			expectedEffort:   "",
+			rawEffort:        "",
+			expectedModel:    "claude-sonnet-5-5",
+			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2b-2: Alias 'sonnet' strips effort and maps to claude-sonnet-4-6",
+			name:             "Edge Case 2b-2: Alias 'sonnet' maps to claude-sonnet-5-5 with requested effort",
 			rawModel:         "sonnet",
-			rawEffort:        "high",
-			expectedModel:    "claude-sonnet-4-6",
-			expectedEffort:   "",
+			rawEffort:        "low",
+			expectedModel:    "claude-sonnet-5-5",
+			expectedEffort:   "low",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2b-3: Alias 'claude-sonnet' strips effort",
+			name:             "Edge Case 2b-3: Alias 'claude-sonnet' maps to claude-sonnet-5-5",
 			rawModel:         "claude-sonnet",
 			rawEffort:        "medium",
-			expectedModel:    "claude-sonnet-4-6",
-			expectedEffort:   "",
+			expectedModel:    "claude-sonnet-5-5",
+			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2c: claude-opus-4-6-thinking strips effort",
-			rawModel:         "claude-opus-4-6-thinking",
+			name:             "Edge Case 2b-4: Legacy alias 'claude-sonnet-4-6' maps to claude-sonnet-5-5",
+			rawModel:         "claude-sonnet-4-6",
 			rawEffort:        "high",
-			expectedModel:    "claude-opus-4-6-thinking",
-			expectedEffort:   "",
+			expectedModel:    "claude-sonnet-5-5",
+			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2c-2: Alias 'opus' strips effort and maps to claude-opus-4-6-thinking",
+			name:             "Edge Case 2c: claude-opus-5-5 preserves effort",
+			rawModel:         "claude-opus-5-5",
+			rawEffort:        "high",
+			expectedModel:    "claude-opus-5-5",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2c-2: Alias 'opus' maps to claude-opus-5-5",
 			rawModel:         "opus",
 			rawEffort:        "high",
-			expectedModel:    "claude-opus-4-6-thinking",
-			expectedEffort:   "",
+			expectedModel:    "claude-opus-5-5",
+			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2c-3: Alias 'claude-opus' strips effort",
+			name:             "Edge Case 2c-3: Alias 'claude-opus' maps to claude-opus-5-5",
 			rawModel:         "claude-opus",
 			rawEffort:        "low",
-			expectedModel:    "claude-opus-4-6-thinking",
-			expectedEffort:   "",
+			expectedModel:    "claude-opus-5-5",
+			expectedEffort:   "low",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2d: gpt-oss-120b-medium strips effort",
-			rawModel:         "gpt-oss-120b-medium",
+			name:             "Edge Case 2c-4: Legacy alias 'claude-opus-4-6-thinking' maps to claude-opus-5-5",
+			rawModel:         "claude-opus-4-6-thinking",
 			rawEffort:        "medium",
-			expectedModel:    "gpt-oss-120b-medium",
-			expectedEffort:   "",
+			expectedModel:    "claude-opus-5-5",
+			expectedEffort:   "medium",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2d: gpt-oss-120b preserves medium effort",
+			rawModel:         "gpt-oss-120b",
+			rawEffort:        "medium",
+			expectedModel:    "gpt-oss-120b",
+			expectedEffort:   "medium",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2d-2: gpt-oss-120b clamps unsupported 'high' to 'medium'",
+			rawModel:         "gpt-oss-120b",
+			rawEffort:        "high",
+			expectedModel:    "gpt-oss-120b",
+			expectedEffort:   "medium",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2d-3: gpt-oss-120b empty effort defaults to 'medium'",
+			rawModel:         "gpt-oss-120b",
+			rawEffort:        "",
+			expectedModel:    "gpt-oss-120b",
+			expectedEffort:   "medium",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2e: gemini-3.6-flash with explicit effort",
+			rawModel:         "gemini-3.6-flash",
+			rawEffort:        "low",
+			expectedModel:    "gemini-3.6-flash",
+			expectedEffort:   "low",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2e-2: Legacy alias 'gemini-3.5-flash' maps to gemini-3.6-flash",
+			rawModel:         "gemini-3.5-flash",
+			rawEffort:        "high",
+			expectedModel:    "gemini-3.6-flash",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Edge Case 2e-3: Legacy alias '3.5-flash' maps to gemini-3.6-flash",
+			rawModel:         "3.5-flash",
+			rawEffort:        "medium",
+			expectedModel:    "gemini-3.6-flash",
+			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
@@ -185,6 +241,22 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			assert.Equal(t, tt.expectedIsCustom, isCustom)
 		})
 	}
+
+	t.Run("Rule 1: Model with NO effort support strips effort", func(t *testing.T) {
+		domain.SetDynamicModelCapabilities([]domain.ModelCapability{
+			{
+				ID:               "fixed-no-effort",
+				Aliases:          []string{"fixed"},
+				SupportedEfforts: []string{},
+			},
+		})
+		defer domain.SetDynamicModelCapabilities(domain.DefaultModelCapabilities)
+
+		model, effort, isCustom := domain.NormalizeModelAndEffort("fixed", "high", nil)
+		assert.Equal(t, "fixed-no-effort", model)
+		assert.Equal(t, "", effort, "effort must be stripped when SupportedEfforts is empty")
+		assert.False(t, isCustom)
+	})
 }
 
 func TestDynamicModelCapabilities_Registry(t *testing.T) {
