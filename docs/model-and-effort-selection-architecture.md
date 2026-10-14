@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/core/domain/model.go`, engine resolver/commands, AGY model parser
-> **Last verified:** 2026-09-05
+> **Last verified:** 2026-10-13
 
 This document specifies the standardized architecture for **Model Selection** and **Reasoning Effort** support in the `agyent` ecosystem.
 
@@ -10,12 +10,13 @@ This document specifies the standardized architecture for **Model Selection** an
 
 ## 1. Objectives & Architectural Principles
 
-1. **Multi-Model & Variable Effort Normalization:** Fully harness Antigravity CLI (`agy`) flags (`--model <name>` and `--effort <low|medium|high|none>`), allowing seamless switching between frontier reasoning models (`pro`), low-latency models (`flash`), and non-reasoning foundation models.
+1. **Multi-Model & Variable Effort Normalization:** Fully harness Antigravity CLI (`agy`) flags (`--model <name>` and `--effort <low|medium|high|none>`), allowing seamless switching between frontier reasoning models (`claude-opus-5-5`), low-latency flagship models (`gemini-3.8-flash`), and open-weight models (`gpt-oss-120b`).
 2. **5-Tier Resolution Hierarchy:** Ensure deterministic precedence resolution from per-turn flags $\rightarrow$ session scope $\rightarrow$ agent persona $\rightarrow$ global configuration $\rightarrow$ fallback defaults.
 3. **Comprehensive Edge Case Resilience:**
-   - **Models without Reasoning Effort Support:** Models that do not accept reasoning tokens (e.g. `claude-3-5-sonnet`, `gpt-4o`) automatically omit the `--effort` flag to prevent CLI syntax or parameter errors.
-   - **Models with Subset Effort Support:** Models that only accept specific effort tiers (e.g. `gemini-2.5-flash-lite` supporting only `[low, high]`) are clamped/fallback to their nearest valid default.
+   - **Models without Reasoning Effort Support:** Models that do not accept reasoning tokens automatically omit the `--effort` flag to prevent CLI syntax or parameter errors.
+   - **Models with Subset Effort Support:** Models that only accept specific effort tiers (e.g. `gpt-oss-120b` supporting only `["medium"]`) are clamped/fallback to their nearest valid default.
    - **Runtime CLI Flag Rejection Recovery:** Automatic detection of CLI errors containing `flag provided but not defined: -effort` or `effort not supported`, triggering a single auto-retry turn with `--effort` stripped.
+   - **Backward Compatibility for Retired Models:** Older models removed from `agy` CLI (such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, and `gemini-3.1-pro`) are transparently normalized to the active flagship model (`gemini-3.8-flash` or `claude-opus-5-5`), preventing user session breakage.
 4. **Prefix KV-Cache Preservation & Cost Tracking:** Preserve Level 0–4 prompt structure across models while recording `model`, `effort`, and `thinking_tokens` in `audit_logs`.
 
 ---
@@ -54,13 +55,11 @@ Each model is characterized by a `ModelCapability` profile with explicit context
 
 | Model Canonical ID | Aliases | Display Name | Supported Efforts | Default Effort | Max Context | Max Output | Auto-Compact Limit (90%) | Capability Notes |
 | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Flagship frontier multimodal & reasoning Flash |
-| `gemini-3.7-flash` | `3.7`, `3.7-flash`, `gemini-3.7` | Gemini 3.7 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Fast frontier multimodal & reasoning |
-| `gemini-3.6-flash` | `3.6-flash`, `gemini-3.6`, `3.5-flash`, `gemini-3.5` | Gemini 3.6 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | High efficiency flash model |
-| `gemini-3.1-pro` | `pro`, `smart`, `3.1-pro` | Gemini 3.1 Pro | `["low", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Deep reasoning. **No medium effort** in agy. |
-| `claude-opus-5-5` | `opus`, `claude-opus`, `opus-5.5`, `claude-opus-4-6-thinking` | Claude Opus 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude reasoning with effort support |
-| `claude-sonnet-5-5` | `claude`, `sonnet`, `claude-sonnet`, `sonnet-5.5`, `claude-sonnet-4-6` | Claude Sonnet 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude coding with effort support |
-| `gpt-oss-120b` | `gpt-oss`, `oss-120b`, `gpt`, `gpt-oss-120b-medium` | GPT-OSS 120B (Medium) | `["medium"]` | `medium` | **128,000** | 16,384 | 115,200 | Open-weight model with medium effort |
+| `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash`, `gemini`, `3.7`, `3.7-flash`, `3.6`, `3.6-flash`, `3.5`, `3.5-flash`, `gemini-pro`, `gemini-3.1-pro` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Flagship Google multimodal & reasoning Flash. Back-aliases retired Gemini models. |
+| `gemini-4-argon` | `argon`, `gemini-4`, `gemini-4-argon`, `4`, `4-argon` | Gemini 4 Argon | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 943,718 | Frontier Google DeepMind reasoning model with 1M context. |
+| `claude-opus-5-5` | `opus`, `claude-opus`, `opus-5.5`, `claude-opus-4-6-thinking`, `smart`, `pro` | Claude Opus 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude deep reasoning. Aliased as default `pro`/`smart` reasoning model. |
+| `claude-sonnet-5-5` | `claude`, `sonnet`, `claude-sonnet`, `sonnet-5.5`, `claude-sonnet-4-6` | Claude Sonnet 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude coding & generalist with effort support. |
+| `gpt-oss-120b` | `gpt-oss`, `oss-120b`, `gpt`, `gpt-oss-120b-medium` | GPT-OSS 120B | `["medium"]` | `medium` | **128,000** | 16,384 | 115,200 | Open-weight foundation model with medium effort. |
 
 ---
 

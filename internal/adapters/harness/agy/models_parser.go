@@ -132,14 +132,17 @@ func generateSmartAliases(modelID string) []string {
 		aliases = append(aliases, "claude", "sonnet", "claude-sonnet", "sonnet-5.5", "claude-sonnet-5-5", "claude-sonnet-4-6")
 	}
 	if strings.Contains(idLower, "opus") {
-		aliases = append(aliases, "opus", "claude-opus", "opus-5.5", "claude-opus-5-5", "claude-opus-4-6-thinking", "claude-opus-4-6")
+		aliases = append(aliases, "opus", "claude-opus", "opus-5.5", "claude-opus-5-5", "claude-opus-4-6-thinking", "claude-opus-4-6", "smart", "pro")
+	}
+	if strings.Contains(idLower, "argon") || strings.Contains(idLower, "gemini-4") {
+		aliases = append(aliases, "argon", "gemini-4", "gemini-4-argon", "4", "4-argon")
 	}
 	if strings.Contains(idLower, "gpt") || strings.Contains(idLower, "oss") {
 		aliases = append(aliases, "gpt-oss", "oss-120b", "gpt", "gpt-oss-120b-medium")
 	}
 
-	// Version-specific shorthand aliases (e.g. "5.5", "3.8", "3.8-flash", "gemini-3.8")
-	for _, ver := range []string{"5.5", "3.8", "3.7", "3.6", "3.5", "3.1", "2.5", "2.0"} {
+	// Version-specific shorthand aliases (e.g. "5.5", "4", "3.8", "3.8-flash", "gemini-3.8")
+	for _, ver := range []string{"5.5", "4", "3.8", "3.7", "3.6", "3.5", "3.1", "2.5", "2.0"} {
 		if strings.Contains(idNormalized, ver) {
 			aliases = append(aliases, ver)
 			if strings.Contains(idLower, "flash") {
@@ -155,8 +158,14 @@ func generateSmartAliases(modelID string) []string {
 		}
 	}
 
-	if strings.Contains(idNormalized, "3.6") && strings.Contains(idLower, "flash") {
-		aliases = append(aliases, "3.5", "3.5-flash", "gemini-3.5", "gemini-3.5-flash")
+	// Backward-compatible Gemini version shorthands for flagship 3.8
+	if strings.Contains(idNormalized, "3.8") && strings.Contains(idLower, "flash") {
+		aliases = append(aliases,
+			"3.7", "3.7-flash", "gemini-3.7", "gemini-3.7-flash",
+			"3.6", "3.6-flash", "gemini-3.6", "gemini-3.6-flash",
+			"3.5", "3.5-flash", "gemini-3.5", "gemini-3.5-flash",
+			"gemini-pro", "gemini-3.1-pro", "3.1-pro",
+		)
 	}
 
 	return aliases

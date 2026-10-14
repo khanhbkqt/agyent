@@ -17,12 +17,15 @@ type ModelCapability struct {
 	CompactThresholdRatio float64  `json:"compact_threshold_ratio"` // Ratio of MaxContextTokens triggering auto-compaction (default: 0.90)
 }
 
-// EffectiveMaxContext returns MaxContextTokens or fallback default 2,097,152.
+// EffectiveMaxContext returns MaxContextTokens or fallback default 2,097,152 (or 1,048,576 for Argon, 200,000 for Claude, 128,000 for GPT).
 func (m ModelCapability) EffectiveMaxContext() int {
 	if m.MaxContextTokens > 0 {
 		return m.MaxContextTokens
 	}
 	idLower := strings.ToLower(m.ID)
+	if strings.Contains(idLower, "argon") || strings.Contains(idLower, "gemini-4") {
+		return 1048576
+	}
 	if strings.Contains(idLower, "claude") || strings.Contains(idLower, "sonnet") || strings.Contains(idLower, "opus") {
 		return 200000
 	}
@@ -61,7 +64,7 @@ var DefaultModelCapabilities = []ModelCapability{
 	{
 		ID:                    "gemini-3.8-flash",
 		DisplayName:           "Gemini 3.8 Flash",
-		Aliases:               []string{"flash", "fast", "3.8", "3.8-flash", "gemini-3.8", "gemini-flash"},
+		Aliases:               []string{"flash", "fast", "3.8", "3.8-flash", "gemini-3.8", "gemini-flash", "gemini", "3.7", "3.7-flash", "gemini-3.7", "gemini-3.7-flash", "3.6", "3.6-flash", "gemini-3.6", "gemini-3.6-flash", "3.5", "3.5-flash", "gemini-3.5", "gemini-3.5-flash", "gemini-pro", "gemini-3.1-pro", "3.1-pro"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
 		MaxContextTokens:      2097152,
@@ -69,39 +72,19 @@ var DefaultModelCapabilities = []ModelCapability{
 		CompactThresholdRatio: 0.90,
 	},
 	{
-		ID:                    "gemini-3.7-flash",
-		DisplayName:           "Gemini 3.7 Flash",
-		Aliases:               []string{"3.7", "3.7-flash", "gemini-3.7"},
+		ID:                    "gemini-4-argon",
+		DisplayName:           "Gemini 4 Argon",
+		Aliases:               []string{"argon", "gemini-4", "gemini-4-argon", "4", "4-argon"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
-		MaxContextTokens:      2097152,
-		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.90,
-	},
-	{
-		ID:                    "gemini-3.6-flash",
-		DisplayName:           "Gemini 3.6 Flash",
-		Aliases:               []string{"3.6", "3.6-flash", "gemini-3.6", "3.5", "3.5-flash", "gemini-3.5", "gemini-3.5-flash"},
-		SupportedEfforts:      []string{"low", "medium", "high"},
-		DefaultEffort:         "high",
-		MaxContextTokens:      2097152,
-		MaxOutputTokens:       65536,
-		CompactThresholdRatio: 0.90,
-	},
-	{
-		ID:                    "gemini-3.1-pro",
-		DisplayName:           "Gemini 3.1 Pro",
-		Aliases:               []string{"pro", "smart", "3.1-pro", "gemini-pro"},
-		SupportedEfforts:      []string{"low", "high"}, // Note: gemini-3.1-pro has NO "medium" effort in agy
-		DefaultEffort:         "high",
-		MaxContextTokens:      2097152,
+		MaxContextTokens:      1048576,
 		MaxOutputTokens:       65536,
 		CompactThresholdRatio: 0.90,
 	},
 	{
 		ID:                    "claude-opus-5-5",
 		DisplayName:           "Claude Opus 5.5",
-		Aliases:               []string{"opus", "claude-opus", "opus-5.5", "claude-opus-5.5", "claude-opus-4-6-thinking", "claude-opus-4-6"},
+		Aliases:               []string{"opus", "claude-opus", "opus-5.5", "claude-opus-5-5", "claude-opus-4-6-thinking", "claude-opus-4-6", "smart", "pro"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
 		MaxContextTokens:      200000,
@@ -111,7 +94,7 @@ var DefaultModelCapabilities = []ModelCapability{
 	{
 		ID:                    "claude-sonnet-5-5",
 		DisplayName:           "Claude Sonnet 5.5",
-		Aliases:               []string{"claude", "sonnet", "claude-sonnet", "sonnet-5.5", "claude-sonnet-5.5", "claude-sonnet-4-6"},
+		Aliases:               []string{"claude", "sonnet", "claude-sonnet", "sonnet-5.5", "claude-sonnet-5-5", "claude-sonnet-4-6"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
 		MaxContextTokens:      200000,
@@ -136,12 +119,26 @@ var (
 	dynamicRegistry = append([]ModelCapability(nil), DefaultModelCapabilities...)
 )
 
-// SetDynamicModelCapabilities replaces the global registry with dynamically discovered models from agy models.
+// SetDynamicModelCapabilities replaces the global registry with dynamically discovered models from agy models,
+// while preserving essential built-in flagship models (like gemini-4-argon) that may be unlisted in public cli discovery.
 func SetDynamicModelCapabilities(models []ModelCapability) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if len(models) > 0 {
-		dynamicRegistry = append([]ModelCapability(nil), models...)
+		merged := append([]ModelCapability(nil), models...)
+		for _, def := range DefaultModelCapabilities {
+			found := false
+			for _, m := range models {
+				if strings.EqualFold(m.ID, def.ID) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				merged = append(merged, def)
+			}
+		}
+		dynamicRegistry = merged
 	}
 }
 
@@ -181,6 +178,24 @@ func LookupModelCapability(nameOrAlias string, customAliases map[string]string) 
 	// 3. Match against current live registry
 	models := ListAvailableModels()
 	for _, cap := range models {
+		if strings.EqualFold(cap.ID, norm) {
+			return cap, "", true
+		}
+		if strings.EqualFold(cap.ID, baseCandidate) && inferredEffort != "" {
+			return cap, inferredEffort, true
+		}
+		for _, alias := range cap.Aliases {
+			if strings.EqualFold(alias, norm) {
+				return cap, "", true
+			}
+			if strings.EqualFold(alias, baseCandidate) && inferredEffort != "" {
+				return cap, inferredEffort, true
+			}
+		}
+	}
+
+	// 4. Fallback search against DefaultModelCapabilities if unlisted in dynamic registry
+	for _, cap := range DefaultModelCapabilities {
 		if strings.EqualFold(cap.ID, norm) {
 			return cap, "", true
 		}

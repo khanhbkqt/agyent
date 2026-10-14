@@ -16,11 +16,13 @@ import (
 	pluginAdapter "agyent/internal/adapters/plugin"
 	"agyent/internal/adapters/storage/sqlite"
 	"agyent/internal/config"
+	"agyent/internal/core/auth"
 	"agyent/internal/core/concurrency"
 	"agyent/internal/core/debouncer"
 	"agyent/internal/core/domain"
 	"agyent/internal/core/engine"
 	"agyent/internal/core/eventbus"
+	"agyent/internal/core/execution"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +130,7 @@ func TestRealAGY_StreamingExecution(t *testing.T) {
 		Timeout:                    45 * time.Second,
 		DangerouslySkipPermissions: true,
 		Mode:                       "accept-edits",
-		Model:                      "gemini-3.7-flash",
+		Model:                      "gemini-3.8-flash",
 		Effort:                     "low",
 	}
 
@@ -724,22 +726,25 @@ func TestRealAGY_DynamicModelDiscovery(t *testing.T) {
 	}
 
 	// Verify key model families exist
-	var hasFlash, hasPro, hasClaude bool
+	var hasFlash, hasClaude, hasOpus, hasGPT bool
 	for _, m := range models {
 		if strings.Contains(m.ID, "flash") {
 			hasFlash = true
 		}
-		if strings.Contains(m.ID, "pro") {
-			hasPro = true
-			assert.Equal(t, []string{"high", "low"}, m.SupportedEfforts, "gemini-3.1-pro must support only [high, low]")
-		}
 		if strings.Contains(m.ID, "claude") {
 			hasClaude = true
 		}
+		if strings.Contains(m.ID, "opus") {
+			hasOpus = true
+		}
+		if strings.Contains(m.ID, "gpt") || strings.Contains(m.ID, "oss") {
+			hasGPT = true
+		}
 	}
 	assert.True(t, hasFlash, "must discover at least one flash model")
-	assert.True(t, hasPro, "must discover at least one pro model")
 	assert.True(t, hasClaude, "must discover at least one claude model")
+	assert.True(t, hasOpus, "must discover at least one opus model")
+	assert.True(t, hasGPT, "must discover at least one gpt/oss model")
 }
 
 func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
@@ -765,6 +770,7 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 		Description:   "Model Selection Test Agent",
 		Status:        domain.StatusInitialized,
 		WorkspacePath: agentWorkspace,
+		OwnerID:       "999888777",
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}))
@@ -779,7 +785,7 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 			DefaultTimeoutSeconds:      60,
 			DangerouslySkipPermissions: true,
 			DefaultMode:                "accept-edits",
-			DefaultModel:               "gemini-3.7-flash",
+			DefaultModel:               "gemini-3.8-flash",
 			DefaultEffort:              "high",
 		},
 		Storage: config.StorageConfig{
@@ -805,6 +811,11 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 	defer deb.Close(context.Background())
 
 	eng = engine.NewEngine(cfg, store, harness, channel, bus, deb, lockMgr, resolver, syncer, pluginMgr)
+	policyEngine := auth.NewEngine(store, cfg)
+	execSvc := execution.NewService(harness, policyEngine, nil, store, cfg, nil)
+	eng.SetPolicyEngine(policyEngine)
+	eng.SetExecutionService(execSvc)
+
 	require.NoError(t, eng.Start(ctx))
 	defer eng.Stop(ctx)
 
@@ -812,11 +823,18 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 	sess, err := store.GetOrCreateSession(ctx, sessionKey, "model_agent")
 	require.NoError(t, err)
 
+	sender := domain.SenderUser{
+		ID:       "999888777",
+		Username: "tester",
+		FullName: "Tester",
+	}
+
 	// Step 1: Switch model to pro and effort to low using slash commands
 	_, err = eng.HandleCommand(ctx, domain.CanonicalMessage{
 		ID:        "cmd-1",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		Sender:    sender,
 		Chat:      domain.ChatContext{ID: "999888777", Type: "private"},
 		Text:      "/model pro",
 	})
@@ -826,19 +844,20 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 		ID:        "cmd-2",
 		Timestamp: time.Now(),
 		Channel:   "telegram",
+		Sender:    sender,
 		Chat:      domain.ChatContext{ID: "999888777", Type: "private"},
 		Text:      "/effort low",
 	})
 	require.NoError(t, err)
 
-	// Verify session state updated
+	// Verify session state updated (pro resolves to claude-opus-5-5)
 	sess, err = store.GetSession(ctx, sessionKey)
 	require.NoError(t, err)
-	assert.Equal(t, "gemini-3.1-pro", sess.ActiveModel)
+	assert.Equal(t, "claude-opus-5-5", sess.ActiveModel)
 	assert.Equal(t, "low", sess.ActiveEffort)
 
-	// Step 2: Execute real live turn with gemini-3.1-pro and effort low
-	t.Log("--- Executing Live AGY Turn with gemini-3.1-pro (effort=low) ---")
+	// Step 2: Execute real live turn with claude-opus-5-5 and effort low
+	t.Log("--- Executing Live AGY Turn with claude-opus-5-5 (effort=low) ---")
 	turnMsg := domain.CanonicalMessage{
 		ID:        "turn-msg-1",
 		Timestamp: time.Now(),
@@ -863,7 +882,7 @@ func TestRealAGY_ModelAndEffortExecution(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, logs)
 	assert.Equal(t, "SUCCESS", logs[0].Status)
-	assert.Equal(t, "gemini-3.1-pro", logs[0].Model, "AuditLog must record exact resolved model")
+	assert.Equal(t, "claude-opus-5-5", logs[0].Model, "AuditLog must record exact resolved model")
 	assert.Equal(t, "low", logs[0].Effort, "AuditLog must record exact resolved effort")
 	t.Logf("Live Turn Success! Model: %s | Effort: %s | Tokens: %d", logs[0].Model, logs[0].Effort, logs[0].Usage.TotalTokens)
 }

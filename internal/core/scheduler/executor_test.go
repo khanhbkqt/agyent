@@ -42,10 +42,10 @@ func TestTaskExecutor_ModelAndEffortResolution(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-5-5", modelClaude)
 	assert.Equal(t, "high", effortClaude)
 
-	// 3. Agent with Pro: medium effort should be clamped to high
+	// 3. Agent with Pro: resolves to claude-opus-5-5 with medium effort
 	modelPro, effortPro := exec.resolveModelAndEffort("pro_agent")
-	assert.Equal(t, "gemini-3.1-pro", modelPro)
-	assert.Equal(t, "high", effortPro)
+	assert.Equal(t, "claude-opus-5-5", modelPro)
+	assert.Equal(t, "medium", effortPro)
 }
 
 type effortRejectingRunner struct {

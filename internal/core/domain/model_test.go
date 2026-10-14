@@ -11,8 +11,8 @@ import (
 
 func TestModelCapability_LookupAndNormalize(t *testing.T) {
 	customAliases := map[string]string{
-		"my-pro": "gemini-3.1-pro",
-		"fast":   "gemini-3.7-flash",
+		"my-pro": "claude-opus-5-5",
+		"fast":   "gemini-3.8-flash",
 	}
 
 	tests := []struct {
@@ -24,10 +24,10 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 		expectedIsCustom bool
 	}{
 		{
-			name:             "Canonical Gemini 3.7 Flash with explicit high effort",
+			name:             "Retired Gemini 3.7 Flash maps to Gemini 3.8 Flash with explicit high effort",
 			rawModel:         "gemini-3.7-flash",
 			rawEffort:        "high",
-			expectedModel:    "gemini-3.7-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
@@ -37,6 +37,38 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			rawEffort:        "high",
 			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Canonical Gemini 4 Argon with explicit high effort",
+			rawModel:         "gemini-4-argon",
+			rawEffort:        "high",
+			expectedModel:    "gemini-4-argon",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'argon' with empty effort defaults to high",
+			rawModel:         "argon",
+			rawEffort:        "",
+			expectedModel:    "gemini-4-argon",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'gemini-4' with low effort maps to gemini-4-argon",
+			rawModel:         "gemini-4",
+			rawEffort:        "low",
+			expectedModel:    "gemini-4-argon",
+			expectedEffort:   "low",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias '4' with medium effort maps to gemini-4-argon",
+			rawModel:         "4",
+			rawEffort:        "medium",
+			expectedModel:    "gemini-4-argon",
+			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
@@ -56,42 +88,50 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Alias '3.7' maps to gemini-3.7-flash",
+			name:             "Retired Alias '3.7' maps to gemini-3.8-flash",
 			rawModel:         "3.7",
 			rawEffort:        "high",
-			expectedModel:    "gemini-3.7-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Full model name 'gemini-3.7-flash-medium' extracts effort 'medium'",
+			name:             "Full model name 'gemini-3.7-flash-medium' extracts effort 'medium' and maps to 3.8",
 			rawModel:         "gemini-3.7-flash-medium",
 			rawEffort:        "",
-			expectedModel:    "gemini-3.7-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Alias 'pro' with empty effort defaults to high",
+			name:             "Alias 'pro' with empty effort defaults to claude-opus-5-5 high",
 			rawModel:         "pro",
 			rawEffort:        "",
-			expectedModel:    "gemini-3.1-pro",
+			expectedModel:    "claude-opus-5-5",
 			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 1: Model with subset effort (gemini-3.1-pro) requested with unsupported 'medium' clamps to 'high'",
+			name:             "Alias 'smart' with low effort maps to claude-opus-5-5 low",
+			rawModel:         "smart",
+			rawEffort:        "low",
+			expectedModel:    "claude-opus-5-5",
+			expectedEffort:   "low",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Retired 'gemini-3.1-pro' maps to gemini-3.8-flash with requested effort",
 			rawModel:         "gemini-3.1-pro",
 			rawEffort:        "medium",
-			expectedModel:    "gemini-3.1-pro",
-			expectedEffort:   "high",
+			expectedModel:    "gemini-3.8-flash",
+			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 1b: gemini-3.1-pro with valid 'low' effort is preserved",
+			name:             "Retired 'gemini-3.1-pro' with low effort maps to gemini-3.8-flash low",
 			rawModel:         "gemini-3.1-pro",
 			rawEffort:        "low",
-			expectedModel:    "gemini-3.1-pro",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "low",
 			expectedIsCustom: false,
 		},
@@ -192,34 +232,34 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2e: gemini-3.6-flash with explicit effort",
+			name:             "Edge Case 2e: gemini-3.6-flash maps to gemini-3.8-flash with explicit effort",
 			rawModel:         "gemini-3.6-flash",
 			rawEffort:        "low",
-			expectedModel:    "gemini-3.6-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "low",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2e-2: Legacy alias 'gemini-3.5-flash' maps to gemini-3.6-flash",
+			name:             "Edge Case 2e-2: Legacy alias 'gemini-3.5-flash' maps to gemini-3.8-flash",
 			rawModel:         "gemini-3.5-flash",
 			rawEffort:        "high",
-			expectedModel:    "gemini-3.6-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "high",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Edge Case 2e-3: Legacy alias '3.5-flash' maps to gemini-3.6-flash",
+			name:             "Edge Case 2e-3: Legacy alias '3.5-flash' maps to gemini-3.8-flash",
 			rawModel:         "3.5-flash",
 			rawEffort:        "medium",
-			expectedModel:    "gemini-3.6-flash",
+			expectedModel:    "gemini-3.8-flash",
 			expectedEffort:   "medium",
 			expectedIsCustom: false,
 		},
 		{
-			name:             "Custom Config Alias: 'my-pro' maps to gemini-3.1-pro",
+			name:             "Custom Config Alias: 'my-pro' maps to claude-opus-5-5",
 			rawModel:         "my-pro",
 			rawEffort:        "low",
-			expectedModel:    "gemini-3.1-pro",
+			expectedModel:    "claude-opus-5-5",
 			expectedEffort:   "low",
 			expectedIsCustom: false,
 		},
@@ -300,6 +340,12 @@ func TestModelCapability_ContextAndThresholds(t *testing.T) {
 	assert.Equal(t, 128000, capGPT.EffectiveMaxContext())
 	assert.Equal(t, 16384, capGPT.EffectiveMaxOutput())
 	assert.Equal(t, 115200, capGPT.EffectiveCompactThreshold())
+
+	capArgon, _, ok := domain.LookupModelCapability("argon", nil)
+	assert.True(t, ok)
+	assert.Equal(t, 1048576, capArgon.EffectiveMaxContext())
+	assert.Equal(t, 65536, capArgon.EffectiveMaxOutput())
+	assert.Equal(t, 943718, capArgon.EffectiveCompactThreshold())
 
 	// Test Fallback for dynamic/custom capability with zero values
 	emptyCap := domain.ModelCapability{ID: "custom-claude-variant"}

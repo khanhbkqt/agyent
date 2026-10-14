@@ -20,10 +20,10 @@ import (
 func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 	cfg := &config.Config{
 		AGY: config.AGYConfig{
-			DefaultModel:  "gemini-3.7-flash",
+			DefaultModel:  "gemini-3.8-flash",
 			DefaultEffort: "high",
 			ModelAliases: map[string]string{
-				"custom-pro": "gemini-3.1-pro",
+				"custom-pro": "claude-opus-5-5",
 			},
 		},
 	}
@@ -31,18 +31,18 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 	eng := engine.NewEngine(cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	t.Run("Tier 1: Explicit per-turn parameters take top priority", func(t *testing.T) {
-		sess := &domain.Session{ActiveModel: "gemini-3.6-flash", ActiveEffort: "low"}
-		agent := &domain.Agent{DefaultModel: "claude-sonnet-4-6"}
+		sess := &domain.Session{ActiveModel: "gemini-3.8-flash", ActiveEffort: "low"}
+		agent := &domain.Agent{DefaultModel: "claude-sonnet-5-5"}
 
 		model, effort, source := eng.ResolveExecutionParams("pro", "high", sess, agent)
-		assert.Equal(t, "gemini-3.1-pro", model)
+		assert.Equal(t, "claude-opus-5-5", model)
 		assert.Equal(t, "high", effort)
 		assert.Equal(t, "Per-Turn Override", source)
 	})
 
 	t.Run("Tier 2: Session override applies when per-turn is empty", func(t *testing.T) {
 		sess := &domain.Session{ActiveModel: "claude", ActiveEffort: "high"}
-		agent := &domain.Agent{DefaultModel: "gemini-3.1-pro", DefaultEffort: "low"}
+		agent := &domain.Agent{DefaultModel: "claude-opus-5-5", DefaultEffort: "low"}
 
 		model, effort, source := eng.ResolveExecutionParams("", "", sess, agent)
 		assert.Equal(t, "claude-sonnet-5-5", model)
@@ -52,10 +52,10 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 
 	t.Run("Tier 3: Agent persona defaults apply when session has no override", func(t *testing.T) {
 		sess := &domain.Session{}
-		agent := &domain.Agent{DefaultModel: "gemini-3.1-pro", DefaultEffort: "low"}
+		agent := &domain.Agent{DefaultModel: "claude-opus-5-5", DefaultEffort: "low"}
 
 		model, effort, source := eng.ResolveExecutionParams("", "", sess, agent)
-		assert.Equal(t, "gemini-3.1-pro", model)
+		assert.Equal(t, "claude-opus-5-5", model)
 		assert.Equal(t, "low", effort)
 		assert.Equal(t, "Agent Default", source)
 	})
@@ -65,18 +65,18 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 		agent := &domain.Agent{}
 
 		model, effort, source := eng.ResolveExecutionParams("", "", sess, agent)
-		assert.Equal(t, "gemini-3.7-flash", model)
+		assert.Equal(t, "gemini-3.8-flash", model)
 		assert.Equal(t, "high", effort)
 		assert.Equal(t, "Global Config", source)
 	})
 
-	t.Run("Edge Case: Effort clamping on gemini-3.1-pro (medium -> high)", func(t *testing.T) {
-		sess := &domain.Session{ActiveModel: "gemini-3.1-pro", ActiveEffort: "medium"}
+	t.Run("Edge Case: Effort clamping on gpt-oss-120b (high -> medium)", func(t *testing.T) {
+		sess := &domain.Session{ActiveModel: "gpt-oss-120b", ActiveEffort: "high"}
 		agent := &domain.Agent{}
 
 		model, effort, _ := eng.ResolveExecutionParams("", "", sess, agent)
-		assert.Equal(t, "gemini-3.1-pro", model)
-		assert.Equal(t, "high", effort, "gemini-3.1-pro does not support medium, must clamp to high")
+		assert.Equal(t, "gpt-oss-120b", model)
+		assert.Equal(t, "medium", effort, "gpt-oss-120b only supports medium, must clamp to medium")
 	})
 
 	t.Run("Custom config alias resolution", func(t *testing.T) {
@@ -84,7 +84,7 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 		agent := &domain.Agent{}
 
 		model, effort, _ := eng.ResolveExecutionParams("", "low", sess, agent)
-		assert.Equal(t, "gemini-3.1-pro", model)
+		assert.Equal(t, "claude-opus-5-5", model)
 		assert.Equal(t, "low", effort)
 	})
 }
@@ -99,7 +99,7 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 	ctx := context.Background()
 	cfg := &config.Config{
 		AGY: config.AGYConfig{
-			DefaultModel:  "gemini-3.7-flash",
+			DefaultModel:  "gemini-3.8-flash",
 			DefaultEffort: "high",
 		},
 		Storage: config.StorageConfig{
@@ -149,7 +149,10 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 		}
 	}
 	assert.Contains(t, callbackDataList, "m:set:gemini-3.8-flash")
-	assert.Contains(t, callbackDataList, "m:set:gemini-3.7-flash")
+	assert.Contains(t, callbackDataList, "m:set:gemini-4-argon")
+	assert.Contains(t, callbackDataList, "m:set:claude-opus-5-5")
+	assert.Contains(t, callbackDataList, "m:set:claude-sonnet-5-5")
+	assert.Contains(t, callbackDataList, "m:set:gpt-oss-120b")
 	assert.Contains(t, callbackDataList, "m:reset")
 
 	// 2. Test /model pro switch
@@ -162,11 +165,11 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 	}
 	out2, err := eng.HandleCommand(ctx, msgSetModel)
 	assert.NoError(t, err)
-	assert.Contains(t, out2.Text, "gemini-3.1-pro")
+	assert.Contains(t, out2.Text, "claude-opus-5-5")
 
 	sess, err := store.GetSession(ctx, sessKey)
 	require.NoError(t, err)
-	assert.Equal(t, "gemini-3.1-pro", sess.ActiveModel)
+	assert.Equal(t, "claude-opus-5-5", sess.ActiveModel)
 
 	// 3. Test /effort low switch
 	msgSetEffort := domain.CanonicalMessage{
@@ -194,7 +197,7 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 	}
 	outStatus, err := eng.HandleCommand(ctx, msgStatus)
 	assert.NoError(t, err)
-	assert.Contains(t, outStatus.Text, "**Active Model:** gemini-3.1-pro")
+	assert.Contains(t, outStatus.Text, "**Active Model:** claude-opus-5-5")
 	assert.Contains(t, outStatus.Text, "**Reasoning Effort:** low")
 
 	// 5. Test /model reset

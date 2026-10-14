@@ -39,7 +39,7 @@ func TestCLI_StatsCommand(t *testing.T) {
 		SessionKey:     "telegram:111:222",
 		AgentName:      "agyent",
 		ConversationID: "conv-1",
-		Model:          "gemini-3.7-flash",
+		Model:          "gemini-3.8-flash",
 		Status:         "SUCCESS",
 		Usage: domain.TokenUsage{
 			InputTokens:     10000,
@@ -92,7 +92,7 @@ func TestCLI_StatsCommand(t *testing.T) {
 	assert.Contains(t, out, "agyent")
 	assert.Contains(t, out, "coder")
 	assert.Contains(t, out, "BREAKDOWN BY AI MODEL")
-	assert.Contains(t, out, "Gemini 3.7 Flash")
+	assert.Contains(t, out, "Gemini 3.8 Flash")
 	assert.Contains(t, out, "Claude Sonnet 5.5")
 
 	// 3. Test stats with agent filter: agyent stats --agent agyent

@@ -5,6 +5,18 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.61] - 2026-10-14
+
+### Added & Changed
+- **Gemini 4 Argon Integration:**
+  - Added official support for Google DeepMind's flagship next-generation model `gemini-4-argon` with 1M context window (1,048,576 tokens) and reasoning effort support (`low`, `medium`, `high`).
+  - Added smart aliases for Gemini 4 Argon: `/model argon`, `/model gemini-4`, `/model 4`, and `/model gemini-4-argon`.
+  - Implemented dynamic capability merging in `SetDynamicModelCapabilities` and fallback lookup in `LookupModelCapability` so unlisted flagship models remain available even when omitted from CLI public discovery.
+- **Antigravity CLI (agy) Model Alignment & Deprecation Handling:**
+  - Aligned model catalogue with upstream `agy` CLI changes: `gemini-3.8-flash`, `claude-opus-5-5`, `claude-sonnet-5-5`, and `gpt-oss-120b`.
+  - Fully back-aliased retired Gemini models (`gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-pro`) to `gemini-3.8-flash` to prevent runtime execution errors.
+  - Mapped reasoning aliases `"pro"` and `"smart"` to `claude-opus-5-5` as the primary deep reasoning model.
+
 ## [1.0.60] - 2026-10-12
 
 ### Added & Changed
