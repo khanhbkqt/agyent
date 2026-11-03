@@ -95,14 +95,24 @@ func ParseOutput(stdoutBytes, stderrBytes []byte) (*domain.ExecutionResult, erro
 		}, outcomeErr
 	}
 
+	// 4. Salvage benign stream interruptions when complete response text is present.
+	// Upstream SSE disconnects may cause AGY to report "The stream was interrupted. Please continue the task you were working on."
+	// even when the assistant turn was fully generated.
+	isInterruptedWithResponse := domain.IsStreamInterrupted(payload.Error) && strings.TrimSpace(payload.Response) != ""
+	success := payload.Status == "SUCCESS" || (payload.Status == "" && payload.Error == "") || isInterruptedWithResponse
+	errText := payload.Error
+	if isInterruptedWithResponse {
+		errText = ""
+	}
+
 	return &domain.ExecutionResult{
-		Success:        payload.Status == "SUCCESS" || (payload.Status == "" && payload.Error == ""),
+		Success:        success,
 		ConversationID: payload.ConversationID,
 		ResponseText:   payload.Response,
 		DurationSec:    payload.DurationSeconds,
 		NumTurns:       payload.NumTurns,
 		Usage:          usage,
-		Error:          payload.Error,
+		Error:          errText,
 	}, nil
 }
 

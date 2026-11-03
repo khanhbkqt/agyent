@@ -105,6 +105,12 @@ func (h *Harness) parseOutput(raw []byte) (*ExecutionResult, error) {
 }
 ```
 
+### Upstream Stream Interruption & Response Salvage
+When upstream model services (e.g. Gemini Cloud Code SSE) sever the connection during or after output generation, AGY CLI reports `status: "ERROR"` with `"The stream was interrupted. Please continue the task you were working on."`.
+- **Response Salvage:** If `output.Response` contains non-empty text, `ParseOutput` and the core engine salvage the turn as successful (`Success = true`) and deliver the generated message to the channel rather than discarding it.
+- **Transient Retry:** If `output.Response` is empty, `IsTransientError` classifies the interruption as retryable, triggering the engine's 3-attempt exponential backoff retry loop.
+
+
 ---
 
 ## 3. Snapshot Diff Algorithm & Artifacts Filtering

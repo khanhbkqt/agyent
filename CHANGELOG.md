@@ -5,6 +5,20 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.62] - 2026-11-03
+
+### Fixed & Hardened
+- **Upstream Stream Interruption Response Salvage:**
+  - Resolved production failure where upstream Google Antigravity language server dropped SSE connections (`"The stream was interrupted. Please continue the task you were working on."`) after full turn generation, causing valid AI responses to be discarded with Telegram execution failure alerts.
+  - Hardened batch parser (`ParseOutput`) and streaming parser (`ParseEventStream`) to salvage valid generated `ResponseText` upon stream interruption errors, marking execution as successful while logging diagnostic warnings.
+  - Added response salvage logic to core `Engine.ExecuteTurn` across both batch and streaming delivery modes.
+- **Fail-Closed Policy and Native Denial Precedence:**
+  - Enforced strict fail-closed precedence ensuring native permission denials and policy denials (`StatusPolicyDenied`, `StatusNativePermissionDenied`) are never masked or bypassed by stream interruption salvage.
+  - Reordered parser validation to evaluate denied actions and denial status prior to any error salvage.
+- **Transient Error Classification & Retry Improvements:**
+  - Enhanced `IsTransientError` to recognize stream interruptions and dropped connections with empty response text as transient retryable errors.
+  - Protected denied turns and successfully salvaged responses from being erroneously retried.
+
 ## [1.0.61] - 2026-10-14
 
 ### Added & Changed

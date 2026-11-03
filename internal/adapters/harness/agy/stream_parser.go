@@ -293,18 +293,6 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 				if p.artifactDetector != nil {
 					artifacts = p.artifactDetector()
 				}
-				lastResult = &domain.StreamResultPayload{
-					SessionKey:      sessionKey,
-					ConversationID:  conversationID,
-					TurnID:          p.turnID,
-					Status:          res.Status,
-					Response:        res.Response,
-					Error:           res.Error,
-					DurationSeconds: res.DurationSeconds,
-					NumTurns:        res.NumTurns,
-					Usage:           usage,
-					Artifacts:       artifacts,
-				}
 				if len(res.DeniedActions) > 0 || res.Status == "DENIED" {
 					outcome := classifyDeniedOutcome(res.DeniedActions, res.Error)
 					errMsg := res.Error
@@ -312,10 +300,40 @@ func (p *StreamParser) ParseAndEmitStream(ctx context.Context, sessionKey string
 						errMsg = "AGY rejected tool execution (denied_actions)"
 					}
 					outcomeErr := domain.NewExecutionOutcomeError(outcome, errMsg, nil)
-					lastResult.Status = "DENIED"
-					lastResult.Outcome = outcome
-					lastResult.Error = outcomeErr.Error()
+					lastResult = &domain.StreamResultPayload{
+						SessionKey:      sessionKey,
+						ConversationID:  conversationID,
+						TurnID:          p.turnID,
+						Status:          "DENIED",
+						Outcome:         outcome,
+						Response:        res.Response,
+						Error:           outcomeErr.Error(),
+						DurationSeconds: res.DurationSeconds,
+						NumTurns:        res.NumTurns,
+						Usage:           usage,
+						Artifacts:       artifacts,
+					}
 					return lastResult, outcomeErr
+				}
+
+				status := res.Status
+				resErr := res.Error
+				if domain.IsStreamInterrupted(res.Error) && strings.TrimSpace(res.Response) != "" {
+					status = "SUCCESS"
+					resErr = ""
+				}
+
+				lastResult = &domain.StreamResultPayload{
+					SessionKey:      sessionKey,
+					ConversationID:  conversationID,
+					TurnID:          p.turnID,
+					Status:          status,
+					Response:        res.Response,
+					Error:           resErr,
+					DurationSeconds: res.DurationSeconds,
+					NumTurns:        res.NumTurns,
+					Usage:           usage,
+					Artifacts:       artifacts,
 				}
 			} else {
 				lastResult = &domain.StreamResultPayload{

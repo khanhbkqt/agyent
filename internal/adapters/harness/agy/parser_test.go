@@ -200,3 +200,41 @@ func TestParseOutput_TC_PARS_10_TTYError(t *testing.T) {
 	assert.Contains(t, err.Error(), "headless environment blocked interactive TTY prompt")
 }
 
+func TestParseOutput_TC_PARS_11_StreamInterrupted_WithResponse_Salvaged(t *testing.T) {
+	stdout := []byte(`{
+		"conversation_id": "77f08340-cb5f-4766-9ff0-300add84fddf",
+		"status": "ERROR",
+		"response": "Dạ em đây nè anh Khánh! Bé Na đã sẵn sàng rồi nè.",
+		"error": "The stream was interrupted. Please continue the task you were working on.",
+		"duration_seconds": 97.8,
+		"num_turns": 1,
+		"usage": {"total_tokens": 100}
+	}`)
+	stderr := []byte("")
+
+	res, err := agy.ParseOutput(stdout, stderr)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.Success, "Turn with complete response text must succeed despite stream interruption error")
+	assert.Equal(t, "Dạ em đây nè anh Khánh! Bé Na đã sẵn sàng rồi nè.", res.ResponseText)
+	assert.Empty(t, res.Error, "Error string should be cleared when response text is successfully salvaged")
+}
+
+func TestParseOutput_TC_PARS_12_StreamInterrupted_WithoutResponse_Fails(t *testing.T) {
+	stdout := []byte(`{
+		"conversation_id": "77f08340-cb5f-4766-9ff0-300add84fddf",
+		"status": "ERROR",
+		"response": "",
+		"error": "The stream was interrupted. Please continue the task you were working on.",
+		"duration_seconds": 12.5,
+		"num_turns": 1,
+		"usage": {"total_tokens": 0}
+	}`)
+	stderr := []byte("")
+
+	res, err := agy.ParseOutput(stdout, stderr)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.Success, "Turn without response text must fail when stream is interrupted")
+	assert.Equal(t, "The stream was interrupted. Please continue the task you were working on.", res.Error)
+}

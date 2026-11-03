@@ -1223,6 +1223,16 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				execResult, execErr = e.runner.ExecuteStream(turnCtx, req, sessionKey)
 			}
 		}
+
+		if canSalvageInterruptedResponse(execErr, execResult) {
+			slog.WarnContext(turnCtx, "Salvaging completed response text despite upstream stream interruption in stream mode",
+				slog.String("session_key", sessionKey),
+				slog.Int("response_length", len(execResult.ResponseText)),
+			)
+			execResult.Success = true
+			execResult.Error = ""
+			execErr = nil
+		}
 	} else {
 		heartbeatStop := make(chan struct{})
 		var heartbeatOnce sync.Once
@@ -1256,7 +1266,17 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			} else {
 				execResult, execErr = e.runner.Execute(turnCtx, req)
 			}
-			if execErr == nil && execResult != nil && execResult.Success {
+			if canSalvageInterruptedResponse(execErr, execResult) {
+				slog.WarnContext(turnCtx, "Salvaging completed response text despite upstream stream interruption",
+					slog.String("session_key", sessionKey),
+					slog.Int("response_length", len(execResult.ResponseText)),
+				)
+				execResult.Success = true
+				execResult.Error = ""
+				execErr = nil
+			}
+
+		if execErr == nil && execResult != nil && execResult.Success {
 				break
 			}
 			if errors.Is(execErr, ports.ErrConversationNotFound) {
@@ -1272,7 +1292,7 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 				resolvedEffort = ""
 				continue
 			}
-			if isTransientError(execErr, execResult) && attempt < 2 {
+			if IsTransientError(execErr, execResult) && attempt < 2 {
 				backoff := time.Duration(1<<attempt) * time.Second
 				slog.WarnContext(turnCtx, "Transient error in runner execution, retrying with exponential backoff",
 					slog.Int("attempt", attempt+1),
@@ -1306,6 +1326,16 @@ func (e *Engine) executeTurn(ctx context.Context, msg domain.CanonicalMessage, i
 			} else {
 				execResult, execErr = e.runner.Execute(turnCtx, req)
 			}
+		}
+
+		if canSalvageInterruptedResponse(execErr, execResult) {
+			slog.WarnContext(turnCtx, "Salvaging completed response text despite upstream stream interruption",
+				slog.String("session_key", sessionKey),
+				slog.Int("response_length", len(execResult.ResponseText)),
+			)
+			execResult.Success = true
+			execResult.Error = ""
+			execErr = nil
 		}
 
 		if execErr == nil && execResult != nil && execResult.Success {
@@ -1715,29 +1745,63 @@ func (e *Engine) Stop(ctx context.Context) error {
 	}
 }
 
-// isTransientError identifies temporary retryable errors (Rate Limit 429, 503 Overloaded, broken pipes, network drops).
-func isTransientError(err error, result *domain.ExecutionResult) bool {
-	if err != nil {
-		errStr := strings.ToLower(err.Error())
-		if strings.Contains(errStr, "429") ||
-			strings.Contains(errStr, "rate limit") ||
-			strings.Contains(errStr, "resource exhausted") ||
-			strings.Contains(errStr, "503") ||
-			strings.Contains(errStr, "service unavailable") ||
-			strings.Contains(errStr, "connection reset") ||
-			strings.Contains(errStr, "pipe:") {
+func isExecutionDenied(err error, result *domain.ExecutionResult) bool {
+	if domain.ExecutionOutcomeFromError(err) != "" {
+		outcome := domain.ExecutionOutcomeFromError(err)
+		if outcome == domain.StatusPolicyDenied || outcome == domain.StatusNativePermissionDenied {
 			return true
 		}
 	}
-	if result != nil && !result.Success && result.Error != "" {
-		errStr := strings.ToLower(result.Error)
-		if strings.Contains(errStr, "429") ||
-			strings.Contains(errStr, "rate limit") ||
-			strings.Contains(errStr, "resource exhausted") ||
-			strings.Contains(errStr, "503") ||
-			strings.Contains(errStr, "service unavailable") {
+	if result != nil {
+		if result.Outcome == domain.StatusPolicyDenied || result.Outcome == domain.StatusNativePermissionDenied {
 			return true
 		}
+	}
+	return false
+}
+
+func canSalvageInterruptedResponse(err error, result *domain.ExecutionResult) bool {
+	if result == nil || result.Success || strings.TrimSpace(result.ResponseText) == "" {
+		return false
+	}
+	if isExecutionDenied(err, result) {
+		return false
+	}
+	return domain.IsStreamInterruptedError(err, result)
+}
+
+// IsTransientError identifies temporary retryable errors (Rate Limit 429, 503 Overloaded, broken pipes, network drops, stream interruptions).
+func IsTransientError(err error, result *domain.ExecutionResult) bool {
+	// 1. Fail-closed: Never retry policy denials or native permission denials
+	if isExecutionDenied(err, result) {
+		return false
+	}
+
+	// 2. If the turn produced non-empty response text despite an upstream stream interruption,
+	// it will be salvaged by the engine. Do not treat it as transient to avoid redundant retries.
+	if result != nil && strings.TrimSpace(result.ResponseText) != "" && domain.IsStreamInterruptedError(err, result) {
+		return false
+	}
+
+	checkString := func(s string) bool {
+		lower := strings.ToLower(s)
+		return strings.Contains(lower, "429") ||
+			strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "resource exhausted") ||
+			strings.Contains(lower, "503") ||
+			strings.Contains(lower, "service unavailable") ||
+			strings.Contains(lower, "connection reset") ||
+			strings.Contains(lower, "broken pipe") ||
+			strings.Contains(lower, "pipe:") ||
+			domain.IsStreamInterrupted(lower) ||
+			strings.Contains(lower, "eof")
+	}
+
+	if err != nil && checkString(err.Error()) {
+		return true
+	}
+	if result != nil && !result.Success && result.Error != "" && checkString(result.Error) {
+		return true
 	}
 	return false
 }

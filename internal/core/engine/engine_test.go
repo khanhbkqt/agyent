@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2233,3 +2234,210 @@ func TestEngine_ChannelRBAC_GroupAndPrivateChat(t *testing.T) {
 	assert.False(t, allowed, "auto-detected private agent should still block stranger in 1-1 private chat")
 }
 
+func TestEngine_IsTransientError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		res      *domain.ExecutionResult
+		expected bool
+	}{
+		{
+			name:     "Rate limit 429 error",
+			err:      errors.New("rate limit reached: 429 too many requests"),
+			expected: true,
+		},
+		{
+			name:     "503 Service Unavailable in result error",
+			res:      &domain.ExecutionResult{Success: false, Error: "HTTP 503 service unavailable"},
+			expected: true,
+		},
+		{
+			name:     "Connection reset by peer error",
+			err:      errors.New("read tcp 127.0.0.1: connection reset by peer"),
+			expected: true,
+		},
+		{
+			name:     "Broken pipe in result error",
+			res:      &domain.ExecutionResult{Success: false, Error: "write: broken pipe"},
+			expected: true,
+		},
+		{
+			name:     "Stream was interrupted error",
+			err:      errors.New("The stream was interrupted. Please continue the task you were working on."),
+			expected: true,
+		},
+		{
+			name:     "Stream was interrupted in result error without response text",
+			res:      &domain.ExecutionResult{Success: false, ResponseText: "", Error: "The stream was interrupted. Please continue the task you were working on."},
+			expected: true,
+		},
+		{
+			name:     "Stream was interrupted in result error with non-empty response text (should not retry, salvage instead)",
+			res:      &domain.ExecutionResult{Success: false, ResponseText: "Em day ne anh!", Error: "The stream was interrupted. Please continue the task you were working on."},
+			expected: false,
+		},
+		{
+			name:     "Stream was interrupted in err with non-empty response text in res (should not retry, salvage instead)",
+			err:      errors.New("The stream was interrupted. Please continue the task you were working on."),
+			res:      &domain.ExecutionResult{Success: false, ResponseText: "Em day ne anh!", Error: "The stream was interrupted. Please continue the task you were working on."},
+			expected: false,
+		},
+		{
+			name:     "Policy denial error must never be retried even with stream interruption text",
+			err:      domain.NewExecutionOutcomeError(domain.StatusPolicyDenied, "policy denial: The stream was interrupted", nil),
+			expected: false,
+		},
+		{
+			name:     "Policy denial outcome in result must never be retried",
+			res:      &domain.ExecutionResult{Success: false, Outcome: domain.StatusPolicyDenied, Error: "The stream was interrupted. Please continue the task you were working on."},
+			expected: false,
+		},
+		{
+			name:     "Native permission denial outcome in result must never be retried",
+			res:      &domain.ExecutionResult{Success: false, Outcome: domain.StatusNativePermissionDenied, Error: "The stream was interrupted. Please continue the task you were working on."},
+			expected: false,
+		},
+		{
+			name:     "EOF error",
+			err:      errors.New("unexpected EOF"),
+			expected: true,
+		},
+		{
+			name:     "Permanent permission denied",
+			res:      &domain.ExecutionResult{Success: false, Error: "permission denied: unauthorized tool"},
+			expected: false,
+		},
+		{
+			name:     "Success result with no error",
+			res:      &domain.ExecutionResult{Success: true},
+			expected: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := engine.IsTransientError(tc.err, tc.res)
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestEngine_SalvageStreamInterruptedWithResponse(t *testing.T) {
+	eng, runner, channel, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Configure mock runner to return non-empty response text alongside stream interruption error
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        false,
+			ConversationID: "conv-salvage",
+			ResponseText:   "Dạ chào anh! Câu trả lời hoàn chỉnh đã được sinh ra trước khi ngắt stream.",
+			DurationSec:    1.5,
+			Error:          "The stream was interrupted. Please continue the task you were working on.",
+		}, nil
+	})
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-salvage",
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Test prompt",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	sent := channel.GetSentMessages()
+	require.Len(t, sent, 1)
+	assert.Equal(t, "Dạ chào anh! Câu trả lời hoàn chỉnh đã được sinh ra trước khi ngắt stream.", sent[0].Text)
+	assert.NotContains(t, sent[0].Text, "Execution failed")
+}
+
+func TestEngine_SalvageStreamInterruptedWithResponse_StreamMode(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	eng.SetStreamingEnabled(true)
+
+	var streamResultPayload *domain.StreamResultPayload
+	var streamErrorPayload *domain.StreamErrorPayload
+
+	unsubResult := eng.EventBus().SubscribeSync(domain.EventStreamResult, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamResultPayload); ok {
+			streamResultPayload = &p
+		}
+		return nil
+	})
+	defer unsubResult()
+
+	unsubError := eng.EventBus().SubscribeSync(domain.EventStreamError, func(ctx context.Context, evt domain.Event) error {
+		if p, ok := evt.Payload.(domain.StreamErrorPayload); ok {
+			streamErrorPayload = &p
+		}
+		return nil
+	})
+	defer unsubError()
+
+	// Configure mock stream runner to return stream interruption with completed response
+	runner.streamFunc = func(ctx context.Context, req domain.ExecutionRequest, sessionKey string) (*domain.ExecutionResult, error) {
+		return &domain.ExecutionResult{
+			Success:        false,
+			ConversationID: "conv-stream-salvage",
+			ResponseText:   "Dạ đây là câu trả lời qua stream!",
+			DurationSec:    2.0,
+			Error:          "The stream was interrupted. Please continue the task you were working on.",
+		}, nil
+	}
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-stream-salvage",
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Stream prompt",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.NoError(t, err)
+
+	require.NotNil(t, streamResultPayload, "EventStreamResult must be emitted on successful response salvage")
+	assert.Equal(t, domain.StatusSuccess, streamResultPayload.Status)
+	assert.Equal(t, "Dạ đây là câu trả lời qua stream!", streamResultPayload.Response)
+	assert.Nil(t, streamErrorPayload, "EventStreamError must NOT be emitted when response was salvaged")
+}
+
+func TestEngine_StreamInterrupted_DenialTakesPrecedence(t *testing.T) {
+	eng, runner, _, _, _, cleanup := setupTestEngine(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Configure mock runner to return a denial alongside stream interruption error text
+	runner.setExecuteFunc(func(ctx context.Context, req domain.ExecutionRequest) (*domain.ExecutionResult, error) {
+		outcomeErr := domain.NewExecutionOutcomeError(domain.StatusPolicyDenied, "policy denial: command disallowed", nil)
+		return &domain.ExecutionResult{
+			Success:        false,
+			Outcome:        domain.StatusPolicyDenied,
+			ConversationID: "conv-denied",
+			ResponseText:   "Text that should not be salvaged because action was denied",
+			DurationSec:    0.5,
+			Error:          "The stream was interrupted. Please continue the task you were working on.",
+		}, outcomeErr
+	})
+
+	msg := domain.CanonicalMessage{
+		ID:        "msg-denial-precedence",
+		Channel:   "telegram",
+		Sender:    domain.SenderUser{ID: "123456", Username: "admin"},
+		Chat:      domain.ChatContext{ID: "123456", Type: "private"},
+		Text:      "Unauthorized prompt",
+	}
+
+	err := eng.HandleDebouncedMessage(ctx, msg)
+	require.Error(t, err, "Engine must propagate denial error and NOT salvage into success")
+	assert.Equal(t, domain.StatusPolicyDenied, domain.ExecutionOutcomeFromError(err))
+}

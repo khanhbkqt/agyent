@@ -376,3 +376,38 @@ func TestStreamParser_ReturnsTerminalOutcomeWithoutEmittingTerminalEvent(t *test
 	require.NotNil(t, result)
 	assert.Equal(t, int32(0), terminalEvents.Load(), "denials must be returned, not emitted by the parser")
 }
+
+func TestStreamParser_StreamInterrupted_WithResponse_Salvaged(t *testing.T) {
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	parser := agy.NewStreamParser(bus)
+	parser.SetTurnID("turn-salvage")
+
+	ndjson := `{"event":"init","conversation_id":"conv-salvage"}
+{"event":"result","result":{"conversation_id":"conv-salvage","status":"ERROR","response":"Em đây nè anh!","error":"The stream was interrupted. Please continue the task you were working on.","duration_seconds":10.5}}
+`
+	res, err := parser.ParseAndEmitStream(context.Background(), "telegram:salvage", strings.NewReader(ndjson))
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "SUCCESS", res.Status, "Stream result status should be upgraded to SUCCESS when response is present")
+	assert.Equal(t, "Em đây nè anh!", res.Response)
+	assert.Empty(t, res.Error, "Stream result error should be cleared when response is salvaged")
+}
+
+func TestStreamParser_StreamInterrupted_WithoutResponse_Fails(t *testing.T) {
+	bus := eventbus.NewEventBus(10, 1)
+	defer bus.Close()
+
+	parser := agy.NewStreamParser(bus)
+	parser.SetTurnID("turn-no-salvage")
+
+	ndjson := `{"event":"init","conversation_id":"conv-no-salvage"}
+{"event":"result","result":{"conversation_id":"conv-no-salvage","status":"ERROR","response":"   ","error":"The stream was interrupted. Please continue the task you were working on.","duration_seconds":5.0}}
+`
+	res, err := parser.ParseAndEmitStream(context.Background(), "telegram:no-salvage", strings.NewReader(ndjson))
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, "ERROR", res.Status, "Stream result status must remain ERROR when response is empty or whitespace")
+	assert.Equal(t, "The stream was interrupted. Please continue the task you were working on.", res.Error)
+}

@@ -171,3 +171,21 @@ type ExecutionResult struct {
 	Artifacts      []Attachment     `json:"artifacts,omitempty"`
 	Error          string           `json:"error,omitempty"`
 }
+
+// IsStreamInterrupted identifies upstream SSE / connection terminations from the model service.
+func IsStreamInterrupted(errText string) bool {
+	low := strings.ToLower(errText)
+	return strings.Contains(low, "stream was interrupted") ||
+		strings.Contains(low, "stream interrupted")
+}
+
+// IsStreamInterruptedError checks both error and execution result for stream interruption indicators.
+func IsStreamInterruptedError(err error, result *ExecutionResult) bool {
+	if err != nil && IsStreamInterrupted(err.Error()) {
+		return true
+	}
+	if result != nil && IsStreamInterrupted(result.Error) {
+		return true
+	}
+	return false
+}
