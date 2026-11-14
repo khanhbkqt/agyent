@@ -17,13 +17,13 @@ type ModelCapability struct {
 	CompactThresholdRatio float64  `json:"compact_threshold_ratio"` // Ratio of MaxContextTokens triggering auto-compaction (default: 0.90)
 }
 
-// EffectiveMaxContext returns MaxContextTokens or fallback default 2,097,152 (or 1,048,576 for Argon, 200,000 for Claude, 128,000 for GPT).
+// EffectiveMaxContext returns MaxContextTokens or fallback default 2,097,152 (or 1,048,576 for Gemini 4 / Argon / Carbon / Hydrogen / Orchestrator, 200,000 for Claude, 128,000 for GPT).
 func (m ModelCapability) EffectiveMaxContext() int {
 	if m.MaxContextTokens > 0 {
 		return m.MaxContextTokens
 	}
 	idLower := strings.ToLower(m.ID)
-	if strings.Contains(idLower, "argon") || strings.Contains(idLower, "gemini-4") {
+	if strings.Contains(idLower, "argon") || strings.Contains(idLower, "carbon") || strings.Contains(idLower, "hydrogen") || strings.Contains(idLower, "orchestrator") || strings.Contains(idLower, "gemini-4") {
 		return 1048576
 	}
 	if strings.Contains(idLower, "claude") || strings.Contains(idLower, "sonnet") || strings.Contains(idLower, "opus") {
@@ -72,11 +72,51 @@ var DefaultModelCapabilities = []ModelCapability{
 		CompactThresholdRatio: 0.90,
 	},
 	{
-		ID:                    "gemini-4-argon",
-		DisplayName:           "Gemini 4 Argon",
-		Aliases:               []string{"argon", "gemini-4", "gemini-4-argon", "4", "4-argon"},
+		ID:                    "gemini-4-carbon",
+		DisplayName:           "Gemini 4 Carbon",
+		Aliases:               []string{"carbon", "gemini-carbon", "gemini-4-carbon", "4-carbon"},
 		SupportedEfforts:      []string{"low", "medium", "high"},
 		DefaultEffort:         "high",
+		MaxContextTokens:      1048576,
+		MaxOutputTokens:       65536,
+		CompactThresholdRatio: 0.90,
+	},
+	{
+		ID:                    "gemini-4-argon",
+		DisplayName:           "Gemini 4 Argon",
+		Aliases:               []string{"argon", "gemini-argon", "gemini-4-argon", "4", "4-argon", "gemini-4"},
+		SupportedEfforts:      []string{"low", "medium", "high"},
+		DefaultEffort:         "high",
+		MaxContextTokens:      1048576,
+		MaxOutputTokens:       65536,
+		CompactThresholdRatio: 0.90,
+	},
+	{
+		ID:                    "gemini-4-hydrogen",
+		DisplayName:           "Gemini 4 Hydrogen",
+		Aliases:               []string{"hydrogen", "gemini-hydrogen", "gemini-4-hydrogen", "4-hydrogen"},
+		SupportedEfforts:      []string{"low", "medium", "high", "xhigh"},
+		DefaultEffort:         "high",
+		MaxContextTokens:      1048576,
+		MaxOutputTokens:       65536,
+		CompactThresholdRatio: 0.90,
+	},
+	{
+		ID:                    "gemini-pro-orchestrator",
+		DisplayName:           "Orchestrator (Carbon)",
+		Aliases:               []string{"orchestrator", "orchestrator-carbon", "gemini-orchestrator", "gemini-pro-orchestrator"},
+		SupportedEfforts:      []string{},
+		DefaultEffort:         "",
+		MaxContextTokens:      1048576,
+		MaxOutputTokens:       65536,
+		CompactThresholdRatio: 0.90,
+	},
+	{
+		ID:                    "gemini-pro-orchestrator-argon",
+		DisplayName:           "Orchestrator (Argon)",
+		Aliases:               []string{"orchestrator-argon", "gemini-orchestrator-argon", "gemini-pro-orchestrator-argon"},
+		SupportedEfforts:      []string{},
+		DefaultEffort:         "",
 		MaxContextTokens:      1048576,
 		MaxOutputTokens:       65536,
 		CompactThresholdRatio: 0.90,
@@ -164,10 +204,10 @@ func LookupModelCapability(nameOrAlias string, customAliases map[string]string) 
 		}
 	}
 
-	// 2. Extract effort suffix if passed as full model ID (e.g. "gemini-3.7-flash-high")
+	// 2. Extract effort suffix if passed as full model ID (e.g. "gemini-4-hydrogen-xhigh", "gemini-3.8-flash-high")
 	var inferredEffort string
 	baseCandidate := norm
-	for _, eff := range []string{"-high", "-medium", "-low"} {
+	for _, eff := range []string{"-xhigh", "-high", "-medium", "-low", "-max"} {
 		if strings.HasSuffix(norm, eff) {
 			inferredEffort = strings.TrimPrefix(eff, "-")
 			baseCandidate = strings.TrimSuffix(norm, eff)

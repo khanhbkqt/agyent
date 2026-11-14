@@ -72,6 +72,86 @@ func TestModelCapability_LookupAndNormalize(t *testing.T) {
 			expectedIsCustom: false,
 		},
 		{
+			name:             "Canonical Gemini 4 Carbon with explicit high effort",
+			rawModel:         "gemini-4-carbon",
+			rawEffort:        "high",
+			expectedModel:    "gemini-4-carbon",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'carbon' with empty effort defaults to high",
+			rawModel:         "carbon",
+			rawEffort:        "",
+			expectedModel:    "gemini-4-carbon",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'gemini-carbon' with medium effort maps to gemini-4-carbon",
+			rawModel:         "gemini-carbon",
+			rawEffort:        "medium",
+			expectedModel:    "gemini-4-carbon",
+			expectedEffort:   "medium",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Canonical Gemini 4 Hydrogen with explicit xhigh effort",
+			rawModel:         "gemini-4-hydrogen",
+			rawEffort:        "xhigh",
+			expectedModel:    "gemini-4-hydrogen",
+			expectedEffort:   "xhigh",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'hydrogen' with empty effort defaults to high",
+			rawModel:         "hydrogen",
+			rawEffort:        "",
+			expectedModel:    "gemini-4-hydrogen",
+			expectedEffort:   "high",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Full model name 'gemini-4-hydrogen-xhigh' extracts effort 'xhigh'",
+			rawModel:         "gemini-4-hydrogen-xhigh",
+			rawEffort:        "",
+			expectedModel:    "gemini-4-hydrogen",
+			expectedEffort:   "xhigh",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Canonical Gemini Pro Orchestrator strips effort",
+			rawModel:         "gemini-pro-orchestrator",
+			rawEffort:        "high",
+			expectedModel:    "gemini-pro-orchestrator",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'orchestrator' strips effort",
+			rawModel:         "orchestrator",
+			rawEffort:        "medium",
+			expectedModel:    "gemini-pro-orchestrator",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'orchestrator-carbon' maps to gemini-pro-orchestrator",
+			rawModel:         "orchestrator-carbon",
+			rawEffort:        "",
+			expectedModel:    "gemini-pro-orchestrator",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
+			name:             "Alias 'orchestrator-argon' maps to gemini-pro-orchestrator-argon and strips effort",
+			rawModel:         "orchestrator-argon",
+			rawEffort:        "low",
+			expectedModel:    "gemini-pro-orchestrator-argon",
+			expectedEffort:   "",
+			expectedIsCustom: false,
+		},
+		{
 			name:             "Alias 'flash' with empty effort defaults to gemini-3.8-flash high",
 			rawModel:         "flash",
 			rawEffort:        "",
@@ -346,6 +426,24 @@ func TestModelCapability_ContextAndThresholds(t *testing.T) {
 	assert.Equal(t, 1048576, capArgon.EffectiveMaxContext())
 	assert.Equal(t, 65536, capArgon.EffectiveMaxOutput())
 	assert.Equal(t, 943718, capArgon.EffectiveCompactThreshold())
+
+	capCarbon, _, ok := domain.LookupModelCapability("carbon", nil)
+	assert.True(t, ok)
+	assert.Equal(t, 1048576, capCarbon.EffectiveMaxContext())
+	assert.Equal(t, 65536, capCarbon.EffectiveMaxOutput())
+	assert.Equal(t, 943718, capCarbon.EffectiveCompactThreshold())
+
+	capHydrogen, _, ok := domain.LookupModelCapability("hydrogen", nil)
+	assert.True(t, ok)
+	assert.Equal(t, 1048576, capHydrogen.EffectiveMaxContext())
+	assert.Equal(t, 65536, capHydrogen.EffectiveMaxOutput())
+	assert.Equal(t, 943718, capHydrogen.EffectiveCompactThreshold())
+
+	capOrch, _, ok := domain.LookupModelCapability("orchestrator", nil)
+	assert.True(t, ok)
+	assert.Equal(t, 1048576, capOrch.EffectiveMaxContext())
+	assert.Equal(t, 65536, capOrch.EffectiveMaxOutput())
+	assert.Equal(t, 943718, capOrch.EffectiveCompactThreshold())
 
 	// Test Fallback for dynamic/custom capability with zero values
 	emptyCap := domain.ModelCapability{ID: "custom-claude-variant"}

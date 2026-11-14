@@ -726,7 +726,7 @@ func TestRealAGY_DynamicModelDiscovery(t *testing.T) {
 	}
 
 	// Verify key model families exist
-	var hasFlash, hasClaude, hasOpus, hasGPT bool
+	var hasFlash, hasClaude, hasOpus, hasGPT, hasCarbon, hasArgon, hasHydrogen, hasOrchestrator bool
 	for _, m := range models {
 		if strings.Contains(m.ID, "flash") {
 			hasFlash = true
@@ -740,11 +740,27 @@ func TestRealAGY_DynamicModelDiscovery(t *testing.T) {
 		if strings.Contains(m.ID, "gpt") || strings.Contains(m.ID, "oss") {
 			hasGPT = true
 		}
+		if strings.Contains(m.ID, "carbon") {
+			hasCarbon = true
+		}
+		if strings.Contains(m.ID, "argon") {
+			hasArgon = true
+		}
+		if strings.Contains(m.ID, "hydrogen") {
+			hasHydrogen = true
+		}
+		if strings.Contains(m.ID, "orchestrator") {
+			hasOrchestrator = true
+		}
 	}
 	assert.True(t, hasFlash, "must discover at least one flash model")
 	assert.True(t, hasClaude, "must discover at least one claude model")
 	assert.True(t, hasOpus, "must discover at least one opus model")
 	assert.True(t, hasGPT, "must discover at least one gpt/oss model")
+	assert.True(t, hasCarbon, "must discover at least one carbon model")
+	assert.True(t, hasArgon, "must discover at least one argon model")
+	assert.True(t, hasHydrogen, "must discover at least one hydrogen model")
+	assert.True(t, hasOrchestrator, "must discover at least one orchestrator model")
 }
 
 func TestRealAGY_ModelAndEffortExecution(t *testing.T) {

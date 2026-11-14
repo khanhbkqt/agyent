@@ -81,6 +81,8 @@ func (r *effortRejectingRunner) ListAvailableModels(ctx context.Context) ([]doma
 func TestTaskExecutor_EffortRejectionRecovery(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Storage.AgentsDir = t.TempDir()
+	cfg.AGY.DefaultModel = "gemini-3.8-flash"
+	cfg.AGY.DefaultEffort = "high"
 
 	runner := &effortRejectingRunner{}
 	bus := eventbus.NewEventBus(10, 1)

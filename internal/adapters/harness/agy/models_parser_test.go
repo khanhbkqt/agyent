@@ -96,3 +96,94 @@ gemini-3.8-flash-high	Gemini 3.8 Flash (High)
 	assert.Contains(t, argon.Aliases, "4-argon")
 	assert.Equal(t, 1048576, argon.MaxContextTokens)
 }
+
+func TestParseModelsOutput_FullFrontierSet(t *testing.T) {
+	rawCLIOutput := `Fetching available models...
+gemini-4-carbon-medium	Gemini 4 Carbon (Medium)
+gemini-4-carbon-high	Gemini 4 Carbon (High)
+gemini-4-carbon-low	Gemini 4 Carbon (Low)
+gemini-4-argon-medium	Gemini 4 Argon (Medium)
+gemini-4-argon-high	Gemini 4 Argon (High)
+gemini-4-argon-low	Gemini 4 Argon (Low)
+gemini-4-hydrogen-high	Gemini 4 Hydrogen (High)
+gemini-4-hydrogen-xhigh	Gemini 4 Hydrogen (XHigh)
+gemini-4-hydrogen-medium	Gemini 4 Hydrogen (Medium)
+gemini-4-hydrogen-low	Gemini 4 Hydrogen (Low)
+gemini-pro-orchestrator	Orchestrator (Carbon)
+gemini-pro-orchestrator-argon	Orchestrator (Argon)
+gemini-3.8-flash-high	Gemini 3.8 Flash (High)
+gemini-3.8-flash-medium	Gemini 3.8 Flash (Medium)
+gemini-3.8-flash-low	Gemini 3.8 Flash (Low)
+claude-opus-5-5-low	Claude Opus 5.5 (Low)
+claude-opus-5-5-medium	Claude Opus 5.5 (Medium)
+claude-opus-5-5-high	Claude Opus 5.5 (High)
+claude-sonnet-5-5-low	Claude Sonnet 5.5 (Low)
+claude-sonnet-5-5-medium	Claude Sonnet 5.5 (Medium)
+claude-sonnet-5-5-high	Claude Sonnet 5.5 (High)
+gpt-oss-120b-medium	GPT-OSS 120B (Medium)
+`
+
+	parsed := agy.ParseModelsOutput(rawCLIOutput)
+	require.Len(t, parsed, 9, "Should group into 9 distinct base models")
+
+	// 1. Carbon
+	carbon := parsed[0]
+	assert.Equal(t, "gemini-4-carbon", carbon.ID)
+	assert.Equal(t, "Gemini 4 Carbon", carbon.DisplayName)
+	assert.Equal(t, []string{"medium", "high", "low"}, carbon.SupportedEfforts)
+	assert.Equal(t, "high", carbon.DefaultEffort)
+	assert.Contains(t, carbon.Aliases, "carbon")
+	assert.Contains(t, carbon.Aliases, "gemini-4-carbon")
+	assert.Equal(t, 1048576, carbon.MaxContextTokens)
+
+	// 2. Argon
+	argon := parsed[1]
+	assert.Equal(t, "gemini-4-argon", argon.ID)
+	assert.Equal(t, "Gemini 4 Argon", argon.DisplayName)
+	assert.Contains(t, argon.Aliases, "argon")
+	assert.Contains(t, argon.Aliases, "gemini-4")
+	assert.Contains(t, argon.Aliases, "4")
+	assert.Equal(t, 1048576, argon.MaxContextTokens)
+
+	// 3. Hydrogen (with XHigh)
+	hydrogen := parsed[2]
+	assert.Equal(t, "gemini-4-hydrogen", hydrogen.ID)
+	assert.Equal(t, "Gemini 4 Hydrogen", hydrogen.DisplayName)
+	assert.Equal(t, []string{"high", "xhigh", "medium", "low"}, hydrogen.SupportedEfforts)
+	assert.Equal(t, "high", hydrogen.DefaultEffort)
+	assert.Contains(t, hydrogen.Aliases, "hydrogen")
+	assert.Contains(t, hydrogen.Aliases, "gemini-4-hydrogen")
+	assert.Equal(t, 1048576, hydrogen.MaxContextTokens)
+
+	// 4. Orchestrator (Carbon)
+	orchCarbon := parsed[3]
+	assert.Equal(t, "gemini-pro-orchestrator", orchCarbon.ID)
+	assert.Equal(t, "Orchestrator (Carbon)", orchCarbon.DisplayName)
+	assert.Empty(t, orchCarbon.SupportedEfforts, "Orchestrator must have no effort options")
+	assert.Equal(t, "", orchCarbon.DefaultEffort)
+	assert.Contains(t, orchCarbon.Aliases, "orchestrator")
+	assert.Contains(t, orchCarbon.Aliases, "orchestrator-carbon")
+	assert.NotContains(t, orchCarbon.Aliases, "pro", "Orchestrator should not steal 'pro' alias")
+	assert.Equal(t, 1048576, orchCarbon.MaxContextTokens)
+
+	// 5. Orchestrator (Argon)
+	orchArgon := parsed[4]
+	assert.Equal(t, "gemini-pro-orchestrator-argon", orchArgon.ID)
+	assert.Equal(t, "Orchestrator (Argon)", orchArgon.DisplayName)
+	assert.Empty(t, orchArgon.SupportedEfforts, "Orchestrator Argon must have no effort options")
+	assert.Equal(t, "", orchArgon.DefaultEffort)
+	assert.Contains(t, orchArgon.Aliases, "orchestrator-argon")
+	assert.Equal(t, 1048576, orchArgon.MaxContextTokens)
+
+	// 6. Flash 3.8
+	flash := parsed[5]
+	assert.Equal(t, "gemini-3.8-flash", flash.ID)
+	assert.Equal(t, 2097152, flash.MaxContextTokens)
+
+	// 7. Claude Opus
+	opus := parsed[6]
+	assert.Equal(t, "claude-opus-5-5", opus.ID)
+	assert.Contains(t, opus.Aliases, "pro")
+	assert.Contains(t, opus.Aliases, "smart")
+	assert.Equal(t, 200000, opus.MaxContextTokens)
+}

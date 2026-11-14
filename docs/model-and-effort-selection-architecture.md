@@ -2,7 +2,7 @@
 
 > **Document status:** Reference
 > **Code authority:** `internal/core/domain/model.go`, engine resolver/commands, AGY model parser
-> **Last verified:** 2026-10-13
+> **Last verified:** 2026-11-14
 
 This document specifies the standardized architecture for **Model Selection** and **Reasoning Effort** support in the `agyent` ecosystem.
 
@@ -10,11 +10,11 @@ This document specifies the standardized architecture for **Model Selection** an
 
 ## 1. Objectives & Architectural Principles
 
-1. **Multi-Model & Variable Effort Normalization:** Fully harness Antigravity CLI (`agy`) flags (`--model <name>` and `--effort <low|medium|high|none>`), allowing seamless switching between frontier reasoning models (`claude-opus-5-5`), low-latency flagship models (`gemini-3.8-flash`), and open-weight models (`gpt-oss-120b`).
+1. **Multi-Model & Variable Effort Normalization:** Fully harness Antigravity CLI (`agy`) flags (`--model <name>` and `--effort <low|medium|high|xhigh|max|none>`), allowing seamless switching between frontier reasoning models (`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `claude-opus-5-5`), orchestrators (`gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`), low-latency flagship models (`gemini-3.8-flash`), and open-weight models (`gpt-oss-120b`).
 2. **5-Tier Resolution Hierarchy:** Ensure deterministic precedence resolution from per-turn flags $\rightarrow$ session scope $\rightarrow$ agent persona $\rightarrow$ global configuration $\rightarrow$ fallback defaults.
 3. **Comprehensive Edge Case Resilience:**
-   - **Models without Reasoning Effort Support:** Models that do not accept reasoning tokens automatically omit the `--effort` flag to prevent CLI syntax or parameter errors.
-   - **Models with Subset Effort Support:** Models that only accept specific effort tiers (e.g. `gpt-oss-120b` supporting only `["medium"]`) are clamped/fallback to their nearest valid default.
+   - **Models without Reasoning Effort Support:** Orchestrator models (`gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`) that do not accept reasoning effort automatically omit the `--effort` flag to prevent CLI syntax or parameter errors.
+   - **Models with Subset Effort Support:** Models that only accept specific effort tiers (e.g. `gpt-oss-120b` supporting only `["medium"]`, or `gemini-4-hydrogen` supporting `["low", "medium", "high", "xhigh"]`) are clamped/fallback to their nearest valid default.
    - **Runtime CLI Flag Rejection Recovery:** Automatic detection of CLI errors containing `flag provided but not defined: -effort` or `effort not supported`, triggering a single auto-retry turn with `--effort` stripped.
    - **Backward Compatibility for Retired Models:** Older models removed from `agy` CLI (such as `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, and `gemini-3.1-pro`) are transparently normalized to the active flagship model (`gemini-3.8-flash` or `claude-opus-5-5`), preventing user session breakage.
 4. **Prefix KV-Cache Preservation & Cost Tracking:** Preserve Level 0–4 prompt structure across models while recording `model`, `effort`, and `thinking_tokens` in `audit_logs`.
@@ -31,7 +31,7 @@ $$\text{Resolved}(Model, Effort) = \text{FirstNonEmpty}(T_1, T_2, T_3, T_4, T_5)
 +---------------------------------+---------------------------------+
                                   | (if empty)
 +---------------------------------v---------------------------------+
-| Tier 2: Session Active Override (e.g. /model pro, /effort high)   |
+| Tier 2: Session Active Override (e.g. /model carbon, /effort high)|
 +---------------------------------+---------------------------------+
                                   | (if empty)
 +---------------------------------v---------------------------------+
@@ -55,8 +55,12 @@ Each model is characterized by a `ModelCapability` profile with explicit context
 
 | Model Canonical ID | Aliases | Display Name | Supported Efforts | Default Effort | Max Context | Max Output | Auto-Compact Limit (90%) | Capability Notes |
 | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash`, `gemini`, `3.7`, `3.7-flash`, `3.6`, `3.6-flash`, `3.5`, `3.5-flash`, `gemini-pro`, `gemini-3.1-pro` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Flagship Google multimodal & reasoning Flash. Back-aliases retired Gemini models. |
-| `gemini-4-argon` | `argon`, `gemini-4`, `gemini-4-argon`, `4`, `4-argon` | Gemini 4 Argon | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 943,718 | Frontier Google DeepMind reasoning model with 1M context. |
+| `gemini-4-carbon` | `carbon`, `gemini-carbon`, `gemini-4-carbon`, `4-carbon` | Gemini 4 Carbon | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 943,718 | Next-generation Gemini 4 Carbon foundation model with 1M context. |
+| `gemini-4-argon` | `argon`, `gemini-argon`, `gemini-4-argon`, `4`, `4-argon`, `gemini-4` | Gemini 4 Argon | `["low", "medium", "high"]` | `high` | **1,048,576** | 65,536 | 943,718 | Frontier Google DeepMind reasoning model with 1M context. |
+| `gemini-4-hydrogen` | `hydrogen`, `gemini-hydrogen`, `gemini-4-hydrogen`, `4-hydrogen` | Gemini 4 Hydrogen | `["low", "medium", "high", "xhigh"]` | `high` | **1,048,576** | 65,536 | 943,718 | Gemini 4 Hydrogen supporting extra-high (`xhigh`) reasoning effort. |
+| `gemini-pro-orchestrator` | `orchestrator`, `orchestrator-carbon`, `gemini-orchestrator`, `gemini-pro-orchestrator` | Orchestrator (Carbon) | `[]` *(none)* | `""` | **1,048,576** | 65,536 | 943,718 | Agentic workflow orchestrator powered by Carbon. `--effort` omitted. |
+| `gemini-pro-orchestrator-argon` | `orchestrator-argon`, `gemini-orchestrator-argon`, `gemini-pro-orchestrator-argon` | Orchestrator (Argon) | `[]` *(none)* | `""` | **1,048,576** | 65,536 | 943,718 | Agentic workflow orchestrator powered by Argon. `--effort` omitted. |
+| `gemini-3.8-flash` | `flash`, `fast`, `3.8`, `3.8-flash`, `gemini`, `3.7`, `3.7-flash`, `3.6`, `3.6-flash`, `3.5`, `3.5-flash`, `gemini-pro`, `gemini-3.1-pro` | Gemini 3.8 Flash | `["low", "medium", "high"]` | `high` | **2,097,152** | 65,536 | 1,887,436 | Flagship Google multimodal & reasoning Flash with 2M context. |
 | `claude-opus-5-5` | `opus`, `claude-opus`, `opus-5.5`, `claude-opus-4-6-thinking`, `smart`, `pro` | Claude Opus 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude deep reasoning. Aliased as default `pro`/`smart` reasoning model. |
 | `claude-sonnet-5-5` | `claude`, `sonnet`, `claude-sonnet`, `sonnet-5.5`, `claude-sonnet-4-6` | Claude Sonnet 5.5 | `["low", "medium", "high"]` | `high` | **200,000** | 8,192 | 180,000 | Frontier Claude coding & generalist with effort support. |
 | `gpt-oss-120b` | `gpt-oss`, `oss-120b`, `gpt`, `gpt-oss-120b-medium` | GPT-OSS 120B | `["medium"]` | `medium` | **128,000** | 16,384 | 115,200 | Open-weight foundation model with medium effort. |

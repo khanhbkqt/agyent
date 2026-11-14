@@ -20,7 +20,7 @@ import (
 func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 	cfg := &config.Config{
 		AGY: config.AGYConfig{
-			DefaultModel:  "gemini-3.8-flash",
+			DefaultModel:  "gemini-pro-orchestrator",
 			DefaultEffort: "high",
 			ModelAliases: map[string]string{
 				"custom-pro": "claude-opus-5-5",
@@ -65,8 +65,8 @@ func TestEngine_ResolveExecutionParams_5Tiers(t *testing.T) {
 		agent := &domain.Agent{}
 
 		model, effort, source := eng.ResolveExecutionParams("", "", sess, agent)
-		assert.Equal(t, "gemini-3.8-flash", model)
-		assert.Equal(t, "high", effort)
+		assert.Equal(t, "gemini-pro-orchestrator", model)
+		assert.Equal(t, "", effort)
 		assert.Equal(t, "Global Config", source)
 	})
 
@@ -99,7 +99,7 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 	ctx := context.Background()
 	cfg := &config.Config{
 		AGY: config.AGYConfig{
-			DefaultModel:  "gemini-3.8-flash",
+			DefaultModel:  "gemini-pro-orchestrator",
 			DefaultEffort: "high",
 		},
 		Storage: config.StorageConfig{
@@ -149,7 +149,11 @@ func TestEngine_ModelAndEffortSlashCommands(t *testing.T) {
 		}
 	}
 	assert.Contains(t, callbackDataList, "m:set:gemini-3.8-flash")
+	assert.Contains(t, callbackDataList, "m:set:gemini-4-carbon")
 	assert.Contains(t, callbackDataList, "m:set:gemini-4-argon")
+	assert.Contains(t, callbackDataList, "m:set:gemini-4-hydrogen")
+	assert.Contains(t, callbackDataList, "m:set:gemini-pro-orchestrator")
+	assert.Contains(t, callbackDataList, "m:set:gemini-pro-orchestrator-argon")
 	assert.Contains(t, callbackDataList, "m:set:claude-opus-5-5")
 	assert.Contains(t, callbackDataList, "m:set:claude-sonnet-5-5")
 	assert.Contains(t, callbackDataList, "m:set:gpt-oss-120b")

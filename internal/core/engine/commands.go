@@ -300,7 +300,7 @@ func (e *Engine) handleHelpCommand() string {
 • ` + "`/tokens`" + ` (or ` + "`/metrics`" + `) — Inspect detailed token usage, KV-cache read tokens, and effective cost savings.
 • ` + "`/context`" + ` — Inspect active context directives, token budget, and active MCP servers.
 • ` + "`/model [name]`" + ` (or ` + "`/m`" + `) — Inspect or switch active AI model (` + "`pro`" + `, ` + "`flash`" + `, ` + "`flash-lite`" + `, ` + "`reset`" + `).
-• ` + "`/effort [level]`" + ` (or ` + "`/eff`" + `) — Inspect or switch reasoning effort (` + "`low`" + `, ` + "`medium`" + `, ` + "`high`" + `, ` + "`none`" + `, ` + "`reset`" + `).
+• ` + "`/effort [level]`" + ` (or ` + "`/eff`" + `) — Inspect or switch reasoning effort (` + "`low`" + `, ` + "`medium`" + `, ` + "`high`" + `, ` + "`xhigh`" + `, ` + "`none`" + `, ` + "`reset`" + `).
 • ` + "`/skills`" + ` — List available Progressive Disclosure skills.
 • ` + "`/plugins`" + ` — Manage capability plugins (` + "`/plugins`" + `, ` + "`/plugin enable <name>`" + `, ` + "`/plugin disable <name>`" + `).
 • ` + "`/stream [on|off]`" + ` — Query or toggle Real-Time Streaming mode (` + "`stream-json`" + ` vs ` + "`batch`" + `).
@@ -1879,12 +1879,23 @@ func formatModelButtonLabel(cap domain.ModelCapability) string {
 	if name == "" {
 		name = cap.ID
 	}
-	if idx := strings.Index(name, "("); idx > 0 {
-		name = strings.TrimSpace(name[:idx])
-	}
 	idLower := strings.ToLower(cap.ID)
+	// Retain parenthesized qualifier for Orchestrators so Orchestrator (Carbon) and Orchestrator (Argon) remain distinguishable
+	if !strings.Contains(idLower, "orchestrator") {
+		if idx := strings.Index(name, "("); idx > 0 {
+			name = strings.TrimSpace(name[:idx])
+		}
+	}
 	emoji := "🔹"
 	switch {
+	case strings.Contains(idLower, "orchestrator"):
+		emoji = "🎯"
+	case strings.Contains(idLower, "hydrogen"):
+		emoji = "💧"
+	case strings.Contains(idLower, "carbon"):
+		emoji = "💎"
+	case strings.Contains(idLower, "argon"):
+		emoji = "🔮"
 	case strings.Contains(idLower, "flash"):
 		emoji = "⚡"
 	case strings.Contains(idLower, "pro"):
@@ -1892,7 +1903,7 @@ func formatModelButtonLabel(cap domain.ModelCapability) string {
 	case strings.Contains(idLower, "opus"):
 		emoji = "🧠"
 	case strings.Contains(idLower, "sonnet"):
-		emoji = " "
+		emoji = "🎭"
 	case strings.Contains(idLower, "gpt") || strings.Contains(idLower, "oss"):
 		emoji = "🤖"
 	}
@@ -2005,6 +2016,7 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 		sb.WriteString("• **low** 🟢 — Quick thinking budget, low latency\n")
 		sb.WriteString("• **medium** 🟡 — Balanced reasoning budget\n")
 		sb.WriteString("• **high** 🔴 — Maximum thinking depth & verification\n")
+		sb.WriteString("• **xhigh** 🟣 — Extra deep thinking depth\n")
 		sb.WriteString("• **none** ⚪ — Disable thinking tokens (direct output)\n")
 		sb.WriteString("\n_💡 Click a button below or type `/effort <level>` to switch._")
 
@@ -2015,9 +2027,10 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 			},
 			{
 				{Text: "🔴 High", CallbackData: "eff:set:high"},
-				{Text: "⚪ None", CallbackData: "eff:set:none"},
+				{Text: "🟣 XHigh", CallbackData: "eff:set:xhigh"},
 			},
 			{
+				{Text: "⚪ None", CallbackData: "eff:set:none"},
 				{Text: "🔄 Reset to Default", CallbackData: "eff:reset"},
 			},
 		}
@@ -2035,8 +2048,8 @@ func (e *Engine) handleEffortCommand(ctx context.Context, session *domain.Sessio
 		return fmt.Sprintf("🔄 **Reasoning effort reset.**\nNow using `%s` (%s).", resolvedEffort, source), nil
 	}
 
-	if target != "low" && target != "medium" && target != "high" && target != "none" && target != "off" {
-		return "⚠️ Invalid effort level. Supported values: `low`, `medium`, `high`, `none` (or `reset`).", nil
+	if target != "low" && target != "medium" && target != "high" && target != "xhigh" && target != "max" && target != "none" && target != "off" {
+		return "⚠️ Invalid effort level. Supported values: `low`, `medium`, `high`, `xhigh`, `none` (or `reset`).", nil
 	}
 
 	session.ActiveEffort = target

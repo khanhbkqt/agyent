@@ -517,13 +517,13 @@ func checkConfigSemantics(cfg *config.Config) []CheckResult {
 
 	// 3. Enum Constraints
 	if val := strings.ToLower(strings.TrimSpace(cfg.AGY.DefaultEffort)); val != "" {
-		if val != "low" && val != "medium" && val != "high" && val != "none" {
+		if val != "low" && val != "medium" && val != "high" && val != "xhigh" && val != "max" && val != "none" {
 			results = append(results, CheckResult{
 				Name:        "AGY Default Effort Enum",
 				Category:    CategoryConfig,
 				Status:      StatusFail,
-				Message:     fmt.Sprintf("Invalid agy.default_effort %q: must be 'low', 'medium', 'high', or 'none'", cfg.AGY.DefaultEffort),
-				Remediation: "Set agy.default_effort to 'low', 'medium', 'high', or 'none'.",
+				Message:     fmt.Sprintf("Invalid agy.default_effort %q: must be 'low', 'medium', 'high', 'xhigh', 'max', or 'none'", cfg.AGY.DefaultEffort),
+				Remediation: "Set agy.default_effort to 'low', 'medium', 'high', 'xhigh', 'max', or 'none'.",
 			})
 		}
 	}
@@ -600,13 +600,13 @@ func checkConfigSemantics(cfg *config.Config) []CheckResult {
 			}
 		}
 		if val := strings.ToLower(strings.TrimSpace(a.DefaultEffort)); val != "" {
-			if val != "low" && val != "medium" && val != "high" && val != "none" {
+			if val != "low" && val != "medium" && val != "high" && val != "xhigh" && val != "max" && val != "none" {
 				results = append(results, CheckResult{
 					Name:        fmt.Sprintf("Agent %s Default Effort Enum", name),
 					Category:    CategoryConfig,
 					Status:      StatusFail,
-					Message:     fmt.Sprintf("Invalid default_effort %q for agent %q: must be 'low', 'medium', 'high', or 'none'", a.DefaultEffort, name),
-					Remediation: "Specify 'low', 'medium', 'high', or 'none'.",
+					Message:     fmt.Sprintf("Invalid default_effort %q for agent %q: must be 'low', 'medium', 'high', 'xhigh', 'max', or 'none'", a.DefaultEffort, name),
+					Remediation: "Specify 'low', 'medium', 'high', 'xhigh', 'max', or 'none'.",
 				})
 			}
 		}

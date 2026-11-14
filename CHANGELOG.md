@@ -5,6 +5,24 @@ All notable changes to **agyent** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.63] - 2026-11-14
+
+### Added & Changed
+- **Gemini 4 Frontier Models Expansion:**
+  - Added support for Google DeepMind's full suite of Gemini 4 frontier models:
+    - `gemini-4-carbon` (Gemini 4 Carbon): Next-generation foundation model with 1M context window and `low`, `medium`, `high` reasoning effort.
+    - `gemini-4-hydrogen` (Gemini 4 Hydrogen): Next-generation model with 1M context window supporting extra-high reasoning depth (`low`, `medium`, `high`, `xhigh`).
+    - `gemini-4-argon` (Gemini 4 Argon): Flagship reasoning model with 1M context window and `low`, `medium`, `high` effort.
+  - Added support for agentic orchestrator models:
+    - `gemini-pro-orchestrator` (Orchestrator Carbon): Autonomous orchestration model; automatically omits `--effort` flag conforming to CLI constraints.
+    - `gemini-pro-orchestrator-argon` (Orchestrator Argon): Autonomous orchestration model powered by Argon; automatically omits `--effort` flag.
+  - Added intuitive shorthand aliases: `/model carbon`, `/model hydrogen`, `/model orchestrator`, `/model orchestrator-argon`, `/model 4-carbon`, `/model 4-hydrogen`.
+  - Configured `gemini-pro-orchestrator` (Orchestrator Carbon) as the default model across global gateway configuration (`DefaultConfig()`, `~/.agyent/config.yaml`).
+- **Reasoning Effort Engine Hardening & XHigh Support:**
+  - Expanded reasoning effort support across gateway daemon, commands (`/effort xhigh`, `/eff`), configuration doctor validation, and UI buttons (`🟣 XHigh`).
+  - Hardened effort suffix extraction (`LookupModelCapability`, `ParseModelsOutput`) to evaluate `-xhigh` before `-high`, preventing corrupted base IDs.
+  - Refined Telegram `/model` menu button formatting to preserve parenthesized descriptors for Orchestrator models (`Orchestrator (Carbon)` and `Orchestrator (Argon)`) with distinct emojis.
+
 ## [1.0.62] - 2026-11-03
 
 ### Fixed & Hardened
